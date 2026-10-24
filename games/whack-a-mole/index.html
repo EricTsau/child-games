@@ -1,0 +1,584 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>打地鼠</title>
+<link rel="stylesheet" href="../../assets/common.css">
+<style>
+  html, body { height: 100%; overflow: hidden; background: #9fe07a; }
+  #game {
+    position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh;
+    display: block; touch-action: none; cursor: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div class="kg-hud">
+  <div class="kg-pill" id="hudScore">🐹 0</div>
+  <div class="kg-pill" id="hudTime">⏱️ 45</div>
+</div>
+
+<script src="../../assets/common.js"></script>
+<script>
+'use strict';
+(function () {
+  const cv = document.getElementById('game');
+  const ctx = cv.getContext('2d');
+  const hudScore = document.getElementById('hudScore');
+  const hudTime = document.getElementById('hudTime');
+
+  const ROUND = 45;
+  const FONT = getComputedStyle(document.body).fontFamily;
+  let W = 0, H = 0, dpr = 1, horizon = 100;
+  let holes = [];          // 9 個洞
+  let tufts = [], flowers = [], clouds = [];
+  let particles = [], texts = [];
+  let state = 'idle';      // idle | play | over
+  let score = 0, timeLeft = ROUND, spawnT = 0, elapsed = 0, clock = 0;
+  let hammer = { x: -100, y: -100, swing: 0, show: 0, mouse: false };
+  let lastSec = ROUND;
+
+  /* ---------- 版面 ---------- */
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 3);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    const fw = Math.min(W - 24, 720);
+    const cellW = fw / 3;
+    const availH = H - 16 - 150;
+    const cellH = Math.min(availH / 3, cellW * 1.15);
+    const fieldTop = H - 16 - cellH * 3;
+    horizon = Math.max(90, Math.min(H * 0.42, fieldTop - 40));
+    const rx = Math.min(cellW * 0.36, cellH * 0.42, 92);
+    const old = holes;
+    holes = [];
+    for (let r = 0; r < 3; r++) {
+      for (let c = 0; c < 3; c++) {
+        const i = r * 3 + c;
+        const prev = old[i] || {};
+        holes.push({
+          x: W / 2 + (c - 1) * cellW,
+          y: fieldTop + cellH * (r + 0.72),
+          rx: rx, ry: rx * 0.36,
+          kind: prev.kind || null, phase: prev.phase || 'none', t: prev.t || 0,
+          stay: prev.stay || 1, h: prev.h || 0, blink: prev.blink || KG.rand(1, 4)
+        });
+      }
+    }
+    // 草叢、花朵、雲
+    tufts = []; flowers = [];
+    const n = Math.round(W * H / 9000);
+    for (let i = 0; i < n; i++) tufts.push({ x: Math.random() * W, y: KG.rand(horizon + 8, H), s: KG.rand(0.6, 1.3) });
+    tufts.sort((a, b) => a.y - b.y);
+    for (let i = 0; i < n / 4; i++) flowers.push({ x: Math.random() * W, y: KG.rand(horizon + 10, H), c: KG.pick(['#ffffff', '#ffd65c', '#ff9fc4', '#c8a6ff']), s: KG.rand(0.7, 1.2) });
+    if (!clouds.length) for (let i = 0; i < 4; i++) clouds.push({ x: Math.random() * W, y: KG.rand(0.15, 0.6), s: KG.rand(0.7, 1.2), v: KG.rand(6, 14) });
+  }
+
+  /* ---------- 背景 ---------- */
+  function drawBackground() {
+    // 天空
+    let g = ctx.createLinearGradient(0, 0, 0, horizon);
+    g.addColorStop(0, '#7cc8ff'); g.addColorStop(1, '#d4f0ff');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, horizon + 40);
+    // 太陽
+    const sx = W * 0.82, sy = horizon * 0.42, sr = Math.min(36, horizon * 0.22);
+    ctx.save(); ctx.translate(sx, sy); ctx.rotate(clock * 0.2);
+    ctx.fillStyle = 'rgba(255,220,90,.45)';
+    for (let i = 0; i < 12; i++) { ctx.rotate(Math.PI / 6); ctx.beginPath(); ctx.moveTo(sr * 1.15, -5); ctx.lineTo(sr * 1.65, 0); ctx.lineTo(sr * 1.15, 5); ctx.fill(); }
+    ctx.restore();
+    g = ctx.createRadialGradient(sx - sr * 0.3, sy - sr * 0.3, 2, sx, sy, sr);
+    g.addColorStop(0, '#fff6b0'); g.addColorStop(1, '#ffc93c');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(sx, sy, sr, 0, 7); ctx.fill();
+    // 雲
+    clouds.forEach((c) => {
+      const cx = c.x, cy = c.y * horizon, s = c.s * Math.min(1, W / 600) * 1.1;
+      ctx.fillStyle = 'rgba(255,255,255,.92)';
+      ctx.beginPath();
+      ctx.arc(cx, cy, 16 * s, 0, 7); ctx.arc(cx + 18 * s, cy - 8 * s, 20 * s, 0, 7);
+      ctx.arc(cx + 40 * s, cy, 15 * s, 0, 7); ctx.ellipse(cx + 20 * s, cy + 6 * s, 30 * s, 10 * s, 0, 0, 7);
+      ctx.fill();
+    });
+    // 遠山
+    ctx.fillStyle = '#8fd27a';
+    ctx.beginPath(); ctx.moveTo(0, horizon + 10);
+    for (let x = 0; x <= W + 20; x += 20) ctx.lineTo(x, horizon - 18 - Math.sin(x / 90) * 16 - Math.sin(x / 37) * 5);
+    ctx.lineTo(W, horizon + 30); ctx.lineTo(0, horizon + 30); ctx.fill();
+    // 籬笆
+    ctx.fillStyle = '#fff3dc'; ctx.strokeStyle = '#d9b98a'; ctx.lineWidth = 2;
+    for (let x = 6; x < W; x += 26) {
+      ctx.beginPath(); ctx.moveTo(x, horizon + 6); ctx.lineTo(x, horizon - 16); ctx.lineTo(x + 6, horizon - 22); ctx.lineTo(x + 12, horizon - 16); ctx.lineTo(x + 12, horizon + 6); ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+    ctx.fillRect(0, horizon - 10, W, 5);
+    // 草地
+    g = ctx.createLinearGradient(0, horizon, 0, H);
+    g.addColorStop(0, '#93dc6c'); g.addColorStop(1, '#5fbf4a');
+    ctx.fillStyle = g; ctx.fillRect(0, horizon, W, H - horizon);
+    // 割草條紋
+    ctx.fillStyle = 'rgba(255,255,255,.07)';
+    for (let i = 0; i < 8; i += 2) {
+      const y0 = horizon + (H - horizon) * i / 8, y1 = horizon + (H - horizon) * (i + 1) / 8;
+      ctx.fillRect(0, y0, W, y1 - y0);
+    }
+    // 小草與花
+    tufts.forEach((t) => {
+      ctx.strokeStyle = '#4aa83a'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+      const s = t.s * 6;
+      ctx.beginPath();
+      ctx.moveTo(t.x, t.y); ctx.quadraticCurveTo(t.x - s * 0.3, t.y - s, t.x - s * 0.8, t.y - s * 1.4);
+      ctx.moveTo(t.x, t.y); ctx.quadraticCurveTo(t.x, t.y - s, t.x + s * 0.1, t.y - s * 1.8);
+      ctx.moveTo(t.x, t.y); ctx.quadraticCurveTo(t.x + s * 0.3, t.y - s, t.x + s * 0.9, t.y - s * 1.3);
+      ctx.stroke();
+    });
+    flowers.forEach((f) => {
+      ctx.fillStyle = f.c;
+      for (let i = 0; i < 5; i++) {
+        const a = i * 1.2566;
+        ctx.beginPath(); ctx.arc(f.x + Math.cos(a) * 4 * f.s, f.y + Math.sin(a) * 4 * f.s, 3 * f.s, 0, 7); ctx.fill();
+      }
+      ctx.fillStyle = '#ffb02e'; ctx.beginPath(); ctx.arc(f.x, f.y, 2.4 * f.s, 0, 7); ctx.fill();
+    });
+  }
+
+  /* ---------- 洞 ---------- */
+  function drawHoleBack(h) {
+    // 土堆
+    let g = ctx.createRadialGradient(h.x, h.y - h.ry * 0.5, h.rx * 0.2, h.x, h.y, h.rx * 1.35);
+    g.addColorStop(0, '#c48a55'); g.addColorStop(1, '#9a6334');
+    ctx.fillStyle = 'rgba(40,70,20,.25)';
+    ctx.beginPath(); ctx.ellipse(h.x, h.y + h.ry * 0.5, h.rx * 1.38, h.ry * 1.75, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.ellipse(h.x, h.y, h.rx * 1.3, h.ry * 1.65, 0, 0, 7); ctx.fill();
+    // 洞口
+    g = ctx.createLinearGradient(0, h.y - h.ry, 0, h.y + h.ry);
+    g.addColorStop(0, '#2a160a'); g.addColorStop(1, '#5a361b');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.ellipse(h.x, h.y, h.rx, h.ry, 0, 0, 7); ctx.fill();
+  }
+  function drawHoleFront(h) {
+    // 前方的土唇，蓋住角色下半身
+    const g = ctx.createLinearGradient(0, h.y, 0, h.y + h.ry * 1.65);
+    g.addColorStop(0, '#b47845'); g.addColorStop(1, '#8e5a2e');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.ellipse(h.x, h.y, h.rx * 1.3, h.ry * 1.65, 0, 0, Math.PI);
+    ctx.ellipse(h.x, h.y, h.rx, h.ry, 0, Math.PI, 0, true);
+    ctx.fill();
+    // 小土粒
+    ctx.fillStyle = 'rgba(255,230,190,.35)';
+    for (let i = -2; i <= 2; i++) {
+      ctx.beginPath(); ctx.arc(h.x + i * h.rx * 0.45, h.y + h.ry * 1.25 + Math.abs(i) * -2, h.rx * 0.04, 0, 7); ctx.fill();
+    }
+  }
+
+  /* ---------- 角色 ---------- */
+  function eye(x, y, r, closed, dizzy) {
+    if (dizzy) {
+      ctx.strokeStyle = '#2b1a10'; ctx.lineWidth = r * 0.45; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(x - r, y - r); ctx.lineTo(x + r, y + r); ctx.moveTo(x + r, y - r); ctx.lineTo(x - r, y + r); ctx.stroke();
+      return;
+    }
+    if (closed) {
+      ctx.strokeStyle = '#2b1a10'; ctx.lineWidth = r * 0.45; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.arc(x, y - r * 0.2, r * 0.9, 0.2, Math.PI - 0.2); ctx.stroke();
+      return;
+    }
+    ctx.fillStyle = '#21140c';
+    ctx.beginPath(); ctx.ellipse(x, y, r * 0.85, r, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(x - r * 0.3, y - r * 0.4, r * 0.38, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(x + r * 0.3, y + r * 0.35, r * 0.16, 0, 7); ctx.fill();
+  }
+
+  function drawMole(h, s) {
+    const hit = h.phase === 'hit';
+    const blink = h.blink < 0.12;
+    const w = s, top = -s * 1.55;
+    // 身體
+    let g = ctx.createLinearGradient(-w, top, w, 0);
+    g.addColorStop(0, '#b97a46'); g.addColorStop(1, '#7e4c27');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.moveTo(-w * 0.82, s * 0.6);
+    ctx.lineTo(-w * 0.82, top + w * 0.8);
+    ctx.bezierCurveTo(-w * 0.82, top - w * 0.05, w * 0.82, top - w * 0.05, w * 0.82, top + w * 0.8);
+    ctx.lineTo(w * 0.82, s * 0.6);
+    ctx.closePath(); ctx.fill();
+    // 亮面
+    ctx.fillStyle = 'rgba(255,255,255,.18)';
+    ctx.beginPath(); ctx.ellipse(-w * 0.35, top + w * 0.45, w * 0.22, w * 0.32, -0.4, 0, 7); ctx.fill();
+    // 肚子
+    ctx.fillStyle = '#e8c39a';
+    ctx.beginPath(); ctx.ellipse(0, -s * 0.15, w * 0.52, w * 0.6, 0, 0, 7); ctx.fill();
+    // 眼睛
+    const ey = top + w * 0.72;
+    eye(-w * 0.3, ey, w * 0.14, blink && !hit, hit);
+    eye(w * 0.3, ey, w * 0.14, blink && !hit, hit);
+    // 腮紅
+    ctx.fillStyle = 'rgba(255,120,150,.45)';
+    ctx.beginPath(); ctx.ellipse(-w * 0.52, ey + w * 0.26, w * 0.13, w * 0.08, 0, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(w * 0.52, ey + w * 0.26, w * 0.13, w * 0.08, 0, 0, 7); ctx.fill();
+    // 鼻口區
+    ctx.fillStyle = '#f4dcc0';
+    ctx.beginPath(); ctx.ellipse(0, ey + w * 0.36, w * 0.3, w * 0.2, 0, 0, 7); ctx.fill();
+    // 鬍鬚
+    ctx.strokeStyle = 'rgba(60,35,20,.7)'; ctx.lineWidth = Math.max(1, w * 0.025);
+    ctx.beginPath();
+    [-1, 1].forEach((d) => {
+      ctx.moveTo(d * w * 0.22, ey + w * 0.32); ctx.lineTo(d * w * 0.62, ey + w * 0.24);
+      ctx.moveTo(d * w * 0.22, ey + w * 0.4); ctx.lineTo(d * w * 0.64, ey + w * 0.42);
+    });
+    ctx.stroke();
+    // 粉紅鼻子
+    g = ctx.createRadialGradient(-w * 0.05, ey + w * 0.2, 1, 0, ey + w * 0.25, w * 0.15);
+    g.addColorStop(0, '#ffd0de'); g.addColorStop(1, '#ff6f9a');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.ellipse(0, ey + w * 0.25, w * 0.15, w * 0.11, 0, 0, 7); ctx.fill();
+    // 嘴巴 + 牙齒
+    if (hit) {
+      ctx.fillStyle = '#7a2d2d';
+      ctx.beginPath(); ctx.ellipse(0, ey + w * 0.47, w * 0.08, w * 0.06, 0, 0, 7); ctx.fill();
+    } else {
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(-w * 0.07, ey + w * 0.4, w * 0.06, w * 0.09);
+      ctx.fillRect(w * 0.01, ey + w * 0.4, w * 0.06, w * 0.09);
+      ctx.strokeStyle = '#5a3420'; ctx.lineWidth = Math.max(1.2, w * 0.03);
+      ctx.beginPath(); ctx.arc(-w * 0.07, ey + w * 0.36, w * 0.07, 0.2, Math.PI - 0.6); ctx.stroke();
+      ctx.beginPath(); ctx.arc(w * 0.07, ey + w * 0.36, w * 0.07, 0.6, Math.PI - 0.2); ctx.stroke();
+    }
+    // 小手搭在洞口
+    ctx.fillStyle = '#f0b9a0';
+    [-1, 1].forEach((d) => {
+      ctx.beginPath(); ctx.ellipse(d * w * 0.55, s * 0.08, w * 0.17, w * 0.12, 0, 0, 7); ctx.fill();
+    });
+  }
+
+  function drawBunny(h, s) {
+    const hit = h.phase === 'hit';
+    const blink = h.blink < 0.12;
+    const w = s, top = -s * 1.35;
+    const wig = Math.sin(clock * 6 + h.x) * 0.08;
+    // 耳朵
+    [-1, 1].forEach((d) => {
+      ctx.save(); ctx.translate(d * w * 0.3, top + w * 0.25); ctx.rotate(d * (0.18 + wig));
+      ctx.fillStyle = '#fbf7fb';
+      ctx.beginPath(); ctx.ellipse(0, -w * 0.55, w * 0.2, w * 0.6, 0, 0, 7); ctx.fill();
+      ctx.fillStyle = '#ffb8cf';
+      ctx.beginPath(); ctx.ellipse(0, -w * 0.5, w * 0.1, w * 0.45, 0, 0, 7); ctx.fill();
+      ctx.restore();
+    });
+    // 身體
+    const g = ctx.createLinearGradient(-w, top, w, 0);
+    g.addColorStop(0, '#ffffff'); g.addColorStop(1, '#e6dff0');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.moveTo(-w * 0.78, s * 0.6);
+    ctx.lineTo(-w * 0.78, top + w * 0.75);
+    ctx.bezierCurveTo(-w * 0.78, top - w * 0.05, w * 0.78, top - w * 0.05, w * 0.78, top + w * 0.75);
+    ctx.lineTo(w * 0.78, s * 0.6);
+    ctx.closePath(); ctx.fill();
+    const ey = top + w * 0.7;
+    eye(-w * 0.28, ey, w * 0.13, blink && !hit, false);
+    eye(w * 0.28, ey, w * 0.13, blink && !hit, false);
+    ctx.fillStyle = 'rgba(255,120,160,.5)';
+    ctx.beginPath(); ctx.ellipse(-w * 0.5, ey + w * 0.24, w * 0.13, w * 0.08, 0, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(w * 0.5, ey + w * 0.24, w * 0.13, w * 0.08, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#ff8fb1';
+    ctx.beginPath(); ctx.moveTo(-w * 0.08, ey + w * 0.2); ctx.lineTo(w * 0.08, ey + w * 0.2); ctx.lineTo(0, ey + w * 0.3); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#8a6a7a'; ctx.lineWidth = Math.max(1.2, w * 0.03); ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.arc(-w * 0.06, ey + w * 0.32, w * 0.06, 0.3, Math.PI - 0.3); ctx.arc(w * 0.06, ey + w * 0.32, w * 0.06, 0.3, Math.PI - 0.3); ctx.stroke();
+    // 被打到時：一顆小汗珠（不兇，只是嚇一跳）
+    if (hit) {
+      ctx.fillStyle = '#8fd3ff';
+      ctx.beginPath(); ctx.ellipse(w * 0.62, top + w * 0.4, w * 0.08, w * 0.12, 0, 0, 7); ctx.fill();
+    }
+    // 小手 + 紅蘿蔔
+    ctx.fillStyle = '#fff';
+    [-1, 1].forEach((d) => { ctx.beginPath(); ctx.ellipse(d * w * 0.5, s * 0.08, w * 0.16, w * 0.11, 0, 0, 7); ctx.fill(); });
+    ctx.font = (w * 0.45) + 'px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('🥕', 0, s * 0.02);
+  }
+
+  function easeOutBack(t) { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); }
+
+  function drawCritter(h) {
+    if (!h.kind || h.h <= 0) return;
+    const s = h.rx * 0.88;
+    const rise = (h.kind === 'bunny' ? 1.9 : 1.75) * s;
+    const off = h.h * rise;
+    ctx.save();
+    // 剪裁：只顯示洞口線以上 + 洞內
+    ctx.beginPath();
+    ctx.rect(h.x - h.rx * 2, h.y - s * 4, h.rx * 4, s * 4);
+    ctx.ellipse(h.x, h.y, h.rx, h.ry, 0, 0, 7);
+    ctx.clip();
+    ctx.translate(h.x, h.y + s * 1.35 - off + s * 0.2);
+    if (h.phase === 'hit') {
+      const k = Math.min(1, h.t / 0.12);
+      const sq = 1 - 0.28 * Math.sin(k * Math.PI * 0.5);
+      ctx.scale(1 + (1 - sq) * 0.8, sq);
+    } else {
+      // 待機時輕輕晃動
+      ctx.rotate(Math.sin(clock * 3 + h.x) * 0.03);
+    }
+    if (h.kind === 'mole') drawMole(h, s); else drawBunny(h, s);
+    ctx.restore();
+    // 洞內陰影，讓角色看起來從洞裡鑽出來
+    ctx.save();
+    ctx.beginPath(); ctx.ellipse(h.x, h.y, h.rx, h.ry, 0, 0, 7); ctx.clip();
+    const sg = ctx.createLinearGradient(0, h.y - h.ry, 0, h.y + h.ry);
+    sg.addColorStop(0, 'rgba(30,15,5,0)'); sg.addColorStop(1, 'rgba(30,15,5,.6)');
+    ctx.fillStyle = sg; ctx.fillRect(h.x - h.rx, h.y - h.ry, h.rx * 2, h.ry * 2);
+    ctx.restore();
+    // 暈眩星星
+    if (h.phase === 'hit' && h.kind === 'mole') {
+      const cy = h.y - off - s * 0.0;
+      for (let i = 0; i < 3; i++) {
+        const a = clock * 6 + i * 2.09;
+        drawStar(h.x + Math.cos(a) * s * 0.6, cy + Math.sin(a) * s * 0.18 - s * 0.3, s * 0.14, '#ffd84a');
+      }
+    }
+  }
+
+  function drawStar(x, y, r, color) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const rr = i % 2 ? r * 0.45 : r;
+      const a = -Math.PI / 2 + i * Math.PI / 5;
+      ctx.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr);
+    }
+    ctx.closePath(); ctx.fill();
+  }
+
+  /* ---------- 槌子 ---------- */
+  function drawHammer() {
+    if (!hammer.mouse && hammer.show <= 0) return;
+    const sz = Math.max(40, Math.min(70, W * 0.12));
+    const ang = -0.65 + Math.sin(Math.min(1, hammer.swing) * Math.PI) * 1.1;
+    ctx.save();
+    ctx.globalAlpha = hammer.mouse ? 1 : Math.min(1, hammer.show * 4);
+    ctx.translate(hammer.x + sz * 0.35, hammer.y + sz * 0.55);
+    ctx.rotate(ang);
+    // 握把
+    let g = ctx.createLinearGradient(-sz * 0.07, 0, sz * 0.07, 0);
+    g.addColorStop(0, '#e2a868'); g.addColorStop(1, '#a8682c');
+    ctx.fillStyle = g;
+    roundRect(-sz * 0.07, -sz * 0.95, sz * 0.14, sz * 1.05, sz * 0.06); ctx.fill();
+    // 槌頭
+    g = ctx.createLinearGradient(0, -sz * 1.25, 0, -sz * 0.8);
+    g.addColorStop(0, '#ff9fbe'); g.addColorStop(1, '#e8487a');
+    ctx.fillStyle = g;
+    roundRect(-sz * 0.5, -sz * 1.22, sz * 1.0, sz * 0.42, sz * 0.14); ctx.fill();
+    ctx.fillStyle = '#fff3a8';
+    roundRect(-sz * 0.56, -sz * 1.18, sz * 0.12, sz * 0.34, sz * 0.05); ctx.fill();
+    roundRect(sz * 0.44, -sz * 1.18, sz * 0.12, sz * 0.34, sz * 0.05); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,.5)';
+    roundRect(-sz * 0.36, -sz * 1.16, sz * 0.6, sz * 0.08, sz * 0.04); ctx.fill();
+    ctx.restore();
+  }
+  function roundRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+  }
+
+  /* ---------- 特效 ---------- */
+  function burst(x, y, colorful) {
+    for (let i = 0; i < 12; i++) {
+      const a = Math.random() * Math.PI * 2, sp = KG.rand(80, 260);
+      particles.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 120, life: 1, r: KG.rand(5, 10),
+        c: colorful ? KG.pick(['#ffd84a', '#ff8fb1', '#7bd8ff', '#b49cff']) : '#c79a6a', star: colorful });
+    }
+  }
+  function floatText(x, y, text, color) { texts.push({ x, y, text, color, life: 1 }); }
+
+  /* ---------- 遊戲邏輯 ---------- */
+  function difficulty() { return Math.min(1, elapsed / ROUND); }
+
+  function spawn() {
+    const free = holes.filter((h) => !h.kind);
+    if (!free.length) return;
+    const up = holes.length - free.length;
+    if (up >= 2 + Math.floor(difficulty() * 1.5)) return;
+    const h = KG.pick(free);
+    h.kind = Math.random() < 0.15 && elapsed > 4 ? 'bunny' : 'mole';
+    h.phase = 'up'; h.t = 0; h.h = 0;
+    h.stay = KG.rand(1.0, 1.5) - difficulty() * 0.45;
+    if (h.kind === 'bunny') h.stay += 0.2;
+    KG.note(KG.rand(500, 700), 0.08, 'sine', 0.08, 0, 900);
+  }
+
+  function updateHoles(dt) {
+    holes.forEach((h) => {
+      h.blink -= dt;
+      if (h.blink < 0) h.blink = KG.rand(1.5, 4);
+      if (!h.kind) return;
+      h.t += dt;
+      if (h.phase === 'up') {
+        h.h = easeOutBack(Math.min(1, h.t / 0.28));
+        if (h.t > 0.28 + h.stay) { h.phase = 'down'; h.t = 0; }
+      } else if (h.phase === 'down') {
+        h.h = 1 - Math.min(1, h.t / 0.22) ** 2;
+        if (h.t >= 0.22) { h.kind = null; h.phase = 'none'; h.h = 0; }
+      } else if (h.phase === 'hit') {
+        h.h = h.t < 0.45 ? 1 : 1 - Math.min(1, (h.t - 0.45) / 0.2);
+        if (h.t >= 0.65) { h.kind = null; h.phase = 'none'; h.h = 0; }
+      }
+    });
+  }
+
+  function whack(h) {
+    const s = h.rx * 0.88;
+    const topY = h.y - h.h * 1.75 * s;
+    h.phase = 'hit'; h.t = 0;
+    if (h.kind === 'mole') {
+      score++;
+      // 「咚」
+      KG.note(150, 0.18, 'sine', 0.4, 0, 70);
+      KG.sound('hit');
+      KG.note(880, 0.1, 'triangle', 0.12, 0.06, 1300);
+      KG.vibrate(25);
+      burst(h.x, topY, true);
+      floatText(h.x, topY - 10, '+1', '#ff5d8f');
+      if (score % 5 === 0) { KG.toast(KG.pick(['好棒！', '太厲害了！', '咚咚咚！', '好準喔！'])); KG.sound('sparkle'); }
+    } else {
+      score = Math.max(0, score - 1);
+      KG.sound('boing');
+      floatText(h.x, topY - 10, '-1', '#8aa0b8');
+      KG.toast('小兔子不要打喔～');
+    }
+    updateHud();
+  }
+
+  function tryHit(x, y) {
+    // 從前排往後排檢查（前排在畫面下方，會蓋住後排）
+    for (let i = holes.length - 1; i >= 0; i--) {
+      const h = holes[i];
+      if (!h.kind || h.phase === 'hit' || h.h < 0.25) continue;
+      const s = h.rx * 0.88;
+      const topY = h.y - h.h * 1.9 * s - s * 0.2;
+      if (Math.abs(x - h.x) < h.rx * 1.15 && y > topY - 12 && y < h.y + h.ry * 1.8) { whack(h); return true; }
+    }
+    return false;
+  }
+
+  function updateHud() {
+    hudScore.textContent = '🐹 ' + score;
+    hudTime.textContent = '⏱️ ' + Math.ceil(timeLeft);
+  }
+
+  function startGame() {
+    score = 0; timeLeft = ROUND; elapsed = 0; spawnT = 0.6; lastSec = ROUND;
+    particles = []; texts = [];
+    holes.forEach((h) => { h.kind = null; h.phase = 'none'; h.h = 0; });
+    state = 'play';
+    updateHud();
+  }
+
+  function endGame() {
+    state = 'over';
+    holes.forEach((h) => { if (h.kind && h.phase === 'up') { h.phase = 'down'; h.t = 0; } });
+    const best = KG.best('whack-a-mole', score);
+    const stars = score >= 20 ? 3 : score >= 10 ? 2 : 1;
+    setTimeout(() => {
+      KG.say('時間到！你打到了 ' + score + ' 隻地鼠');
+      KG.showWin({
+        icon: '🐹', title: '時間到！好棒！', stars,
+        message: '打到 ' + score + ' 隻地鼠（最高 ' + best + ' 隻）',
+        onReplay: startGame
+      });
+    }, 700);
+  }
+
+  /* ---------- 主迴圈 ---------- */
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    clock += dt;
+    clouds.forEach((c) => { c.x += c.v * dt; if (c.x > W + 40) c.x = -100; });
+
+    if (state === 'play') {
+      elapsed += dt;
+      timeLeft = Math.max(0, ROUND - elapsed);
+      spawnT -= dt;
+      if (spawnT <= 0) {
+        spawn();
+        spawnT = KG.rand(0.75, 1.1) - difficulty() * 0.35;
+      }
+      const sec = Math.ceil(timeLeft);
+      if (sec !== lastSec) { lastSec = sec; updateHud(); if (sec <= 5 && sec > 0) KG.sound('tick'); }
+      if (timeLeft <= 0) endGame();
+    }
+    updateHoles(dt);
+    hammer.swing = hammer.swing > 0 ? hammer.swing + dt * 7 : 0;
+    if (hammer.swing > 1) hammer.swing = 0;
+    hammer.show -= dt;
+
+    particles.forEach((p) => { p.vy += 600 * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt * 1.6; });
+    particles = particles.filter((p) => p.life > 0);
+    texts.forEach((t) => { t.y -= 50 * dt; t.life -= dt * 1.2; });
+    texts = texts.filter((t) => t.life > 0);
+
+    // 繪圖
+    drawBackground();
+    holes.forEach((h) => { drawHoleBack(h); drawCritter(h); drawHoleFront(h); });
+    particles.forEach((p) => {
+      ctx.globalAlpha = Math.max(0, p.life);
+      if (p.star) drawStar(p.x, p.y, p.r, p.c);
+      else { ctx.fillStyle = p.c; ctx.beginPath(); ctx.arc(p.x, p.y, p.r * 0.6, 0, 7); ctx.fill(); }
+    });
+    ctx.globalAlpha = 1;
+    texts.forEach((t) => {
+      ctx.globalAlpha = Math.max(0, Math.min(1, t.life * 2));
+      ctx.font = '800 30px ' + FONT;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.lineWidth = 6; ctx.strokeStyle = '#fff'; ctx.strokeText(t.text, t.x, t.y);
+      ctx.fillStyle = t.color; ctx.fillText(t.text, t.x, t.y);
+    });
+    ctx.globalAlpha = 1;
+    drawHammer();
+    requestAnimationFrame(frame);
+  }
+
+  /* ---------- 輸入 ---------- */
+  cv.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    hammer.x = e.clientX; hammer.y = e.clientY;
+    hammer.mouse = e.pointerType === 'mouse';
+    hammer.show = 0.45; hammer.swing = 0.01;
+    if (state !== 'play') return;
+    if (!tryHit(e.clientX, e.clientY)) KG.note(120, 0.08, 'sine', 0.15, 0, 80);
+  });
+  cv.addEventListener('pointermove', (e) => {
+    if (e.pointerType === 'mouse') { hammer.mouse = true; hammer.x = e.clientX; hammer.y = e.clientY; }
+  });
+  cv.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') hammer.mouse = false; });
+  // 鍵盤：數字鍵 1-9（像數字鍵盤的排法：7 8 9 在上面）
+  const KEYMAP = { 7: 0, 8: 1, 9: 2, 4: 3, 5: 4, 6: 5, 1: 6, 2: 7, 3: 8 };
+  window.addEventListener('keydown', (e) => {
+    if (state !== 'play' || KEYMAP[e.key] == null) return;
+    const h = holes[KEYMAP[e.key]];
+    hammer.x = h.x - 10; hammer.y = h.y - h.rx; hammer.show = 0.45; hammer.swing = 0.01;
+    if (h.kind && h.phase !== 'hit' && h.h > 0.25) whack(h);
+  });
+  window.addEventListener('resize', resize);
+  document.addEventListener('gesturestart', (e) => e.preventDefault());
+
+  resize();
+  updateHud();
+  requestAnimationFrame(frame);
+  KG.showStart({
+    icon: '🐹', title: '打地鼠',
+    message: '地鼠探出頭就敲一下！小兔子不要敲喔～',
+    button: '開始玩！',
+    onStart: startGame
+  });
+})();
+</script>
+</body>
+</html>

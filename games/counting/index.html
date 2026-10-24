@@ -1,0 +1,583 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>數數看</title>
+<link rel="stylesheet" href="../../assets/common.css">
+<style>
+  html, body { height: 100%; overflow: hidden; touch-action: none; }
+  body { background: #bfe8ff; }
+  #scene { position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh; display: block; touch-action: none; }
+  #question {
+    position: fixed; top: 66px; left: 50%; transform: translateX(-50%); z-index: 7000;
+    display: none; align-items: center; gap: 10px;
+    background: linear-gradient(180deg, #fff 0%, #fff6e8 100%);
+    border: 4px solid #fff; border-radius: 30px; padding: 6px 8px 6px 20px;
+    box-shadow: var(--kg-shadow); font-size: clamp(22px, 6.4vw, 32px); font-weight: 900;
+    white-space: nowrap; max-width: calc(100vw - 20px);
+  }
+  #question.show { display: flex; animation: kg-pop .35s cubic-bezier(.2, 1.6, .4, 1); }
+  #speak {
+    flex: none; width: 52px; height: 52px; border-radius: 50%; border: 3px solid #fff; cursor: pointer;
+    background: linear-gradient(180deg, #fff3c4, #ffc93c); font-size: 24px; box-shadow: 0 3px 0 #d9a520;
+  }
+  #speak:active { transform: translateY(2px); box-shadow: 0 1px 0 #d9a520; }
+  #answers {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 7000;
+    padding: 10px 10px calc(16px + env(safe-area-inset-bottom));
+    display: flex; justify-content: center; gap: clamp(10px, 3.2vw, 24px);
+    pointer-events: none;
+  }
+  .num {
+    pointer-events: auto;
+    width: clamp(66px, 19vw, 96px); height: clamp(66px, 19vw, 96px);
+    border-radius: 50%; border: 5px solid #fff; cursor: pointer;
+    font-family: var(--kg-font); font-size: clamp(34px, 9.5vw, 50px); font-weight: 900; color: #fff;
+    text-shadow: 0 3px 0 rgba(0, 0, 0, .18);
+    box-shadow: 0 6px 0 rgba(74, 59, 82, .22), 0 12px 22px rgba(74, 59, 82, .2);
+    transition: transform .12s ease, opacity .3s ease, filter .3s ease;
+    animation: kg-pop .4s cubic-bezier(.2, 1.6, .4, 1) both;
+    position: relative;
+  }
+  .num::after {
+    content: ''; position: absolute; left: 18%; top: 12%; width: 34%; height: 22%;
+    border-radius: 50%; background: rgba(255, 255, 255, .55); transform: rotate(-20deg);
+  }
+  .num:active { transform: scale(.92); }
+  .num.wrong { opacity: .35; filter: grayscale(.7); pointer-events: none; }
+  .num.right { animation: pulse .6s ease infinite alternate; filter: drop-shadow(0 0 12px #fff6a0); }
+  @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.14); } }
+  @media (max-width: 360px) { .kg-pill { font-size: 15px; padding: 5px 10px; } }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<div class="kg-hud"><div class="kg-pill" id="hudQ">第 1 / 10 題</div><div class="kg-pill" id="hudS">⭐ 0</div></div>
+<div id="question"><span id="qText">有幾隻小鴨子？</span><button id="speak" aria-label="再聽一次">🔈</button></div>
+<div id="answers"></div>
+<script src="../../assets/common.js"></script>
+<script>
+'use strict';
+(() => {
+  const cv = document.getElementById('scene');
+  const ctx = cv.getContext('2d');
+  const bg = document.createElement('canvas');
+  const bctx = bg.getContext('2d');
+  const qEl = document.getElementById('question');
+  const qText = document.getElementById('qText');
+  const ansEl = document.getElementById('answers');
+  const hudQ = document.getElementById('hudQ');
+  const hudS = document.getElementById('hudS');
+  const EMOJI_FONT = '"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif';
+
+  // 題目種類：zone = 物件放置區域
+  const KINDS = [
+    { id: 'duck', e: '🦆', name: '小鴨子', unit: '隻', zone: 'pond' },
+    { id: 'apple', e: '🍎', name: '蘋果', unit: '顆', zone: 'ground' },
+    { id: 'chick', e: '🐥', name: '小雞', unit: '隻', zone: 'ground' },
+    { id: 'flower', e: '🌷', name: '花', unit: '朵', zone: 'ground' },
+    { id: 'rabbit', e: '🐰', name: '小兔子', unit: '隻', zone: 'ground' },
+    { id: 'balloon', e: null, name: '氣球', unit: '個', zone: 'sky' },
+    { id: 'star', e: '⭐', name: '星星', unit: '顆', zone: 'sky' },
+    { id: 'butterfly', e: '🦋', name: '蝴蝶', unit: '隻', zone: 'sky' }
+  ];
+  const NUM = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十', '十一', '十二', '十三'];
+  const BALLOON_COLORS = [['#ff7a9c', '#e0406a'], ['#ffd34d', '#e9a400'], ['#7fd1ff', '#2f97e0'], ['#9be27f', '#4bb340'], ['#c4a2ff', '#8a5ce6'], ['#ffad6b', '#ec7a2a']];
+  const BTN_COLORS = [['#ff9fbe', '#e8648d'], ['#9ad8ff', '#3a9ee8'], ['#9be8aa', '#46b864'], ['#ffd27a', '#f39a1e']];
+  const TOTAL = 10;
+  const BADGE_FONT = getComputedStyle(document.body).fontFamily || 'sans-serif';
+
+  let W = 0, H = 0, DPR = 1;
+  let L = null;              // 版面
+  let deco = null;           // 背景裝飾（草、雲）
+  let clouds = [];
+  let objs = [];
+  let particles = [];
+  let kind = null, N = 0, qIndex = 0, firstTryCount = 0, firstTry = true;
+  let marks = 0, busy = false, playing = false;
+  let timers = [];
+  let lastKind = null;
+  let time = 0;
+  const sprites = {};
+
+  const later = (fn, ms) => { const t = setTimeout(fn, ms); timers.push(t); return t; };
+  const clearTimers = () => { timers.forEach(clearTimeout); timers = []; };
+
+  /* ---------- 版面與背景 ---------- */
+  function computeLayout() {
+    const top = 146;
+    const btn = Math.max(66, Math.min(96, W * 0.19));
+    const bottom = H - (btn + 34);
+    const ph = Math.max(200, bottom - top);
+    const horizon = top + ph * 0.38;
+    const gh = bottom - horizon;
+    L = {
+      top, bottom, horizon, ph,
+      pond: { cx: W / 2, cy: horizon + gh * 0.54, rx: Math.min(W * 0.44, gh * 1.7), ry: gh * 0.4 }
+    };
+  }
+
+  function makeDeco() {
+    deco = { tufts: [], pebbles: [], trees: [] };
+    for (let i = 0; i < Math.round(W / 14); i++) {
+      deco.tufts.push({ x: Math.random() * W, y: KG.rand(L.horizon + 12, H), s: KG.rand(6, 13) });
+    }
+    deco.tufts.sort((a, b) => a.y - b.y);
+    for (let i = 0; i < 10; i++) deco.pebbles.push({ x: Math.random() * W, y: KG.rand(L.horizon + 20, H), r: KG.rand(3, 7) });
+    deco.trees = [{ x: W * 0.06, s: 1.0 }, { x: W * 0.94, s: 1.15 }, { x: W * 0.8, s: 0.7 }];
+    clouds = [];
+    for (let i = 0; i < 4; i++) clouds.push({ x: Math.random() * W, y: KG.rand(L.top - 40, L.horizon - 60), s: KG.rand(0.6, 1.1), v: KG.rand(6, 16) });
+  }
+
+  function drawTree(c, x, base, s) {
+    const h = 90 * s;
+    c.fillStyle = '#9b6a43';
+    c.beginPath(); c.roundRect(x - 7 * s, base - h * 0.55, 14 * s, h * 0.6, 5 * s); c.fill();
+    const g = c.createRadialGradient(x - 15 * s, base - h * 0.95, 5, x, base - h * 0.75, 50 * s);
+    g.addColorStop(0, '#9be86f'); g.addColorStop(1, '#3f9e3c');
+    c.fillStyle = g;
+    [[0, -0.85, 34], [-22, -0.65, 26], [22, -0.65, 26], [0, -1.12, 24]].forEach(([dx, dy, r]) => {
+      c.beginPath(); c.arc(x + dx * s, base + dy * h, r * s, 0, Math.PI * 2); c.fill();
+    });
+  }
+
+  function drawPond(c, p) {
+    // 岸邊
+    c.fillStyle = '#d9c38d';
+    c.beginPath(); c.ellipse(p.cx, p.cy + 4, p.rx + 12, p.ry + 10, 0, 0, Math.PI * 2); c.fill();
+    c.fillStyle = '#b7d98a';
+    c.beginPath(); c.ellipse(p.cx, p.cy, p.rx + 6, p.ry + 6, 0, 0, Math.PI * 2); c.fill();
+    const g = c.createRadialGradient(p.cx - p.rx * 0.3, p.cy - p.ry * 0.4, 10, p.cx, p.cy, p.rx);
+    g.addColorStop(0, '#9fe3ff'); g.addColorStop(0.6, '#4fb7ea'); g.addColorStop(1, '#2d8fcc');
+    c.fillStyle = g;
+    c.beginPath(); c.ellipse(p.cx, p.cy, p.rx, p.ry, 0, 0, Math.PI * 2); c.fill();
+    c.fillStyle = 'rgba(255,255,255,.35)';
+    c.beginPath(); c.ellipse(p.cx - p.rx * 0.35, p.cy - p.ry * 0.5, p.rx * 0.3, p.ry * 0.12, -0.1, 0, Math.PI * 2); c.fill();
+    // 蘆葦
+    for (let i = 0; i < 5; i++) {
+      const side = i % 2 ? 1 : -1;
+      const x = p.cx + side * (p.rx * (0.82 + i * 0.03));
+      const y = p.cy - p.ry * 0.1 + i * 6;
+      c.strokeStyle = '#4c9a3c'; c.lineWidth = 3; c.lineCap = 'round';
+      c.beginPath(); c.moveTo(x, y + 20); c.quadraticCurveTo(x + side * 4, y - 10, x + side * 2, y - 34 - i * 4); c.stroke();
+      c.fillStyle = '#8a5a35';
+      c.beginPath(); c.roundRect(x + side * 2 - 4, y - 40 - i * 4, 8, 18, 4); c.fill();
+    }
+  }
+
+  function drawBackground() {
+    const c = bctx;
+    c.setTransform(DPR, 0, 0, DPR, 0, 0);
+    // 天空
+    let g = c.createLinearGradient(0, 0, 0, L.horizon);
+    g.addColorStop(0, '#7fcbff'); g.addColorStop(1, '#dff4ff');
+    c.fillStyle = g; c.fillRect(0, 0, W, L.horizon + 40);
+    // 遠山
+    c.fillStyle = '#a7dd8d';
+    c.beginPath(); c.moveTo(0, L.horizon + 10);
+    for (let x = 0; x <= W; x += 20) c.lineTo(x, L.horizon - 26 - Math.sin(x / 140) * 18 - Math.sin(x / 57) * 6);
+    c.lineTo(W, L.horizon + 10); c.fill();
+    c.fillStyle = '#8fd174';
+    c.beginPath(); c.moveTo(0, L.horizon + 10);
+    for (let x = 0; x <= W; x += 20) c.lineTo(x, L.horizon - 8 - Math.sin(x / 90 + 2) * 12);
+    c.lineTo(W, L.horizon + 10); c.fill();
+    deco.trees.forEach(t => drawTree(c, t.x, L.horizon + 6, t.s * Math.min(1.2, H / 700)));
+    // 草地
+    g = c.createLinearGradient(0, L.horizon, 0, H);
+    g.addColorStop(0, '#9ee27a'); g.addColorStop(1, '#5cb84a');
+    c.fillStyle = g; c.fillRect(0, L.horizon, W, H - L.horizon);
+    c.fillStyle = 'rgba(255,255,255,.12)';
+    c.beginPath(); c.ellipse(W * 0.3, L.horizon + 40, W * 0.35, 26, 0, 0, Math.PI * 2); c.fill();
+    // 池塘（題目在池塘時畫大池塘，否則畫小池塘當裝飾）
+    if (kind && kind.zone === 'pond') drawPond(c, L.pond);
+    deco.pebbles.forEach(p => {
+      c.fillStyle = '#c9c2b5'; c.beginPath(); c.ellipse(p.x, p.y, p.r * 1.3, p.r, 0, 0, Math.PI * 2); c.fill();
+      c.fillStyle = 'rgba(255,255,255,.5)'; c.beginPath(); c.ellipse(p.x - p.r * 0.3, p.y - p.r * 0.3, p.r * 0.5, p.r * 0.3, 0, 0, Math.PI * 2); c.fill();
+    });
+    c.strokeStyle = '#4fa63e'; c.lineWidth = 2; c.lineCap = 'round';
+    deco.tufts.forEach(t => {
+      if (kind && kind.zone === 'pond') {
+        const p = L.pond, dx = (t.x - p.cx) / (p.rx + 14), dy = (t.y - p.cy) / (p.ry + 14);
+        if (dx * dx + dy * dy < 1) return;
+      }
+      c.beginPath();
+      c.moveTo(t.x - t.s * 0.5, t.y); c.lineTo(t.x - t.s * 0.7, t.y - t.s);
+      c.moveTo(t.x, t.y); c.lineTo(t.x, t.y - t.s * 1.3);
+      c.moveTo(t.x + t.s * 0.5, t.y); c.lineTo(t.x + t.s * 0.8, t.y - t.s);
+      c.stroke();
+    });
+  }
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2.5);
+    W = innerWidth; H = innerHeight;
+    cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+    bg.width = cv.width; bg.height = cv.height;
+    computeLayout();
+    makeDeco();
+    drawBackground();
+    for (const k in sprites) delete sprites[k];
+    if (kind) placeObjects(true);
+  }
+
+  /* ---------- 物件 ---------- */
+  function zoneOf(z) {
+    if (z === 'pond') return { type: 'ellipse', ...L.pond, area: Math.PI * L.pond.rx * L.pond.ry };
+    if (z === 'sky') return { type: 'rect', x0: 12, x1: W - 12, y0: L.top, y1: L.top + L.ph * 0.68, area: (W - 24) * L.ph * 0.68 };
+    return { type: 'rect', x0: 12, x1: W - 12, y0: L.horizon + 4, y1: L.bottom, area: (W - 24) * (L.bottom - L.horizon - 4) };
+  }
+
+  function sampleIn(z, s) {
+    if (z.type === 'ellipse') {
+      const ax = Math.max(4, z.rx - s * 0.55), ay = Math.max(4, z.ry - s * 0.4);
+      for (;;) {
+        const u = KG.rand(-1, 1), v = KG.rand(-1, 1);
+        if (u * u + v * v <= 1) return { x: z.cx + u * ax, y: z.cy + v * ay };
+      }
+    }
+    return { x: KG.rand(z.x0 + s * 0.55, z.x1 - s * 0.55), y: KG.rand(z.y0 + s * 0.6, z.y1 - s * 0.55) };
+  }
+
+  function placeObjects(keep) {
+    const z = zoneOf(kind.zone);
+    let s = Math.max(34, Math.min(118, Math.sqrt(z.area / (N * 2.8))));
+    let pts = null;
+    for (let tries = 0; tries < 60 && !pts; tries++) {
+      const cand = [];
+      let ok = true;
+      for (let i = 0; i < N && ok; i++) {
+        ok = false;
+        for (let k = 0; k < 250; k++) {
+          const p = sampleIn(z, s);
+          if (cand.every(q => Math.hypot(q.x - p.x, q.y - p.y) >= s * 1.12)) { cand.push(p); ok = true; break; }
+        }
+      }
+      if (ok) pts = cand; else s *= 0.93;
+    }
+    pts.sort((a, b) => a.x - b.x);
+    const old = objs;
+    objs = pts.map((p, i) => {
+      const o = keep && old[i] ? old[i] : { ph: Math.random() * 6.28, lit: 0, mark: 0, bump: 0, color: BALLOON_COLORS[i % BALLOON_COLORS.length], born: time + i * 0.06 };
+      o.x = p.x; o.y = p.y; o.s = s;
+      return o;
+    });
+  }
+
+  function sprite(e, s) {
+    const key = e + '|' + Math.round(s);
+    if (sprites[key]) return sprites[key];
+    const size = Math.ceil(s * 1.4);
+    const c = document.createElement('canvas');
+    c.width = c.height = Math.ceil(size * DPR);
+    const x = c.getContext('2d');
+    x.scale(DPR, DPR);
+    x.font = Math.round(s) + 'px ' + EMOJI_FONT;
+    x.textAlign = 'center'; x.textBaseline = 'middle';
+    x.shadowColor = 'rgba(60,40,70,.3)'; x.shadowBlur = s * 0.1; x.shadowOffsetY = s * 0.06;
+    x.fillText(e, size / 2, size / 2 + s * 0.04);
+    sprites[key] = { c, size };
+    return sprites[key];
+  }
+
+  function drawBalloon(o, s) {
+    const [c1, c2] = o.color;
+    ctx.strokeStyle = 'rgba(90,70,90,.55)'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(0, s * 0.42);
+    ctx.bezierCurveTo(s * 0.1, s * 0.6, -s * 0.1, s * 0.75, s * 0.03, s * 0.95); ctx.stroke();
+    const g = ctx.createRadialGradient(-s * 0.15, -s * 0.18, s * 0.04, 0, 0, s * 0.45);
+    g.addColorStop(0, '#fff'); g.addColorStop(0.18, c1); g.addColorStop(1, c2);
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.ellipse(0, 0, s * 0.34, s * 0.42, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = c2;
+    ctx.beginPath(); ctx.moveTo(-s * 0.05, s * 0.46); ctx.lineTo(s * 0.05, s * 0.46); ctx.lineTo(0, s * 0.4); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,.55)';
+    ctx.beginPath(); ctx.ellipse(-s * 0.13, -s * 0.2, s * 0.06, s * 0.11, -0.5, 0, Math.PI * 2); ctx.fill();
+  }
+
+  function drawObj(o) {
+    const s = o.s, t = time + o.ph;
+    let dx = 0, dy = 0, rot = 0, sx = 1, sy = 1;
+    switch (kind.id) {
+      case 'duck': dx = Math.sin(t * 0.7) * s * 0.06; dy = Math.sin(t * 2.2) * s * 0.03; rot = Math.sin(t * 2.2) * 0.07; break;
+      case 'apple': rot = Math.sin(t * 1.4) * 0.07; break;
+      case 'chick': case 'rabbit': {
+        const hop = Math.max(0, Math.sin(t * (kind.id === 'chick' ? 2.6 : 1.8)));
+        dy = -Math.pow(hop, 3) * s * 0.14; sy = 1 - Math.pow(hop, 8) * 0.06; break;
+      }
+      case 'flower': rot = Math.sin(t * 1.3) * 0.1; break;
+      case 'star': rot = Math.sin(t * 1.1) * 0.18; sx = sy = 1 + Math.sin(t * 3) * 0.06; break;
+      case 'butterfly': sx = 0.7 + 0.3 * Math.abs(Math.sin(t * 5)); dy = Math.sin(t * 1.3) * s * 0.06; dx = Math.cos(t * 0.9) * s * 0.05; break;
+      case 'balloon': dy = Math.sin(t * 1.2) * s * 0.06; rot = Math.sin(t * 0.9) * 0.08; break;
+    }
+    // 出場彈跳
+    const age = Math.min(1, Math.max(0, (time - o.born) / 0.45));
+    const pop = age < 1 ? (1 - Math.pow(1 - age, 3)) * (1 + Math.sin(age * Math.PI) * 0.25) : 1;
+    if (pop <= 0) return;
+    const bumpS = 1 + o.bump * 0.3;
+    const x = o.x + dx, y = o.y + dy;
+
+    // 地上影子 / 水波
+    if (kind.zone === 'ground') {
+      ctx.fillStyle = 'rgba(40,90,30,.25)';
+      ctx.beginPath(); ctx.ellipse(o.x, o.y + s * 0.42, s * 0.36 * (1 + dy / s), s * 0.1, 0, 0, Math.PI * 2); ctx.fill();
+    } else if (kind.zone === 'pond') {
+      const r = (time * 0.6 + o.ph) % 1;
+      ctx.strokeStyle = 'rgba(255,255,255,' + (0.5 * (1 - r)) + ')'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.ellipse(x, o.y + s * 0.3, s * (0.4 + r * 0.25), s * (0.1 + r * 0.06), 0, 0, Math.PI * 2); ctx.stroke();
+    }
+    // 數到時的光暈
+    if (o.lit > 0) {
+      const gl = ctx.createRadialGradient(x, y, 0, x, y, s * 0.85);
+      gl.addColorStop(0, 'rgba(255,250,170,' + 0.9 * o.lit + ')');
+      gl.addColorStop(1, 'rgba(255,240,120,0)');
+      ctx.fillStyle = gl; ctx.beginPath(); ctx.arc(x, y, s * 0.85, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.save();
+    ctx.translate(x, y + s * 0.4);
+    ctx.rotate(rot);
+    ctx.scale(sx * pop * bumpS, sy * pop * bumpS);
+    ctx.translate(0, -s * 0.4);
+    if (kind.e) {
+      const sp = sprite(kind.e, s);
+      ctx.drawImage(sp.c, -sp.size / 2, -sp.size / 2, sp.size, sp.size);
+    } else drawBalloon(o, s);
+    ctx.restore();
+
+    // 數字徽章
+    const label = o.lit > 0 ? o.lit : (o.mark ? 1 : 0);
+    if (label) {
+      const num = o.lit > 0 ? o.count : o.mark;
+      const bx = x, by = y - s * 0.55 - 8, r = Math.max(15, s * 0.22);
+      ctx.save();
+      ctx.translate(bx, by);
+      const sc = o.lit > 0 ? 1 + o.bump * 0.4 : 1;
+      ctx.scale(sc, sc);
+      ctx.fillStyle = 'rgba(74,59,82,.25)';
+      ctx.beginPath(); ctx.arc(0, 3, r, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = o.lit > 0 ? '#ff7aa2' : '#56b4f0';
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.font = '900 ' + Math.round(r * 1.2) + 'px ' + BADGE_FONT;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(String(num), 0, 1);
+      ctx.restore();
+    }
+  }
+
+  function drawSun() {
+    const x = Math.min(W * 0.16, 90), y = W > 700 ? 118 : L.top + 26, r = 30;
+    ctx.save(); ctx.translate(x, y); ctx.rotate(time * 0.2);
+    ctx.fillStyle = 'rgba(255,214,92,.55)';
+    for (let i = 0; i < 10; i++) {
+      ctx.rotate(Math.PI / 5);
+      ctx.beginPath(); ctx.moveTo(-6, r + 4); ctx.lineTo(6, r + 4); ctx.lineTo(0, r + 18 + Math.sin(time * 3 + i) * 3); ctx.fill();
+    }
+    ctx.restore();
+    const g = ctx.createRadialGradient(x - 8, y - 8, 4, x, y, r);
+    g.addColorStop(0, '#fff6bf'); g.addColorStop(1, '#ffc93c');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    // 太陽的臉
+    ctx.fillStyle = '#7a5520';
+    const blink = (time % 4) > 3.85 ? 0.2 : 1;
+    ctx.beginPath(); ctx.ellipse(x - 9, y - 3, 3, 4 * blink, 0, 0, Math.PI * 2); ctx.ellipse(x + 9, y - 3, 3, 4 * blink, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#7a5520'; ctx.lineWidth = 2.5; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.arc(x, y + 4, 7, 0.2, Math.PI - 0.2); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,120,120,.45)';
+    ctx.beginPath(); ctx.arc(x - 16, y + 5, 4.5, 0, Math.PI * 2); ctx.arc(x + 16, y + 5, 4.5, 0, Math.PI * 2); ctx.fill();
+  }
+
+  function drawCloud(cl) {
+    const s = cl.s;
+    ctx.save(); ctx.translate(cl.x, cl.y); ctx.scale(s, s);
+    ctx.fillStyle = 'rgba(160,200,230,.35)';
+    ctx.beginPath(); ctx.ellipse(0, 22, 62, 10, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff';
+    [[-36, 8, 22], [-12, -4, 30], [18, 0, 26], [42, 10, 18], [0, 12, 26]].forEach(([a, b, r]) => {
+      ctx.beginPath(); ctx.arc(a, b, r, 0, Math.PI * 2); ctx.fill();
+    });
+    ctx.restore();
+  }
+
+  function spark(x, y, n) {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2, v = KG.rand(60, 200);
+      particles.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 60, life: 1, r: KG.rand(3, 7), c: KG.pick(['#fff59a', '#ffd65c', '#ffffff', '#ffb3cf']) });
+    }
+  }
+
+  function drawStarShape(x, y, r) {
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const rr = i % 2 ? r * 0.45 : r, a = -Math.PI / 2 + i * Math.PI / 5;
+      ctx.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr);
+    }
+    ctx.closePath(); ctx.fill();
+  }
+
+  /* ---------- 主迴圈 ---------- */
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now; time += dt;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(bg, 0, 0);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    drawSun();
+    clouds.forEach(cl => { cl.x += cl.v * dt; if (cl.x > W + 90) cl.x = -90; drawCloud(cl); });
+    if (kind) {
+      objs.forEach(o => { o.bump = Math.max(0, o.bump - dt * 2.5); });
+      // 由後到前畫（y 小的先畫）
+      objs.slice().sort((a, b) => a.y - b.y).forEach(drawObj);
+    }
+    particles = particles.filter(p => (p.life -= dt * 1.4) > 0);
+    particles.forEach(p => {
+      p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 260 * dt;
+      ctx.globalAlpha = Math.min(1, p.life * 1.5);
+      ctx.fillStyle = p.c; drawStarShape(p.x, p.y, p.r);
+    });
+    ctx.globalAlpha = 1;
+    requestAnimationFrame(frame);
+  }
+
+  /* ---------- 遊戲流程 ---------- */
+  function questionText() { return '有幾' + kind.unit + kind.name + '？'; }
+
+  function newQuestion() {
+    clearTimers();
+    busy = false; firstTry = true; marks = 0;
+    const maxN = qIndex < 3 ? 5 : qIndex < 7 ? 8 : 10;
+    const minN = qIndex < 3 ? 1 : qIndex < 7 ? 3 : 5;
+    N = KG.randInt(minN, maxN);
+    let k;
+    do { k = KG.pick(KINDS); } while (k === lastKind);
+    lastKind = kind = k;
+    drawBackground();
+    objs = [];
+    placeObjects(false);
+    hudQ.textContent = '第 ' + (qIndex + 1) + ' / ' + TOTAL + ' 題';
+    qText.textContent = questionText();
+    qEl.classList.remove('show'); void qEl.offsetWidth; qEl.classList.add('show');
+    // 選項
+    const nOpt = qIndex < 3 ? 3 : 4;
+    const pool = [];
+    for (let v = Math.max(1, N - 3); v <= N + 3; v++) if (v !== N) pool.push(v);
+    const opts = KG.shuffle(pool).slice(0, nOpt - 1).concat(N).sort((a, b) => a - b);
+    ansEl.innerHTML = '';
+    opts.forEach((v, i) => {
+      const b = document.createElement('button');
+      b.className = 'num';
+      b.textContent = v;
+      const col = BTN_COLORS[i % BTN_COLORS.length];
+      b.style.background = 'linear-gradient(180deg,' + col[0] + ',' + col[1] + ')';
+      b.style.animationDelay = (i * 0.07) + 's';
+      b.addEventListener('click', () => answer(v, b));
+      ansEl.appendChild(b);
+    });
+    later(() => KG.say(questionText()), 250);
+  }
+
+  function answer(v, btn) {
+    if (busy || !playing) return;
+    if (v !== N) {
+      firstTry = false;
+      KG.sound('wrong'); KG.vibrate(40);
+      btn.classList.add('wrong', 'kg-shake');
+      KG.toast('再數數看！');
+      KG.say('再數數看喔');
+      return;
+    }
+    busy = true;
+    KG.sound('correct');
+    if (firstTry) firstTryCount++;
+    hudS.textContent = '⭐ ' + firstTryCount;
+    btn.classList.add('right');
+    [...ansEl.children].forEach(b => { if (b !== btn) b.classList.add('wrong'); });
+    objs.forEach(o => { o.mark = 0; });
+    // 一個一個亮起來並數出來
+    const step = N > 7 ? 620 : 720;
+    objs.forEach((o, i) => {
+      later(() => {
+        o.lit = 1; o.count = i + 1; o.bump = 1;
+        spark(o.x, o.y, 8);
+        KG.note(520 + i * 55, 0.16, 'triangle', 0.22);
+        KG.say(NUM[i + 1], 1.05);
+      }, 400 + i * step);
+    });
+    later(() => {
+      KG.say(NUM[N] + kind.unit + kind.name + '！好棒！');
+      KG.toast(KG.pick(['好棒！', '答對了！', '你好厲害！', '數得真好！']));
+      KG.confetti(innerWidth / 2, innerHeight / 2, 70);
+      KG.sound('sparkle');
+    }, 400 + N * step + 150);
+    later(() => {
+      qIndex++;
+      if (qIndex >= TOTAL) finish(); else newQuestion();
+    }, 400 + N * step + 2200);
+  }
+
+  function finish() {
+    playing = false;
+    clearTimers();
+    ansEl.innerHTML = '';
+    qEl.classList.remove('show');
+    kind = null; objs = [];
+    drawBackground();
+    const best = KG.best('counting', firstTryCount);
+    const stars = firstTryCount >= 9 ? 3 : firstTryCount >= 6 ? 2 : 1;
+    KG.say('數數小高手！');
+    KG.showWin({
+      icon: '🏆', title: '數數小高手！', stars,
+      message: '一次就答對 ' + firstTryCount + ' 題（最佳 ' + best + ' 題）',
+      onReplay: start
+    });
+  }
+
+  function start() {
+    clearTimers();
+    qIndex = 0; firstTryCount = 0; lastKind = null;
+    hudS.textContent = '⭐ 0';
+    playing = true;
+    newQuestion();
+  }
+
+  // 點物件可以自己做記號，幫忙數
+  cv.addEventListener('pointerdown', e => {
+    if (!kind || busy || !playing) return;
+    let hit = null, bestD = 1e9;
+    objs.forEach(o => {
+      const d = Math.hypot(e.clientX - o.x, e.clientY - o.y);
+      if (d < o.s * 0.6 && d < bestD) { bestD = d; hit = o; }
+    });
+    if (!hit) return;
+    hit.bump = 1;
+    if (!hit.mark) {
+      hit.mark = ++marks;
+      KG.note(600 + marks * 40, 0.12, 'sine', 0.25);
+      KG.say(NUM[Math.min(marks, NUM.length - 1)], 1.05);
+      spark(hit.x, hit.y, 5);
+    } else KG.sound('boing');
+  });
+
+  document.getElementById('speak').addEventListener('click', () => { if (kind) KG.say(questionText()); });
+  window.addEventListener('keydown', e => {
+    if (!playing || busy) return;
+    const n = parseInt(e.key, 10);
+    if (!isNaN(n)) {
+      const v = n === 0 ? 10 : n;
+      const b = [...ansEl.children].find(x => +x.textContent === v && !x.classList.contains('wrong'));
+      if (b) b.click();
+    }
+  });
+  document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+  document.addEventListener('gesturestart', e => e.preventDefault());
+  window.addEventListener('resize', resize);
+
+  resize();
+  requestAnimationFrame(t => { last = t; frame(t); });
+  KG.showStart({ icon: '🔢', title: '數數看', message: '數一數有幾個，點選正確的數字！也可以點一點東西來幫忙數喔。', onStart: start });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,581 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>疊疊樂</title>
+<link rel="stylesheet" href="../../assets/common.css">
+<style>
+  html, body { height: 100%; overflow: hidden; background: #7fd0ff; }
+  body { height: 100vh; height: 100dvh; touch-action: none; }
+  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas id="game" aria-label="疊疊樂遊戲畫面"></canvas>
+<div class="kg-hud">
+  <div class="kg-pill">🧱 <span id="score">0</span> 層</div>
+  <div class="kg-pill">🏆 <span id="best">0</span></div>
+  <div class="kg-pill" id="life">💖</div>
+</div>
+<script src="../../assets/common.js"></script>
+<script>
+'use strict';
+(function () {
+  const cv = document.getElementById('game');
+  const ctx = cv.getContext('2d');
+  const elScore = document.getElementById('score');
+  const elBest = document.getElementById('best');
+  const elLife = document.getElementById('life');
+
+  /* ---------- 版面與單位 ---------- */
+  let W = 0, H = 0, U = 40, groundY = 0;   // U = 一塊積木的高度（像素）
+  const BASE_W = 5;                         // 底座寬度（以積木高度為單位）
+
+  const PALETTE = [
+    { a: '#ffc2d8', b: '#f06a9b', line: '#c94a7a' },
+    { a: '#ffdcae', b: '#f7993c', line: '#c8701f' },
+    { a: '#fff6b0', b: '#f4c63e', line: '#c49a1c' },
+    { a: '#c8f5c0', b: '#5cc46a', line: '#3a9a4a' },
+    { a: '#c4eaff', b: '#4aa8ec', line: '#2c7fc0' },
+    { a: '#e4d6ff', b: '#9a78f0', line: '#7354c9' }
+  ];
+  const EARS = ['round', 'cat', 'none', 'bunny'];
+  const SCALE = [523, 587, 659, 784, 880, 1047, 1175, 1319];
+
+  let state = 'ready';
+  let stack = [], cur = null, debris = [], sparks = [], pops = [];
+  let camY = 0, score = 0, combo = 0, t = 0, shake = 0, lives = 1;
+
+  /* 背景元素（雲、裝飾、星星）只產生一次 */
+  const clouds = [];
+  for (let y = 2.5; y < 130; y += KG.rand(2.6, 4.2)) clouds.push({ y, x: Math.random(), s: KG.rand(0.7, 1.4), v: KG.rand(0.006, 0.018) });
+  const deco = [
+    { y: 6, e: '🐦', v: 0.04 }, { y: 11, e: '🎈', v: 0.01 }, { y: 16, e: '🪁', v: 0.02 },
+    { y: 22, e: '🐤', v: -0.035 }, { y: 28, e: '✈️', v: 0.05 }, { y: 34, e: '🎈', v: -0.012 },
+    { y: 41, e: '🦉', v: 0.03 }, { y: 50, e: '🛰️', v: 0.02 }, { y: 60, e: '🪐', v: 0.006 },
+    { y: 72, e: '🚀', v: 0.04 }, { y: 86, e: '🛸', v: -0.03 }, { y: 100, e: '🌟', v: 0.01 }
+  ].map(d => Object.assign(d, { x: Math.random() }));
+  const stars = [];
+  for (let i = 0; i < 140; i++) stars.push({ x: Math.random(), y: Math.random(), r: KG.rand(0.6, 2), p: Math.random() * 6 });
+
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+    W = innerWidth; H = innerHeight;
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    U = Math.max(28, Math.min(W / 8.2, H / 15, 62));
+    groundY = H - Math.max(60, H * 0.12);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  const sY = y => groundY - (y - camY) * U;      // 世界座標 → 螢幕 y
+  const sX = x => W / 2 + x * U;
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const lerp = (a, b, k) => a + (b - a) * k;
+  function range() { return clamp(W / 2 / U - 0.2, 2.4, 6.5); }
+
+  function rr(x, y, w, h, r) {
+    r = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  /* ---------- 天空顏色：白天 → 夕陽 → 星空 ---------- */
+  const SKY = [
+    [0, [127, 208, 255], [222, 244, 255]],
+    [16, [150, 200, 255], [255, 236, 210]],
+    [28, [255, 150, 160], [255, 214, 158]],
+    [40, [110, 85, 170], [255, 140, 160]],
+    [52, [24, 28, 82], [80, 60, 150]],
+    [70, [8, 12, 46], [30, 30, 92]]
+  ];
+  function skyAt(h) {
+    for (let i = 0; i < SKY.length - 1; i++) {
+      const a = SKY[i], b = SKY[i + 1];
+      if (h <= b[0]) {
+        const k = clamp((h - a[0]) / (b[0] - a[0]), 0, 1);
+        return [a[1].map((v, j) => lerp(v, b[1][j], k)), a[2].map((v, j) => lerp(v, b[2][j], k))];
+      }
+    }
+    const l = SKY[SKY.length - 1];
+    return [l[1], l[2]];
+  }
+  const rgb = (c, a) => `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${a == null ? 1 : a})`;
+
+  /* ---------- 遊戲流程 ---------- */
+  function reset() {
+    stack = [{ x: 0, y: 0, w: BASE_W, base: true }];
+    debris = []; sparks = []; pops = [];
+    camY = 0; score = 0; combo = 0; lives = 1;
+    spawn();
+    updHud();
+  }
+  function newGame() { reset(); state = 'play'; }
+
+  function spawn() {
+    const top = stack[stack.length - 1];
+    const n = stack.length;
+    const dir = n % 2 ? 1 : -1;
+    let c;
+    do { c = KG.randInt(0, PALETTE.length - 1); } while (c === top.c);
+    cur = {
+      x: -dir * range(), y: n + 2.4, w: top.w, n, c, dir,
+      ear: KG.pick(EARS), seed: Math.random() * 10, falling: false, vy: 0, enter: 0
+    };
+  }
+
+  function speed() { return Math.min(2.2 + (cur.n - 1) * 0.1, 6); }
+
+  function drop() {
+    if (state !== 'play' || !cur || cur.falling) return;
+    cur.falling = true; cur.vy = -2;
+    KG.sound('whoosh');
+  }
+
+  function land() {
+    const top = stack[stack.length - 1];
+    const dx = cur.x - top.x;
+    const tol = 0.17;
+    if (Math.abs(dx) <= tol) {
+      // 完美！對齊並稍微變寬
+      cur.x = top.x;
+      combo++;
+      cur.w = Math.min(BASE_W, cur.w + 0.22 + Math.min(combo, 4) * 0.04);
+      cur.happy = 1.4;
+      KG.sound('sparkle');
+      pops.push({ text: combo > 1 ? `完美！×${combo}` : '完美！', x: cur.x, y: cur.n + 1.6, life: 1.3 });
+      for (let i = 0; i < 22; i++) {
+        const side = i % 2 ? 1 : -1;
+        sparks.push({ x: cur.x + side * cur.w / 2, y: cur.n + Math.random(), vx: side * KG.rand(1, 4), vy: KG.rand(-1, 4), life: 1, col: KG.pick(['#fff6a0', '#ffffff', '#ffd1e6', '#b9f3ff']), s: KG.rand(3, 7) });
+      }
+    } else {
+      const cL = cur.x - cur.w / 2, cR = cur.x + cur.w / 2;
+      const tL = top.x - top.w / 2, tR = top.x + top.w / 2;
+      const oL = Math.max(cL, tL), oR = Math.min(cR, tR);
+      if (oR - oL <= 0.04) { miss(dx); return; }
+      combo = 0;
+      const sign = Math.sign(dx);
+      const pL = sign > 0 ? oR : cL, pR = sign > 0 ? cR : oL;
+      debris.push({ x: (pL + pR) / 2, y: cur.n, w: pR - pL, c: cur.c, ear: 'none', seed: cur.seed, vx: sign * KG.rand(1, 2.2), vy: 2, rot: 0, vr: sign * KG.rand(2, 4), mood: 'dizzy' });
+      cur.x = (oL + oR) / 2; cur.w = oR - oL;
+      KG.sound('hit');
+    }
+    cur.squash = 1;
+    cur.falling = false;
+    stack.push(cur);
+    score++;
+    KG.note(SCALE[(score - 1) % SCALE.length], 0.18, 'triangle', 0.18, 0.02);
+    for (let i = 0; i < 8; i++) sparks.push({ x: cur.x + KG.rand(-cur.w / 2, cur.w / 2), y: cur.n, vx: KG.rand(-1.5, 1.5), vy: KG.rand(0.5, 2), life: 0.6, col: 'rgba(255,255,255,0.9)', s: KG.rand(2, 4), puff: true });
+    shake = 0.12;
+    if (score % 10 === 0) { KG.toast(`好高！${score} 層了！`); KG.say(`好棒，${score} 層了`); }
+    updHud();
+    spawn();
+  }
+
+  function miss(dx) {
+    const sign = Math.sign(dx) || 1;
+    debris.push(Object.assign(cur, { vx: sign * 2.5, vy: 1, rot: 0, vr: sign * 3, mood: 'dizzy', falling: false }));
+    cur = null;
+    KG.sound('boing');
+    if (lives > 0) {
+      // 小朋友有一次「再試一次」的機會
+      lives--;
+      updHud();
+      pops.push({ text: '差一點！再試一次', x: 0, y: stack.length + 1.6, life: 1.6 });
+      setTimeout(() => { if (state === 'play' && !cur) spawn(); }, 900);
+      return;
+    }
+    state = 'over';
+    setTimeout(endGame, 1400);
+  }
+
+  function endGame() {
+    const best = KG.best('tower-stack', score);
+    updHud();
+    const stars = score >= 20 ? 3 : score >= 10 ? 2 : 1;
+    KG.showWin({
+      icon: score >= 10 ? '🏰' : '🧱',
+      title: score >= 10 ? '好高的塔！' : '好棒喔！',
+      message: `疊了 ${score} 層！最高紀錄 ${best} 層`,
+      stars, onReplay: newGame
+    });
+  }
+
+  function updHud() {
+    elScore.textContent = score;
+    elBest.textContent = Math.max(score, KG.best('tower-stack') || 0);
+    elLife.style.opacity = lives > 0 ? 1 : 0.35;
+    elLife.style.filter = lives > 0 ? 'none' : 'grayscale(1)';
+  }
+
+  /* ---------- 更新 ---------- */
+  function update(dt) {
+    t += dt;
+    if (cur) {
+      if (!cur.falling) {
+        const R = range();
+        cur.x += cur.dir * speed() * dt;
+        if (cur.x > R) { cur.x = R; cur.dir = -1; }
+        if (cur.x < -R) { cur.x = -R; cur.dir = 1; }
+        cur.enter = Math.min(1, cur.enter + dt * 3);
+      } else {
+        cur.vy -= 48 * dt;
+        cur.y += cur.vy * dt;
+        if (cur.y <= cur.n) { cur.y = cur.n; land(); }
+      }
+    }
+    stack.forEach(b => {
+      if (b.squash) b.squash = Math.max(0, b.squash - dt * 5);
+      if (b.happy) b.happy = Math.max(0, b.happy - dt);
+    });
+    for (let i = debris.length - 1; i >= 0; i--) {
+      const d = debris[i];
+      d.vy -= 26 * dt; d.x += d.vx * dt; d.y += d.vy * dt; d.rot += d.vr * dt;
+      if (sY(d.y) > H + 200) debris.splice(i, 1);
+    }
+    for (let i = sparks.length - 1; i >= 0; i--) {
+      const s = sparks[i];
+      s.vy -= (s.puff ? 0 : 6) * dt; s.x += s.vx * dt; s.y += s.vy * dt; s.life -= dt * (s.puff ? 1.6 : 1.1);
+      if (s.life <= 0) sparks.splice(i, 1);
+    }
+    for (let i = pops.length - 1; i >= 0; i--) { pops[i].y += dt * 0.8; pops[i].life -= dt; if (pops[i].life <= 0) pops.splice(i, 1); }
+    // 鏡頭：讓塔頂停在畫面中間偏下
+    const n = stack.length;
+    const target = Math.max(0, n - (groundY - H * 0.56) / U);
+    camY += (target - camY) * Math.min(1, dt * 3.5);
+    shake = Math.max(0, shake - dt);
+  }
+
+  /* ---------- 繪圖 ---------- */
+  function drawSky() {
+    const h = camY;
+    const [top, bot] = skyAt(h);
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, rgb(top)); g.addColorStop(1, rgb(bot));
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+    // 星星
+    const night = clamp((h - 36) / 16, 0, 1);
+    if (night > 0) {
+      stars.forEach(s => {
+        const yy = ((s.y * H + camY * U * 0.08) % H + H) % H;
+        ctx.globalAlpha = night * (0.55 + 0.45 * Math.sin(t * 2 + s.p));
+        ctx.fillStyle = '#fffbe6';
+        ctx.beginPath(); ctx.arc(s.x * W, yy, s.r, 0, Math.PI * 2); ctx.fill();
+      });
+      ctx.globalAlpha = 1;
+    }
+    // 太陽（越高越往下沉、變橘）
+    const sk = clamp(h / 34, 0, 1);
+    const sunA = 1 - clamp((h - 34) / 8, 0, 1);
+    if (sunA > 0) {
+      const sx = W * 0.8, sy = H * 0.16 + sk * H * 0.62, r = Math.min(W, H) * (0.07 + sk * 0.04);
+      ctx.globalAlpha = sunA;
+      const gl = ctx.createRadialGradient(sx, sy, r * 0.3, sx, sy, r * 2.6);
+      gl.addColorStop(0, sk > 0.6 ? 'rgba(255,170,90,0.6)' : 'rgba(255,246,170,0.7)'); gl.addColorStop(1, 'rgba(255,240,170,0)');
+      ctx.fillStyle = gl; ctx.beginPath(); ctx.arc(sx, sy, r * 2.6, 0, Math.PI * 2); ctx.fill();
+      const sg = ctx.createRadialGradient(sx - r * 0.3, sy - r * 0.3, r * 0.1, sx, sy, r);
+      sg.addColorStop(0, '#fffbe0'); sg.addColorStop(1, sk > 0.6 ? '#ff9a4a' : '#ffd84a');
+      ctx.fillStyle = sg; ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill();
+      // 太陽的笑臉
+      ctx.fillStyle = 'rgba(160,90,20,0.7)';
+      ctx.beginPath(); ctx.arc(sx - r * 0.3, sy - r * 0.1, r * 0.08, 0, Math.PI * 2); ctx.arc(sx + r * 0.3, sy - r * 0.1, r * 0.08, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = 'rgba(160,90,20,0.7)'; ctx.lineWidth = r * 0.07; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.arc(sx, sy + r * 0.05, r * 0.3, 0.2 * Math.PI, 0.8 * Math.PI); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    // 月亮
+    const mk = clamp((h - 38) / 16, 0, 1);
+    if (mk > 0) {
+      const mx = W * 0.22, my = H * 0.9 - mk * H * 0.68, r = Math.min(W, H) * 0.07;
+      ctx.globalAlpha = mk;
+      const gl = ctx.createRadialGradient(mx, my, r * 0.5, mx, my, r * 2.5);
+      gl.addColorStop(0, 'rgba(255,250,210,0.35)'); gl.addColorStop(1, 'rgba(255,250,210,0)');
+      ctx.fillStyle = gl; ctx.beginPath(); ctx.arc(mx, my, r * 2.5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#fff6c8'; ctx.beginPath(); ctx.arc(mx, my, r, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = rgb(skyAt(h)[0]);
+      ctx.beginPath(); ctx.arc(mx + r * 0.45, my - r * 0.25, r * 0.85, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function cloud(x, y, s, alpha, tint) {
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = tint;
+    ctx.beginPath();
+    ctx.ellipse(x, y, 46 * s, 20 * s, 0, 0, Math.PI * 2);
+    ctx.arc(x - 20 * s, y - 10 * s, 20 * s, 0, Math.PI * 2);
+    ctx.arc(x + 12 * s, y - 16 * s, 25 * s, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = alpha * 0.5;
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath(); ctx.ellipse(x + 6 * s, y - 22 * s, 14 * s, 7 * s, -0.2, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  function drawBackdrop() {
+    const h = camY;
+    const night = clamp((h - 36) / 16, 0, 1);
+    const sunset = clamp((h - 18) / 12, 0, 1) * (1 - night);
+    const tint = night > 0.5 ? '#8a86c8' : sunset > 0.4 ? '#ffe0ea' : '#ffffff';
+    const cs = U / 46;
+    clouds.forEach(c => {
+      const y = groundY - (c.y - camY * 0.7) * U;
+      if (y < -80 || y > H + 60) return;
+      const x = (((c.x + t * c.v) % 1.3) - 0.15) * W;
+      cloud(x, y, c.s * cs * 1.3, 0.85 - night * 0.45, tint);
+    });
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    deco.forEach(d => {
+      const y = groundY - (d.y - camY * 0.85) * U;
+      if (y < -60 || y > H + 60) return;
+      const x = ((((d.x + t * d.v) % 1.2) + 1.2) % 1.2 - 0.1) * W;
+      ctx.font = `${U * 1.1}px sans-serif`;
+      ctx.save(); ctx.translate(x, y + Math.sin(t * 3 + d.y) * 5);
+      if (d.v < 0) ctx.scale(-1, 1);
+      ctx.shadowColor = 'rgba(0,0,0,0.2)'; ctx.shadowBlur = 6; ctx.shadowOffsetY = 3;
+      ctx.fillText(d.e, 0, 0);
+      ctx.restore();
+    });
+    // 遠山（視差）
+    const hy = groundY + camY * U * 0.5;
+    if (hy - U * 3 < H) {
+      ctx.fillStyle = night > 0.5 ? '#4e5a8a' : '#9fdc9a';
+      ctx.beginPath(); ctx.moveTo(0, H);
+      for (let x = 0; x <= W; x += 10) ctx.lineTo(x, hy - U * 1.6 - Math.sin(x / W * 5 + 1) * U * 0.9 - Math.sin(x / W * 11) * U * 0.3);
+      ctx.lineTo(W, H); ctx.fill();
+      ctx.fillStyle = night > 0.5 ? '#3d4a78' : '#7fcd7f';
+      ctx.beginPath(); ctx.moveTo(0, H);
+      for (let x = 0; x <= W; x += 10) ctx.lineTo(x, hy - U * 0.7 - Math.sin(x / W * 7 + 3) * U * 0.6);
+      ctx.lineTo(W, H); ctx.fill();
+    }
+  }
+
+  function drawGround() {
+    const gy = sY(0);
+    if (gy > H + 10) return;
+    const g = ctx.createLinearGradient(0, gy, 0, gy + U * 3);
+    g.addColorStop(0, '#8fe07a'); g.addColorStop(0.15, '#6cc95c'); g.addColorStop(1, '#4aa848');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.moveTo(0, gy + 8);
+    for (let x = 0; x <= W; x += 16) ctx.lineTo(x, gy + 4 + Math.sin(x * 0.08) * 3);
+    ctx.lineTo(W, H + 10); ctx.lineTo(0, H + 10); ctx.fill();
+    // 小花與草
+    const n = Math.ceil(W / 46);
+    for (let i = 0; i < n; i++) {
+      const x = i * 46 + 18 + (i % 3) * 7;
+      if (Math.abs(x - W / 2) < BASE_W * U * 0.5 + 10) continue;
+      const y = gy + 14 + (i % 4) * 9;
+      ctx.strokeStyle = '#3f9a3f'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(x, y + 8); ctx.quadraticCurveTo(x - 3, y, x - 6, y - 6); ctx.moveTo(x, y + 8); ctx.quadraticCurveTo(x + 3, y, x + 5, y - 7); ctx.stroke();
+      if (i % 2 === 0) {
+        const fc = ['#ff8fb1', '#ffd65c', '#ffffff', '#b49cff'][i % 4];
+        ctx.fillStyle = fc;
+        for (let k = 0; k < 5; k++) { const a = k / 5 * Math.PI * 2; ctx.beginPath(); ctx.arc(x + Math.cos(a) * 4, y - 6 + Math.sin(a) * 4, 3.2, 0, Math.PI * 2); ctx.fill(); }
+        ctx.fillStyle = '#ffb02e'; ctx.beginPath(); ctx.arc(x, y - 6, 2.4, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+  }
+
+  // 底座：可愛的木頭台子
+  function drawBase(b) {
+    const w = b.w * U + U * 0.6, h = U;
+    const x = sX(b.x) - w / 2, y = sY(1);
+    ctx.save();
+    ctx.shadowColor = 'rgba(40,60,20,0.35)'; ctx.shadowBlur = 10; ctx.shadowOffsetY = 4;
+    const g = ctx.createLinearGradient(0, y, 0, y + h);
+    g.addColorStop(0, '#d9a066'); g.addColorStop(1, '#a8703f');
+    ctx.fillStyle = g; rr(x, y, w, h, U * 0.22); ctx.fill();
+    ctx.restore();
+    ctx.strokeStyle = '#8a5a2e'; ctx.lineWidth = 2; rr(x, y, w, h, U * 0.22); ctx.stroke();
+    ctx.strokeStyle = 'rgba(120,70,30,0.35)'; ctx.lineWidth = 2;
+    for (let i = 1; i < 5; i++) { ctx.beginPath(); ctx.moveTo(x + w * i / 5, y + 4); ctx.lineTo(x + w * i / 5, y + h - 4); ctx.stroke(); }
+    ctx.fillStyle = 'rgba(255,255,255,0.25)'; rr(x + 6, y + 4, w - 12, h * 0.2, 4); ctx.fill();
+    // 草邊
+    ctx.fillStyle = '#7bd36a';
+    ctx.beginPath(); ctx.moveTo(x - 4, y + h * 0.95);
+    for (let i = 0; i <= 14; i++) ctx.lineTo(x - 4 + (w + 8) * i / 14, y + h * (i % 2 ? 0.72 : 0.98));
+    ctx.lineTo(x + w + 4, y + h + 2); ctx.lineTo(x - 4, y + h + 2); ctx.fill();
+  }
+
+  function drawFace(w, h, mood, seed) {
+    const ex = Math.min(w * 0.2, h * 0.5), ey = -h * 0.05, er = h * 0.1;
+    const blink = ((t * 0.8 + seed * 7.3) % 4.2) < 0.14;
+    ctx.fillStyle = '#3b2a3f'; ctx.strokeStyle = '#3b2a3f'; ctx.lineCap = 'round';
+    ctx.lineWidth = Math.max(2, h * 0.07);
+    if (mood === 'dizzy') {
+      [-ex, ex].forEach(x => {
+        ctx.beginPath(); ctx.moveTo(x - er, ey - er); ctx.lineTo(x + er, ey + er); ctx.moveTo(x + er, ey - er); ctx.lineTo(x - er, ey + er); ctx.stroke();
+      });
+    } else if (mood === 'happy') {
+      [-ex, ex].forEach(x => { ctx.beginPath(); ctx.arc(x, ey + er * 0.4, er, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); });
+    } else if (blink) {
+      [-ex, ex].forEach(x => { ctx.beginPath(); ctx.moveTo(x - er, ey); ctx.lineTo(x + er, ey); ctx.stroke(); });
+    } else {
+      [-ex, ex].forEach(x => {
+        ctx.fillStyle = '#3b2a3f'; ctx.beginPath(); ctx.ellipse(x, ey, er, er * 1.15, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(x - er * 0.35, ey - er * 0.4, er * 0.38, 0, Math.PI * 2); ctx.fill();
+      });
+    }
+    ctx.fillStyle = 'rgba(255,110,150,0.45)';
+    [-1, 1].forEach(s => { ctx.beginPath(); ctx.ellipse(s * (ex + h * 0.2), h * 0.12, h * 0.1, h * 0.06, 0, 0, Math.PI * 2); ctx.fill(); });
+    if (mood === 'dizzy' || mood === 'excited') {
+      ctx.fillStyle = '#7a2f45';
+      ctx.beginPath(); ctx.ellipse(0, h * 0.17, h * 0.08, h * 0.1, 0, 0, Math.PI * 2); ctx.fill();
+    } else {
+      ctx.lineWidth = Math.max(2, h * 0.06);
+      ctx.beginPath(); ctx.arc(0, h * 0.06, h * 0.11, 0.15 * Math.PI, 0.85 * Math.PI); ctx.stroke();
+    }
+  }
+
+  function drawBlock(b, mood, rot) {
+    const w = b.w * U, h = U * 0.97;
+    const p = PALETTE[b.c];
+    ctx.save();
+    ctx.translate(sX(b.x), sY(b.y + 0.5));
+    if (rot) ctx.rotate(-rot);
+    const sq = b.squash || 0;
+    ctx.translate(0, h / 2); ctx.scale(1 + sq * 0.1, 1 - sq * 0.14); ctx.translate(0, -h / 2);
+    // 耳朵
+    if (b.ear && b.ear !== 'none' && w > h * 1.3) {
+      const exs = Math.min(w * 0.3, h * 0.9);
+      [-1, 1].forEach(s => {
+        ctx.fillStyle = p.b;
+        ctx.beginPath();
+        if (b.ear === 'round') ctx.arc(s * exs, -h * 0.48, h * 0.24, 0, Math.PI * 2);
+        else if (b.ear === 'cat') { ctx.moveTo(s * exs - h * 0.25, -h * 0.35); ctx.lineTo(s * (exs + h * 0.05), -h * 0.85); ctx.lineTo(s * exs + h * 0.25, -h * 0.35); }
+        else { ctx.ellipse(s * exs * 0.7, -h * 0.75, h * 0.14, h * 0.45, s * 0.15, 0, Math.PI * 2); }
+        ctx.fill();
+        ctx.fillStyle = '#ffd3e2';
+        ctx.beginPath();
+        if (b.ear === 'round') ctx.arc(s * exs, -h * 0.5, h * 0.12, 0, Math.PI * 2);
+        else if (b.ear === 'cat') { ctx.moveTo(s * exs - h * 0.12, -h * 0.42); ctx.lineTo(s * (exs + h * 0.04), -h * 0.7); ctx.lineTo(s * exs + h * 0.12, -h * 0.42); }
+        else ctx.ellipse(s * exs * 0.7, -h * 0.75, h * 0.06, h * 0.32, s * 0.15, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
+    // 身體
+    const r = Math.min(h * 0.3, w / 2);
+    ctx.save();
+    ctx.shadowColor = 'rgba(60,40,80,0.28)'; ctx.shadowBlur = 8; ctx.shadowOffsetY = 3;
+    const g = ctx.createLinearGradient(0, -h / 2, 0, h / 2);
+    g.addColorStop(0, p.a); g.addColorStop(1, p.b);
+    ctx.fillStyle = g; rr(-w / 2, -h / 2, w, h, r); ctx.fill();
+    ctx.restore();
+    ctx.lineWidth = 2; ctx.strokeStyle = p.line; rr(-w / 2, -h / 2, w, h, r); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    if (w > r * 1.6) { rr(-w / 2 + r * 0.7, -h / 2 + h * 0.1, w - r * 1.4, h * 0.16, h * 0.08); ctx.fill(); }
+    ctx.fillStyle = 'rgba(0,0,0,0.07)'; rr(-w / 2 + 3, h * 0.22, w - 6, h * 0.22, h * 0.1); ctx.fill();
+    if (w > h * 0.9) drawFace(w, h, mood, b.seed);
+    ctx.restore();
+  }
+
+  function star(x, y, r) {
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const a = -Math.PI / 2 + i * Math.PI / 5, rr2 = i % 2 ? r * 0.45 : r;
+      ctx.lineTo(x + Math.cos(a) * rr2, y + Math.sin(a) * rr2);
+    }
+    ctx.closePath(); ctx.fill();
+  }
+
+  function render() {
+    ctx.save();
+    if (shake > 0) ctx.translate(0, Math.sin(t * 90) * shake * 10);
+    drawSky();
+    drawBackdrop();
+    debris.forEach(d => drawBlock(d, 'dizzy', d.rot));
+    drawGround();
+    // 只畫看得到的積木
+    for (let i = 0; i < stack.length; i++) {
+      const b = stack[i];
+      const y = sY(b.y);
+      if (y < -U * 2 || y - U > H + U) continue;
+      if (b.base) drawBase(b); else drawBlock(b, b.happy > 0 ? 'happy' : 'smile', 0);
+    }
+    if (cur) {
+      // 下落提示的虛線影子
+      if (!cur.falling && state === 'play') {
+        ctx.fillStyle = 'rgba(255,255,255,0.25)';
+        rr(sX(cur.x) - cur.w * U / 2, sY(cur.n + 1), cur.w * U, U, U * 0.3); ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.setLineDash([6, 6]); ctx.lineWidth = 2; ctx.stroke(); ctx.setLineDash([]);
+      }
+      const bob = cur.falling ? 0 : Math.sin(t * 5) * 0.06;
+      ctx.save(); ctx.translate(0, bob * U);
+      ctx.globalAlpha = 0.3 + cur.enter * 0.7;
+      drawBlock(cur, 'excited', cur.falling ? 0 : Math.sin(t * 4) * 0.04);
+      ctx.restore(); ctx.globalAlpha = 1;
+    }
+    // 粒子
+    sparks.forEach(s => {
+      ctx.globalAlpha = Math.max(0, s.life);
+      ctx.fillStyle = s.col;
+      if (s.puff) { ctx.beginPath(); ctx.arc(sX(s.x), sY(s.y), s.s * (2 - s.life), 0, Math.PI * 2); ctx.fill(); }
+      else star(sX(s.x), sY(s.y), s.s);
+    });
+    ctx.globalAlpha = 1;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    pops.forEach(p => {
+      const k = clamp(p.life / 1.3, 0, 1);
+      const sc = 1 + (1 - k) * 0.2 + (k > 0.85 ? (k - 0.85) * 3 : 0);
+      ctx.save();
+      ctx.translate(sX(p.x), sY(p.y)); ctx.scale(sc, sc);
+      ctx.globalAlpha = Math.min(1, k * 2);
+      ctx.font = `900 ${Math.round(U * 0.75)}px ${getComputedStyle(document.body).fontFamily}`;
+      ctx.lineWidth = 6; ctx.strokeStyle = '#ffffff'; ctx.strokeText(p.text, 0, 0);
+      ctx.fillStyle = '#ff5f95'; ctx.fillText(p.text, 0, 0);
+      ctx.restore();
+    });
+    // 一開始的提示
+    if (state === 'play' && score === 0 && cur && !cur.falling) {
+      ctx.globalAlpha = 0.75 + Math.sin(t * 5) * 0.25;
+      ctx.font = `800 ${Math.round(Math.max(18, U * 0.5))}px sans-serif`;
+      ctx.lineWidth = 5; ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+      const ty = Math.min(H - 30, sY(0) + U * 1.2);
+      ctx.strokeText('👆 點一下放下積木！', W / 2, ty);
+      ctx.fillStyle = '#4a3b52'; ctx.fillText('👆 點一下放下積木！', W / 2, ty);
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+  }
+
+  /* ---------- 主迴圈 ---------- */
+  let last = performance.now();
+  function loop(now) {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    update(dt);
+    render();
+    requestAnimationFrame(loop);
+  }
+
+  /* ---------- 輸入 ---------- */
+  cv.addEventListener('pointerdown', e => { e.preventDefault(); drop(); });
+  window.addEventListener('keydown', e => {
+    if (e.code === 'Space' || e.code === 'Enter' || e.code === 'ArrowDown') {
+      if (state === 'play') { e.preventDefault(); drop(); }
+    }
+  });
+  document.addEventListener('contextmenu', e => e.preventDefault());
+
+  // 測試用的唯讀狀態
+  window.__tower = () => ({ state, score, cur: cur && { x: cur.x, falling: cur.falling }, top: stack[stack.length - 1].x });
+
+  reset();
+  requestAnimationFrame(loop);
+  KG.showStart({
+    icon: '🏗️', title: '疊疊樂',
+    message: '積木會左右移動，點一下就放下來！對得越準，塔就越高～',
+    onStart: newGame
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>動物翻翻樂</title>
+<link rel="stylesheet" href="../../assets/common.css">
+<style>
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    height: 100vh; height: 100dvh;
+    background:
+      radial-gradient(circle at 15% 85%, rgba(255,255,255,.55) 0 60px, transparent 61px),
+      radial-gradient(circle at 85% 20%, rgba(255,255,255,.4) 0 90px, transparent 91px),
+      linear-gradient(180deg, #ffe3ef 0%, #fff1d6 55%, #e3f6d8 100%);
+    touch-action: none;
+  }
+  /* 背景飄浮的小裝飾 */
+  .deco { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 0; }
+  .deco span {
+    position: absolute; font-size: 28px; opacity: .35;
+    animation: floaty 9s ease-in-out infinite;
+  }
+  @keyframes floaty { 0%,100% { transform: translateY(0) rotate(-6deg); } 50% { transform: translateY(-22px) rotate(6deg); } }
+
+  #board {
+    position: fixed; left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    display: grid; z-index: 1;
+    touch-action: none;
+  }
+  .card {
+    position: relative; perspective: 900px; cursor: pointer;
+    animation: deal .45s cubic-bezier(.2,1.5,.4,1) both;
+  }
+  @keyframes deal { from { transform: scale(.2) rotate(-20deg); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+  .inner {
+    position: absolute; inset: 0;
+    transform-style: preserve-3d;
+    transition: transform .5s cubic-bezier(.3,1.4,.5,1);
+  }
+  .card.up .inner { transform: rotateY(180deg); }
+  .card:active:not(.up) .inner { transform: scale(.95); }
+  .face {
+    position: absolute; inset: 0; border-radius: 18%;
+    backface-visibility: hidden; -webkit-backface-visibility: hidden;
+    border: 4px solid #fff;
+    box-shadow: 0 6px 0 rgba(74,59,82,.16), 0 10px 18px rgba(74,59,82,.18);
+    display: grid; place-items: center; overflow: hidden;
+  }
+  /* 卡背：圓點花紋 + 中間的腳印 */
+  .back {
+    background:
+      radial-gradient(circle at 50% 50%, rgba(255,255,255,.95) 0 26%, transparent 27%),
+      radial-gradient(circle, rgba(255,255,255,.35) 18%, transparent 20%) 0 0 / 22% 22%,
+      radial-gradient(circle, rgba(255,255,255,.35) 18%, transparent 20%) 11% 11% / 22% 22%,
+      linear-gradient(145deg, #9fd8ff, #7b8cff);
+  }
+  .back::after {
+    content: '🐾'; font-size: calc(var(--s) * .26);
+    filter: drop-shadow(0 2px 0 rgba(0,0,0,.08));
+  }
+  .back::before {
+    content: ''; position: absolute; inset: 7%; border-radius: 14%;
+    border: 3px dashed rgba(255,255,255,.6);
+  }
+  .front {
+    transform: rotateY(180deg);
+    background: radial-gradient(circle at 35% 25%, #fff 0%, var(--c) 75%);
+    flex-direction: column;
+  }
+  .front .emo {
+    font-size: calc(var(--s) * .52); line-height: 1;
+    filter: drop-shadow(0 4px 3px rgba(0,0,0,.18));
+  }
+  .front .nm {
+    position: absolute; bottom: 6%; left: 0; right: 0; text-align: center;
+    font-weight: 800; font-size: max(12px, calc(var(--s) * .13)); color: #6a4a5c;
+  }
+  .card.matched .front { animation: happy .7s ease; border-color: #ffe27a; box-shadow: 0 0 0 4px #ffe27a, 0 10px 18px rgba(74,59,82,.18); }
+  .card.matched .emo { animation: kg-bounce 1.4s ease-in-out infinite; }
+  .card.nope .inner { animation: kg-shake .4s ease; }
+  @keyframes happy { 0% { transform: rotateY(180deg) scale(1); } 40% { transform: rotateY(180deg) scale(1.15); } 100% { transform: rotateY(180deg) scale(1); } }
+  .sparkle {
+    position: fixed; pointer-events: none; z-index: 50; font-size: 22px;
+    animation: spk .9s ease-out forwards;
+  }
+  @keyframes spk { from { transform: translate(-50%,-50%) scale(.4); opacity: 1; } to { transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy))) scale(1.2); opacity: 0; } }
+  .lvl-row { display: flex; gap: 10px; justify-content: center; margin: -6px 0 16px; flex-wrap: wrap; }
+  .lvl-row .kg-btn { font-size: 17px; padding: 10px 16px; }
+  @media (max-width: 440px) {
+    .kg-hud { gap: 6px; }
+    .kg-pill { font-size: 15px; padding: 5px 10px; }
+  }
+</style>
+</head>
+<body>
+<div class="deco" id="deco"></div>
+<div class="kg-hud">
+  <div class="kg-pill" id="hudLevel">第 1 關</div>
+  <div class="kg-pill" id="hudMoves">👆 0</div>
+  <div class="kg-pill" id="hudPairs">❤️ 0/3</div>
+</div>
+<div id="board"></div>
+
+<script src="../../assets/common.js"></script>
+<script>
+'use strict';
+(function () {
+  // 動物資料：emoji、名字、卡片底色
+  const ANIMALS = [
+    ['🐶', '小狗', '#ffd9a8'], ['🐱', '小貓', '#ffe48a'], ['🐰', '小兔子', '#ffd1e3'],
+    ['🐼', '熊貓', '#d8f0d0'], ['🐻', '小熊', '#f3d2b3'], ['🦊', '狐狸', '#ffc9a0'],
+    ['🐸', '青蛙', '#c8f0b0'], ['🐷', '小豬', '#ffc8d6'], ['🐵', '猴子', '#f6dcc0'],
+    ['🐯', '老虎', '#ffe0a0'], ['🐨', '無尾熊', '#dde3f0'], ['🐮', '乳牛', '#e8e8ff'],
+    ['🐔', '小雞', '#fff0b0'], ['🐧', '企鵝', '#cfeaff']
+  ];
+  // 關卡：欄 x 列
+  const LEVELS = [
+    { cols: 3, rows: 2, pairs: 3 },
+    { cols: 4, rows: 3, pairs: 6 },
+    { cols: 4, rows: 4, pairs: 8 }
+  ];
+
+  const board = document.getElementById('board');
+  const hudLevel = document.getElementById('hudLevel');
+  const hudMoves = document.getElementById('hudMoves');
+  const hudPairs = document.getElementById('hudPairs');
+
+  let level = 0, moves = 0, found = 0;
+  let open = [];      // 目前翻開、還沒配對的卡
+  let locked = true;  // 動畫中不能點
+  let timers = [];
+
+  // 背景小裝飾
+  const deco = document.getElementById('deco');
+  ['🌸', '⭐', '🍀', '🌼', '☁️', '💗', '🌈', '🍓'].forEach((e, i) => {
+    const s = document.createElement('span');
+    s.textContent = e;
+    s.style.left = (5 + (i * 37) % 90) + '%';
+    s.style.top = (8 + (i * 53) % 84) + '%';
+    s.style.animationDelay = (-i * 1.3) + 's';
+    deco.appendChild(s);
+  });
+
+  function later(fn, ms) { const t = setTimeout(fn, ms); timers.push(t); return t; }
+  function clearTimers() { timers.forEach(clearTimeout); timers = []; }
+
+  function updateHud() {
+    const L = LEVELS[level];
+    hudLevel.textContent = '第 ' + (level + 1) + ' 關';
+    hudMoves.textContent = '👆 ' + moves;
+    hudPairs.textContent = '❤️ ' + found + '/' + L.pairs;
+  }
+
+  // 依螢幕大小與方向決定格子排法與卡片大小
+  function layout() {
+    const L = LEVELS[level];
+    const W = window.innerWidth, H = window.innerHeight;
+    let cols = L.cols, rows = L.rows;
+    const portrait = H > W;
+    if (portrait && cols > rows) { const t = cols; cols = rows; rows = t; }
+    const topPad = 72, side = 14, bottom = 14;
+    const gap = Math.max(8, Math.min(16, Math.min(W, H) * 0.02));
+    const availW = W - side * 2, availH = H - topPad - bottom;
+    // 卡片比例 寬:高 = 0.82:1
+    const ratio = 0.82;
+    let cw = (availW - gap * (cols - 1)) / cols;
+    let ch = cw / ratio;
+    if (ch * rows + gap * (rows - 1) > availH) {
+      ch = (availH - gap * (rows - 1)) / rows;
+      cw = ch * ratio;
+    }
+    cw = Math.min(cw, 230); ch = cw / ratio;
+    board.style.gridTemplateColumns = 'repeat(' + cols + ',' + cw + 'px)';
+    board.style.gridAutoRows = ch + 'px';
+    board.style.gap = gap + 'px';
+    board.style.top = (topPad + (availH) / 2) + 'px';
+    board.style.setProperty('--s', Math.min(cw, ch) + 'px');
+  }
+
+  function buildLevel(n) {
+    clearTimers();
+    level = n; moves = 0; found = 0; open = []; locked = false;
+    const L = LEVELS[level];
+    const picks = KG.shuffle(ANIMALS).slice(0, L.pairs);
+    const deck = KG.shuffle(picks.concat(picks));
+    board.innerHTML = '';
+    deck.forEach((a, i) => {
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.dataset.key = a[1];
+      card.style.animationDelay = (i * 0.04) + 's';
+      card.innerHTML =
+        '<div class="inner">' +
+          '<div class="face back"></div>' +
+          '<div class="face front" style="--c:' + a[2] + '"><div class="emo">' + a[0] + '</div><div class="nm">' + a[1] + '</div></div>' +
+        '</div>';
+      card._animal = a;
+      board.appendChild(card);
+    });
+    layout();
+    updateHud();
+  }
+
+  function sparkles(el) {
+    const r = el.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    for (let i = 0; i < 8; i++) {
+      const s = document.createElement('div');
+      s.className = 'sparkle';
+      s.textContent = KG.pick(['✨', '⭐', '💖']);
+      const ang = (i / 8) * Math.PI * 2;
+      s.style.left = cx + 'px'; s.style.top = cy + 'px';
+      s.style.setProperty('--dx', Math.cos(ang) * r.width * 0.8 + 'px');
+      s.style.setProperty('--dy', Math.sin(ang) * r.height * 0.7 + 'px');
+      document.body.appendChild(s);
+      setTimeout(() => s.remove(), 950);
+    }
+  }
+
+  function flip(card) {
+    if (locked || card.classList.contains('up')) return;
+    KG.sound('click');
+    KG.note(520 + open.length * 160, 0.12, 'sine', 0.15, 0.03, 900);
+    card.classList.add('up');
+    open.push(card);
+    if (open.length < 2) return;
+
+    moves++;
+    updateHud();
+    const [a, b] = open;
+    open = [];
+    if (a.dataset.key === b.dataset.key) {
+      locked = true;
+      later(() => {
+        a.classList.add('matched'); b.classList.add('matched');
+        found++;
+        updateHud();
+        KG.sound('correct');
+        KG.say(a._animal[1]);
+        sparkles(a); sparkles(b);
+        locked = false;
+        if (found === LEVELS[level].pairs) later(levelDone, 900);
+      }, 380);
+    } else {
+      locked = true;
+      later(() => {
+        a.classList.add('nope'); b.classList.add('nope');
+        KG.sound('boing');
+      }, 650);
+      later(() => {
+        a.classList.remove('up', 'nope'); b.classList.remove('up', 'nope');
+        locked = false;
+      }, 1150);
+    }
+  }
+
+  function levelDone() {
+    const P = LEVELS[level].pairs;
+    // 步數越少星星越多（很寬鬆）
+    const stars = moves <= Math.ceil(P * 1.5) ? 3 : moves <= P * 2.3 ? 2 : 1;
+    const best = KG.best('memory-match-L' + (level + 1), moves, true);
+    KG.say('好棒！');
+    const last = level === LEVELS.length - 1;
+    KG.showWin({
+      icon: last ? '🏆' : '🎉',
+      title: last ? '全部完成！好厲害！' : '好棒！找到全部了！',
+      message: '用了 ' + moves + ' 步（最佳 ' + best + ' 步）',
+      stars: stars,
+      replayText: last ? '再玩一次' : '下一關 ➜',
+      onReplay: () => buildLevel(last ? 0 : level + 1)
+    });
+  }
+
+  board.addEventListener('pointerdown', (e) => {
+    const card = e.target.closest('.card');
+    if (card) { e.preventDefault(); flip(card); }
+  });
+  // 鍵盤：方向鍵移動、Enter/空白鍵翻牌
+  let focusIdx = 0;
+  document.addEventListener('keydown', (e) => {
+    const cards = Array.from(board.children);
+    if (!cards.length || document.querySelector('.kg-overlay')) return;
+    const cols = board.style.gridTemplateColumns.match(/repeat\((\d+)/);
+    const c = cols ? +cols[1] : 4;
+    const map = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -c, ArrowDown: c };
+    if (map[e.key] != null) {
+      focusIdx = Math.max(0, Math.min(cards.length - 1, focusIdx + map[e.key]));
+      cards.forEach((x, i) => x.style.outline = i === focusIdx ? '4px solid #ff8fb1' : '');
+      cards.forEach((x) => x.style.outlineOffset = '4px');
+      e.preventDefault();
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      flip(cards[focusIdx]); e.preventDefault();
+    }
+  });
+  window.addEventListener('resize', layout);
+  document.addEventListener('gesturestart', (e) => e.preventDefault());
+
+  // 開始畫面：可選擇關卡
+  buildLevel(0);
+  locked = true;
+  const ov = KG.showStart({
+    icon: '🐶', title: '動物翻翻樂',
+    message: '翻開兩張卡片，找出一樣的動物！',
+    button: '開始玩！',
+    onStart: () => buildLevel(0)
+  });
+  const row = document.createElement('div');
+  row.className = 'lvl-row';
+  [['🐣 簡單', 0, 'yellow'], ['🐥 普通', 1, 'blue'], ['🦁 挑戰', 2, '']].forEach(([t, n, cls]) => {
+    const b = document.createElement('button');
+    b.className = 'kg-btn ' + cls;
+    b.textContent = t;
+    b.addEventListener('click', () => { KG.sound('click'); ov.remove(); buildLevel(n); });
+    row.appendChild(b);
+  });
+  const acts = ov.querySelector('.kg-actions');
+  acts.parentNode.insertBefore(row, acts);
+})();
+</script>
+</body>
+</html>

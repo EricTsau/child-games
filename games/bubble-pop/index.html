@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>戳泡泡</title>
+<link rel="stylesheet" href="../../assets/common.css">
+<style>
+  html, body { height: 100%; overflow: hidden; background: #2f8fd0; }
+  #game {
+    position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh;
+    display: block; touch-action: none; cursor: pointer;
+  }
+  #hudCombo { transition: transform .15s ease; }
+  #hudCombo.bump { transform: scale(1.2); }
+  @media (max-width: 440px) {
+    .kg-hud { gap: 6px; }
+    .kg-pill { font-size: 15px; padding: 5px 10px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div class="kg-hud">
+  <div class="kg-pill" id="hudScore">🫧 0</div>
+  <div class="kg-pill" id="hudTime">⏱️ 60</div>
+  <div class="kg-pill" id="hudCombo">🔥 x0</div>
+</div>
+
+<script src="../../assets/common.js"></script>
+<script>
+'use strict';
+(function () {
+  const cv = document.getElementById('game');
+  const ctx = cv.getContext('2d');
+  const hudScore = document.getElementById('hudScore');
+  const hudTime = document.getElementById('hudTime');
+  const hudCombo = document.getElementById('hudCombo');
+  const FONT = getComputedStyle(document.body).fontFamily;
+
+  const ROUND = 60;
+  const TREATS = ['🐟', '🐠', '⭐', '🍬', '🐡', '🍭', '🐙', '🦀', '🍓', '🐚'];
+  let W = 0, H = 0, dpr = 1, R = 40;
+  let bubbles = [], parts = [], rings = [], texts = [], tiny = [], fishes = [], weeds = [], corals = [];
+  let state = 'idle', score = 0, elapsed = 0, timeLeft = ROUND, spawnT = 0, clock = 0;
+  let combo = 0, comboT = 0, bestCombo = 0, lastSec = ROUND;
+  const hasConic = typeof ctx.createConicGradient === 'function';
+
+  /* ---------- 版面 ---------- */
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 3);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    R = Math.max(32, Math.min(62, Math.min(W, H) * 0.085));
+    // 海草與珊瑚
+    weeds = []; corals = [];
+    const nw = Math.max(5, Math.round(W / 90));
+    for (let i = 0; i < nw; i++) weeds.push({ x: (i + Math.random() * 0.8) * W / nw, h: KG.rand(0.12, 0.26) * H, ph: Math.random() * 6, c: KG.pick(['#2fae6b', '#46c27a', '#28965c']) });
+    const nc = Math.max(3, Math.round(W / 220));
+    for (let i = 0; i < nc; i++) corals.push({ x: (i + 0.3 + Math.random() * 0.4) * W / nc, s: KG.rand(0.7, 1.2), c: KG.pick(['#ff8fb1', '#ffa94d', '#c79cff']) });
+    if (!tiny.length) for (let i = 0; i < 40; i++) tiny.push({ x: Math.random() * W, y: Math.random() * H, r: KG.rand(1.5, 4), v: KG.rand(15, 40) });
+    if (!fishes.length) for (let i = 0; i < 4; i++) fishes.push(newFish(true));
+  }
+  function newFish(anywhere) {
+    const dir = Math.random() < 0.5 ? 1 : -1;
+    return { x: anywhere ? Math.random() * W : (dir > 0 ? -60 : W + 60), y: KG.rand(0.2, 0.75) * H, dir, v: KG.rand(18, 40), e: KG.pick(['🐟', '🐠', '🐡', '🐢']), s: KG.rand(22, 34) };
+  }
+
+  /* ---------- 背景 ---------- */
+  function drawBackground() {
+    let g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#8fe6ff'); g.addColorStop(0.45, '#3fb0e6'); g.addColorStop(1, '#1f6fb5');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    // 水面波光
+    ctx.fillStyle = 'rgba(255,255,255,.25)';
+    ctx.beginPath(); ctx.moveTo(0, 0);
+    for (let x = 0; x <= W + 10; x += 10) ctx.lineTo(x, 10 + Math.sin(x / 40 + clock * 1.5) * 5);
+    ctx.lineTo(W, 0); ctx.fill();
+    // 光束
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 5; i++) {
+      const x = W * (0.1 + i * 0.22) + Math.sin(clock * 0.4 + i) * 30;
+      g = ctx.createLinearGradient(0, 0, 0, H * 0.8);
+      g.addColorStop(0, 'rgba(255,255,255,.18)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.moveTo(x - 20, 0); ctx.lineTo(x + 30, 0); ctx.lineTo(x + 110, H * 0.8); ctx.lineTo(x + 10, H * 0.8); ctx.fill();
+    }
+    ctx.restore();
+    // 遠方的小魚
+    fishes.forEach((f) => {
+      ctx.save(); ctx.globalAlpha = 0.5;
+      ctx.translate(f.x, f.y + Math.sin(clock * 2 + f.x / 50) * 6);
+      if (f.dir > 0) ctx.scale(-1, 1); // emoji 魚預設面向左
+      ctx.font = f.s + 'px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(f.e, 0, 0);
+      ctx.restore();
+    });
+    // 小氣泡
+    ctx.fillStyle = 'rgba(255,255,255,.45)';
+    tiny.forEach((b) => { ctx.beginPath(); ctx.arc(b.x + Math.sin(b.y / 30) * 4, b.y, b.r, 0, 7); ctx.fill(); });
+    // 沙地
+    const sandY = H - Math.max(50, H * 0.09);
+    g = ctx.createLinearGradient(0, sandY - 20, 0, H);
+    g.addColorStop(0, '#ffe3a3'); g.addColorStop(1, '#e8b96a');
+    // 海草（在沙子後面）
+    weeds.forEach((w) => {
+      ctx.strokeStyle = w.c; ctx.lineWidth = 10; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(w.x, sandY + 10);
+      const sw = Math.sin(clock * 1.2 + w.ph) * 18;
+      ctx.bezierCurveTo(w.x + sw, sandY - w.h * 0.35, w.x - sw, sandY - w.h * 0.7, w.x + sw * 1.4, sandY - w.h);
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,255,255,.18)'; ctx.lineWidth = 3; ctx.stroke();
+    });
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.moveTo(0, H);
+    for (let x = 0; x <= W + 20; x += 20) ctx.lineTo(x, sandY + Math.sin(x / 70) * 8);
+    ctx.lineTo(W, H); ctx.fill();
+    // 珊瑚
+    corals.forEach((c) => drawCoral(c.x, sandY + 6, c.s * Math.min(1.2, H / 700), c.c));
+    // 沙上的小東西
+    ctx.font = '24px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('🐚', W * 0.18, sandY + 22); ctx.fillText('⭐', W * 0.72, sandY + 26);
+  }
+  function drawCoral(x, y, s, c) {
+    ctx.strokeStyle = c; ctx.lineCap = 'round';
+    ctx.lineWidth = 9 * s;
+    ctx.beginPath();
+    ctx.moveTo(x, y); ctx.quadraticCurveTo(x - 4 * s, y - 30 * s, x - 22 * s, y - 50 * s);
+    ctx.moveTo(x, y); ctx.quadraticCurveTo(x + 2 * s, y - 35 * s, x + 6 * s, y - 64 * s);
+    ctx.moveTo(x, y - 20 * s); ctx.quadraticCurveTo(x + 18 * s, y - 30 * s, x + 26 * s, y - 46 * s);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,.35)';
+    [[-22, -50], [6, -64], [26, -46]].forEach(([dx, dy]) => { ctx.beginPath(); ctx.arc(x + dx * s, y + dy * s, 3 * s, 0, 7); ctx.fill(); });
+  }
+
+  /* ---------- 泡泡 ---------- */
+  function spawnBubble() {
+    const d = Math.min(1, elapsed / ROUND);
+    const golden = Math.random() < 0.07;
+    const r = golden ? R * 0.95 : R * KG.rand(0.8, 1.2);
+    bubbles.push({
+      x: KG.rand(r + 8, W - r - 8), y: H + r + 10, r,
+      v: KG.rand(55, 85) * (1 + d * 0.6) * (H / 800 * 0.5 + 0.5),
+      ph: Math.random() * 6, amp: KG.rand(10, 26), f: KG.rand(1.2, 2.2),
+      emoji: golden ? '🌟' : (Math.random() < 0.55 ? KG.pick(TREATS) : null),
+      golden, hue: Math.random() * 360, t: 0
+    });
+  }
+
+  function drawBubble(b) {
+    const x = b.x + Math.sin(b.t * b.f + b.ph) * b.amp;
+    const wob = Math.sin(b.t * 5 + b.ph) * 0.045;
+    const r = b.r * Math.min(1, b.t * 4 + 0.3);
+    b.cx = x;
+    ctx.save();
+    ctx.translate(x, b.y);
+    ctx.scale(1 + wob, 1 - wob);
+    // 本體：中間透明、邊緣稍亮
+    let g = ctx.createRadialGradient(-r * 0.2, -r * 0.25, r * 0.1, 0, 0, r);
+    if (b.golden) {
+      g.addColorStop(0, 'rgba(255,250,200,.5)'); g.addColorStop(0.7, 'rgba(255,215,90,.45)'); g.addColorStop(1, 'rgba(255,190,40,.85)');
+    } else {
+      g.addColorStop(0, 'rgba(255,255,255,.04)'); g.addColorStop(0.75, 'rgba(220,245,255,.16)'); g.addColorStop(1, 'rgba(255,255,255,.55)');
+    }
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, 7); ctx.fill();
+    // 內容物
+    if (b.emoji) {
+      ctx.save();
+      ctx.rotate(Math.sin(b.t * 2 + b.ph) * 0.2);
+      ctx.globalAlpha = 0.95;
+      ctx.font = Math.round(r * 0.95) + 'px sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(b.emoji, 0, r * 0.06);
+      ctx.restore();
+    }
+    // 彩虹邊
+    let rim;
+    if (hasConic) {
+      rim = ctx.createConicGradient(b.t * 0.8 + b.hue, 0, 0);
+      const cols = b.golden
+        ? ['rgba(255,240,150,.9)', 'rgba(255,190,60,.9)', 'rgba(255,255,220,.9)', 'rgba(255,200,80,.9)', 'rgba(255,240,150,.9)']
+        : ['rgba(255,150,200,.75)', 'rgba(255,230,140,.75)', 'rgba(150,255,200,.75)', 'rgba(140,200,255,.75)', 'rgba(200,150,255,.75)', 'rgba(255,150,200,.75)'];
+      cols.forEach((c, i) => rim.addColorStop(i / (cols.length - 1), c));
+    } else {
+      rim = ctx.createLinearGradient(-r, -r, r, r);
+      rim.addColorStop(0, 'rgba(255,150,200,.7)'); rim.addColorStop(0.5, 'rgba(150,255,220,.7)'); rim.addColorStop(1, 'rgba(160,170,255,.7)');
+    }
+    ctx.strokeStyle = rim; ctx.lineWidth = Math.max(2.5, r * 0.07);
+    ctx.beginPath(); ctx.arc(0, 0, r - ctx.lineWidth / 2, 0, 7); ctx.stroke();
+    // 高光
+    ctx.fillStyle = 'rgba(255,255,255,.85)';
+    ctx.beginPath(); ctx.ellipse(-r * 0.42, -r * 0.45, r * 0.22, r * 0.12, -0.7, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(-r * 0.15, -r * 0.66, r * 0.06, 0, 7); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,.5)'; ctx.lineWidth = r * 0.05; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.arc(0, 0, r * 0.78, 0.3, 1.0); ctx.stroke();
+    if (b.golden) {
+      // 金色泡泡會閃閃發亮
+      const s = (Math.sin(clock * 6 + b.ph) + 1) / 2;
+      ctx.globalAlpha = s;
+      drawSparkle(r * 0.55, -r * 0.55, r * 0.22);
+      ctx.globalAlpha = 1 - s;
+      drawSparkle(-r * 0.6, r * 0.45, r * 0.16);
+    }
+    ctx.restore();
+  }
+  function drawSparkle(x, y, s) {
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.moveTo(x, y - s); ctx.quadraticCurveTo(x, y, x + s, y); ctx.quadraticCurveTo(x, y, x, y + s);
+    ctx.quadraticCurveTo(x, y, x - s, y); ctx.quadraticCurveTo(x, y, x, y - s); ctx.fill();
+  }
+
+  /* ---------- 戳破 ---------- */
+  function pop(b) {
+    const x = b.cx != null ? b.cx : b.x;
+    combo = comboT > 0 ? combo + 1 : 1;
+    comboT = 1.3;
+    bestCombo = Math.max(bestCombo, combo);
+    let pts = b.golden ? 5 : 1;
+    if (combo >= 3) pts += 1;
+    score += pts;
+    // 聲音：連擊越多音越高
+    const f = 420 + Math.min(combo, 10) * 60;
+    KG.note(f, 0.1, 'sine', 0.3, 0, f * 2.4);
+    KG.note(f * 1.5, 0.06, 'triangle', 0.08, 0.03);
+    if (b.golden) { KG.sound('coin'); KG.sound('sparkle'); }
+    // 水滴碎片
+    const n = b.golden ? 22 : 14;
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2 + Math.random() * 0.3, sp = KG.rand(120, 280);
+      parts.push({ x: x + Math.cos(a) * b.r * 0.8, y: b.y + Math.sin(a) * b.r * 0.8, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+        r: KG.rand(2.5, 5.5), life: 1, c: b.golden ? '#ffe27a' : `hsl(${(b.hue + i * 25) % 360},90%,85%)` });
+    }
+    rings.push({ x, y: b.y, r: b.r, life: 1, gold: b.golden });
+    if (b.emoji) texts.push({ x, y: b.y, text: b.emoji, emoji: true, life: 1, s: b.r });
+    texts.push({ x, y: b.y - b.r * 0.6, text: '+' + pts, life: 1, color: b.golden ? '#ffb300' : '#ff5d8f' });
+    if (combo >= 3 && combo % 5 === 0) KG.toast('連擊 ' + combo + '！好棒！');
+    if (b.golden) KG.toast('金色泡泡！+5');
+    updateHud(true);
+  }
+
+  function updateHud(bump) {
+    hudScore.textContent = '🫧 ' + score;
+    hudTime.textContent = '⏱️ ' + Math.ceil(timeLeft);
+    hudCombo.textContent = '🔥 x' + (comboT > 0 ? combo : 0);
+    if (bump) { hudCombo.classList.add('bump'); setTimeout(() => hudCombo.classList.remove('bump'), 150); }
+  }
+
+  function startGame() {
+    bubbles = []; parts = []; rings = []; texts = [];
+    score = 0; elapsed = 0; timeLeft = ROUND; spawnT = 0; combo = 0; comboT = 0; bestCombo = 0; lastSec = ROUND;
+    state = 'play';
+    updateHud();
+  }
+
+  function endGame() {
+    state = 'over';
+    const best = KG.best('bubble-pop', score);
+    const stars = score >= 45 ? 3 : score >= 20 ? 2 : 1;
+    // 剩下的泡泡輕輕飄走
+    setTimeout(() => {
+      KG.say('時間到！好棒喔！');
+      KG.showWin({
+        icon: '🫧', title: '時間到！好棒！', stars,
+        message: '得到 ' + score + ' 分，最多連擊 ' + bestCombo + '（最高 ' + best + ' 分）',
+        onReplay: startGame
+      });
+    }, 600);
+  }
+
+  /* ---------- 主迴圈 ---------- */
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    clock += dt;
+
+    if (state === 'play') {
+      elapsed += dt;
+      timeLeft = Math.max(0, ROUND - elapsed);
+      spawnT -= dt;
+      if (spawnT <= 0) {
+        spawnBubble();
+        const d = Math.min(1, elapsed / ROUND);
+        spawnT = KG.rand(0.45, 0.8) - d * 0.2;
+      }
+      const sec = Math.ceil(timeLeft);
+      if (sec !== lastSec) { lastSec = sec; updateHud(); if (sec <= 5 && sec > 0) KG.sound('tick'); }
+      if (timeLeft <= 0) endGame();
+    } else if (state === 'idle' && Math.random() < dt * 1.2) {
+      spawnBubble(); // 開始畫面背後也有泡泡飄
+    }
+    if (comboT > 0) { comboT -= dt; if (comboT <= 0) updateHud(); }
+
+    bubbles.forEach((b) => { b.t += dt; b.y -= b.v * dt; });
+    bubbles = bubbles.filter((b) => b.y > -b.r * 2);
+    tiny.forEach((b) => { b.y -= b.v * dt; if (b.y < -10) { b.y = H + 10; b.x = Math.random() * W; } });
+    fishes.forEach((f, i) => { f.x += f.dir * f.v * dt; if (f.x < -80 || f.x > W + 80) fishes[i] = newFish(false); });
+    parts.forEach((p) => { p.vx *= 0.96; p.vy = p.vy * 0.96 - 40 * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt * 2; });
+    parts = parts.filter((p) => p.life > 0);
+    rings.forEach((r) => { r.life -= dt * 3.5; });
+    rings = rings.filter((r) => r.life > 0);
+    texts.forEach((t) => { t.y -= (t.emoji ? 30 : 60) * dt; t.life -= dt * 1.3; });
+    texts = texts.filter((t) => t.life > 0);
+
+    drawBackground();
+    bubbles.forEach(drawBubble);
+    rings.forEach((r) => {
+      ctx.strokeStyle = r.gold ? `rgba(255,220,100,${r.life})` : `rgba(255,255,255,${r.life})`;
+      ctx.lineWidth = 4 * r.life;
+      ctx.beginPath(); ctx.arc(r.x, r.y, r.r * (1 + (1 - r.life) * 0.7), 0, 7); ctx.stroke();
+    });
+    parts.forEach((p) => {
+      ctx.globalAlpha = Math.max(0, p.life);
+      ctx.fillStyle = p.c;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 7); ctx.fill();
+    });
+    ctx.globalAlpha = 1;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    texts.forEach((t) => {
+      ctx.globalAlpha = Math.max(0, Math.min(1, t.life * 1.5));
+      if (t.emoji) {
+        const sc = 1 + (1 - t.life) * 0.6;
+        ctx.font = Math.round(t.s * sc) + 'px sans-serif';
+        ctx.fillText(t.text, t.x, t.y);
+      } else {
+        ctx.font = '800 28px ' + FONT;
+        ctx.lineWidth = 6; ctx.strokeStyle = '#fff'; ctx.strokeText(t.text, t.x, t.y);
+        ctx.fillStyle = t.color; ctx.fillText(t.text, t.x, t.y);
+      }
+    });
+    ctx.globalAlpha = 1;
+    requestAnimationFrame(frame);
+  }
+
+  /* ---------- 輸入 ---------- */
+  cv.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    if (state !== 'play') return;
+    const x = e.clientX, y = e.clientY;
+    // 找最近的泡泡（範圍比泡泡稍大，小手比較好點）
+    let hit = null, bestD = Infinity;
+    bubbles.forEach((b) => {
+      const d = Math.hypot((b.cx != null ? b.cx : b.x) - x, b.y - y);
+      if (d < b.r * 1.2 + 6 && d < bestD) { bestD = d; hit = b; }
+    });
+    if (hit) {
+      bubbles.splice(bubbles.indexOf(hit), 1);
+      pop(hit);
+    } else {
+      // 沒點到：冒出幾個小氣泡
+      for (let i = 0; i < 4; i++) parts.push({ x, y, vx: KG.rand(-60, 60), vy: KG.rand(-120, -40), r: KG.rand(2, 4), life: 0.7, c: 'rgba(255,255,255,.8)' });
+    }
+  });
+  window.addEventListener('resize', resize);
+  document.addEventListener('gesturestart', (e) => e.preventDefault());
+
+  resize();
+  updateHud();
+  requestAnimationFrame(frame);
+  KG.showStart({
+    icon: '🫧', title: '戳泡泡',
+    message: '戳破飄上來的泡泡！金色泡泡分數更多喔！',
+    button: '開始玩！',
+    onStart: startGame
+  });
+})();
+</script>
+</body>
+</html>

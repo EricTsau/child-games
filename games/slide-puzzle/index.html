@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>滑塊拼圖</title>
+<link rel="stylesheet" href="../../assets/common.css">
+<style>
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    height: 100vh; height: 100dvh;
+    background:
+      radial-gradient(circle at 15% 20%, rgba(255,255,255,.7) 0 40px, transparent 41px),
+      radial-gradient(circle at 85% 70%, rgba(255,255,255,.5) 0 60px, transparent 61px),
+      radial-gradient(circle at 70% 12%, rgba(255,214,92,.35) 0 30px, transparent 31px),
+      linear-gradient(180deg, #c8ecff 0%, #e6f6ff 50%, #fdf1ff 100%);
+    touch-action: none;
+  }
+  #wrap {
+    position: absolute; inset: 0;
+    display: grid; grid-template-rows: 1fr auto;
+    padding: 70px 10px max(10px, env(safe-area-inset-bottom));
+  }
+  #stage { position: relative; min-height: 0; touch-action: none; }
+  #cv { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: pointer; }
+  #bar { display: flex; gap: 8px; align-items: center; justify-content: center; flex-wrap: wrap; padding-top: 8px; }
+  #bar .kg-btn { min-height: 56px; min-width: 64px; padding: 0 14px; font-size: 18px; }
+  #bar .kg-btn.off { filter: saturate(.3); opacity: .8; }
+  #thumb { width: 64px; height: 64px; border-radius: 14px; border: 4px solid #fff; box-shadow: var(--kg-shadow); background: #fff; }
+  @media (orientation: landscape) and (max-height: 560px) {
+    #wrap { grid-template-rows: 1fr; grid-template-columns: 1fr auto; padding: 66px 12px 10px; }
+    #bar { flex-direction: column; flex-wrap: nowrap; padding: 0 0 0 10px; }
+    #bar .lbl { display: none; }
+    #bar .kg-btn { min-height: 52px; }
+    #thumb { width: 56px; height: 56px; }
+  }
+</style>
+</head>
+<body>
+<div class="kg-hud">
+  <div class="kg-pill">👣 <span id="moves">0</span></div>
+  <div class="kg-pill">⏱️ <span id="time">0:00</span></div>
+</div>
+<div id="wrap">
+  <div id="stage"><canvas id="cv"></canvas></div>
+  <div id="bar">
+    <canvas id="thumb" width="128" height="128" title="完整的圖"></canvas>
+    <button class="kg-btn yellow" id="bPic" aria-label="換圖片">🖼️<span class="lbl"> 換圖</span></button>
+    <button class="kg-btn blue" id="bSize" aria-label="切換大小">3×3</button>
+    <button class="kg-btn green" id="bNum" aria-label="數字提示">🔢</button>
+    <button class="kg-btn" id="bShuffle" aria-label="重新洗牌">🔀</button>
+  </div>
+</div>
+<script src="../../assets/common.js"></script>
+<script>
+'use strict';
+(function () {
+  const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+  const stage = document.getElementById('stage');
+  const thumb = document.getElementById('thumb'), tctx = thumb.getContext('2d');
+  const movesEl = document.getElementById('moves'), timeEl = document.getElementById('time');
+
+  // ---------- 繪圖小工具 ----------
+  function rr(c, x, y, w, h, r) {
+    c.beginPath();
+    c.moveTo(x + r, y); c.arcTo(x + w, y, x + w, y + h, r); c.arcTo(x + w, y + h, x, y + h, r);
+    c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r); c.closePath();
+  }
+  function circ(c, x, y, r, fill) { c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fillStyle = fill; c.fill(); }
+  function ell(c, x, y, rx, ry, fill, rot) { c.beginPath(); c.ellipse(x, y, rx, ry, rot || 0, 0, Math.PI * 2); c.fillStyle = fill; c.fill(); }
+  function rad(c, x, y, r, stops) { const g = c.createRadialGradient(x - r * .3, y - r * .35, r * .1, x, y, r); stops.forEach((s, i) => g.addColorStop(i / (stops.length - 1), s)); return g; }
+  function lin(c, x0, y0, x1, y1, stops) { const g = c.createLinearGradient(x0, y0, x1, y1); stops.forEach((s, i) => g.addColorStop(i / (stops.length - 1), s)); return g; }
+  // 可愛臉：眼睛、腮紅、微笑
+  function face(c, x, y, s, eye) {
+    const ec = eye || '#3b2a35';
+    [-1, 1].forEach(d => {
+      ell(c, x + d * 16 * s, y, 5.5 * s, 7 * s, ec);
+      circ(c, x + d * 16 * s + 2 * s, y - 3 * s, 2.2 * s, '#fff');
+      ell(c, x + d * 28 * s, y + 12 * s, 7 * s, 4 * s, 'rgba(255,120,150,.55)');
+    });
+    c.beginPath(); c.arc(x, y + 8 * s, 7 * s, 0.15 * Math.PI, 0.85 * Math.PI);
+    c.strokeStyle = ec; c.lineWidth = 3 * s; c.lineCap = 'round'; c.stroke();
+  }
+  function cloud(c, x, y, s, withFace) {
+    c.save(); c.shadowColor = 'rgba(80,140,200,.25)'; c.shadowBlur = 12 * s; c.shadowOffsetY = 5 * s;
+    c.fillStyle = '#fff';
+    c.beginPath();
+    c.arc(x - 34 * s, y + 6 * s, 24 * s, 0, 7); c.arc(x, y - 8 * s, 34 * s, 0, 7); c.arc(x + 36 * s, y + 6 * s, 24 * s, 0, 7);
+    c.rect(x - 34 * s, y + 6 * s, 70 * s, 24 * s); c.fill(); c.restore();
+    if (withFace) face(c, x, y + 4 * s, s * .6);
+  }
+  function flower(c, x, y, s, col) {
+    for (let i = 0; i < 5; i++) { const a = i / 5 * Math.PI * 2; circ(c, x + Math.cos(a) * 9 * s, y + Math.sin(a) * 9 * s, 7 * s, col); }
+    circ(c, x, y, 6 * s, '#ffd65c');
+  }
+
+  // ---------- 圖片們（512×512 座標）----------
+  const PICS = [
+    { name: '熊貓', icon: '🐼', draw(c) {
+      c.fillStyle = lin(c, 0, 0, 0, 512, ['#bff0d0', '#e8fbe9', '#fffbe6']); c.fillRect(0, 0, 512, 512);
+      // 竹子
+      const bamboo = (x, w, col) => {
+        c.fillStyle = lin(c, x, 0, x + w, 0, [col, '#b6ea8c', col]); c.fillRect(x, 0, w, 512);
+        c.strokeStyle = 'rgba(40,110,40,.5)'; c.lineWidth = 4;
+        for (let y = 60; y < 512; y += 90) { c.beginPath(); c.moveTo(x, y); c.lineTo(x + w, y); c.stroke(); }
+        c.fillStyle = '#5fbf4f';
+        for (let y = 40; y < 460; y += 130) { c.beginPath(); c.ellipse(x + w + 22, y, 32, 10, -0.5, 0, 7); c.fill(); c.beginPath(); c.ellipse(x - 22, y + 50, 32, 10, 0.5, 0, 7); c.fill(); }
+      };
+      bamboo(28, 26, '#6fcb55'); bamboo(450, 24, '#6fcb55'); bamboo(92, 16, '#8fd96f');
+      // 草地
+      c.fillStyle = lin(c, 0, 400, 0, 512, ['#9ddf7a', '#6cc25e']);
+      c.beginPath(); c.moveTo(0, 440); c.quadraticCurveTo(256, 380, 512, 440); c.lineTo(512, 512); c.lineTo(0, 512); c.fill();
+      flower(c, 70, 470, 1, '#ff9fbe'); flower(c, 440, 480, 1, '#b49cff'); flower(c, 390, 455, .7, '#fff');
+      // 身體
+      ell(c, 256, 440, 150, 100, rad(c, 256, 440, 160, ['#fff', '#eef0f4', '#d5d9e2']));
+      ell(c, 140, 420, 46, 70, '#2f2a35', -0.4); ell(c, 372, 420, 46, 70, '#2f2a35', 0.4);
+      // 耳朵
+      circ(c, 150, 120, 52, rad(c, 150, 120, 52, ['#4a4452', '#2a2530']));
+      circ(c, 362, 120, 52, rad(c, 362, 120, 52, ['#4a4452', '#2a2530']));
+      // 頭
+      ell(c, 256, 240, 150, 132, rad(c, 256, 240, 160, ['#ffffff', '#f4f5f8', '#d9dde6']));
+      // 眼圈
+      ell(c, 196, 238, 38, 50, '#2f2a35', 0.5); ell(c, 316, 238, 38, 50, '#2f2a35', -0.5);
+      circ(c, 200, 236, 15, '#fff'); circ(c, 312, 236, 15, '#fff');
+      circ(c, 202, 238, 9, '#2f2a35'); circ(c, 310, 238, 9, '#2f2a35');
+      circ(c, 206, 232, 4, '#fff'); circ(c, 314, 232, 4, '#fff');
+      ell(c, 256, 290, 20, 13, '#2f2a35'); ell(c, 251, 286, 6, 3, 'rgba(255,255,255,.6)');
+      c.strokeStyle = '#2f2a35'; c.lineWidth = 5; c.lineCap = 'round';
+      c.beginPath(); c.moveTo(256, 302); c.lineTo(256, 314); c.stroke();
+      c.beginPath(); c.arc(242, 314, 14, 0.1, Math.PI * 0.9); c.stroke();
+      c.beginPath(); c.arc(270, 314, 14, 0.1, Math.PI * 0.9); c.stroke();
+      ell(c, 150, 300, 24, 13, 'rgba(255,130,160,.5)'); ell(c, 362, 300, 24, 13, 'rgba(255,130,160,.5)');
+      // 竹葉點心
+      c.save(); c.translate(380, 470); c.rotate(-0.6);
+      c.fillStyle = '#6fcb55'; c.fillRect(-8, -60, 16, 100); c.fillStyle = '#5fbf4f';
+      c.beginPath(); c.ellipse(20, -50, 28, 9, -0.6, 0, 7); c.fill(); c.restore();
+    } },
+    { name: '彩虹', icon: '🌈', draw(c) {
+      c.fillStyle = lin(c, 0, 0, 0, 512, ['#6fc6ff', '#b9e5ff', '#fff3fb']); c.fillRect(0, 0, 512, 512);
+      // 太陽
+      c.save(); c.translate(90, 90);
+      for (let i = 0; i < 12; i++) { c.rotate(Math.PI / 6); c.fillStyle = '#ffd65c'; c.beginPath(); c.moveTo(-10, 52); c.lineTo(0, 78); c.lineTo(10, 52); c.fill(); }
+      c.restore();
+      circ(c, 90, 90, 50, rad(c, 90, 90, 55, ['#fff7b0', '#ffd65c', '#ffb33b']));
+      face(c, 90, 90, 1.1, '#8a4b10');
+      // 彩虹
+      const cols = ['#ff6b6b', '#ffa94d', '#ffd65c', '#7bd88f', '#6cc4ff', '#7c8cff', '#b49cff'];
+      c.lineWidth = 24;
+      cols.forEach((col, i) => { c.beginPath(); c.arc(270, 450, 230 - i * 22, Math.PI, 0); c.strokeStyle = col; c.stroke(); });
+      c.lineWidth = 6; c.strokeStyle = 'rgba(255,255,255,.35)';
+      c.beginPath(); c.arc(270, 450, 236, Math.PI * 1.1, Math.PI * 1.6); c.stroke();
+      // 山丘
+      c.fillStyle = lin(c, 0, 380, 0, 512, ['#a6e58a', '#62bd58']);
+      c.beginPath(); c.moveTo(0, 470); c.quadraticCurveTo(130, 380, 260, 450); c.quadraticCurveTo(400, 390, 512, 440); c.lineTo(512, 512); c.lineTo(0, 512); c.fill();
+      cloud(c, 70, 440, 1.25, true); cloud(c, 460, 430, 1.25, true); cloud(c, 380, 110, .8, false);
+      flower(c, 200, 480, .9, '#ff9fbe'); flower(c, 300, 490, .8, '#fff'); flower(c, 250, 470, .7, '#b49cff');
+      // 小鳥
+      c.strokeStyle = '#4a3b52'; c.lineWidth = 4;
+      [[300, 70], [340, 50]].forEach(([x, y]) => { c.beginPath(); c.arc(x - 10, y, 10, Math.PI * 1.1, Math.PI * 1.9); c.arc(x + 10, y, 10, Math.PI * 1.1, Math.PI * 1.9); c.stroke(); });
+    } },
+    { name: '海洋', icon: '🐠', draw(c) {
+      c.fillStyle = lin(c, 0, 0, 0, 512, ['#8fe3ff', '#38b6e8', '#1b6fb8']); c.fillRect(0, 0, 512, 512);
+      // 光線
+      c.fillStyle = 'rgba(255,255,255,.12)';
+      [[60, 140], [200, 280], [360, 430]].forEach(([a, b]) => { c.beginPath(); c.moveTo(a, 0); c.lineTo(b, 0); c.lineTo(b + 60, 512); c.lineTo(a + 20, 512); c.fill(); });
+      // 沙地
+      c.fillStyle = lin(c, 0, 420, 0, 512, ['#ffe6a8', '#f2c776']);
+      c.beginPath(); c.moveTo(0, 450); c.quadraticCurveTo(256, 410, 512, 460); c.lineTo(512, 512); c.lineTo(0, 512); c.fill();
+      // 海草
+      c.lineCap = 'round';
+      [[40, '#3fbf6a'], [70, '#2fa65a'], [470, '#3fbf6a'], [440, '#59d17f']].forEach(([x, col]) => {
+        c.strokeStyle = col; c.lineWidth = 14; c.beginPath(); c.moveTo(x, 500);
+        c.bezierCurveTo(x - 30, 430, x + 30, 380, x - 10, 300); c.stroke();
+      });
+      // 小丑魚
+      const fish = (x, y, s, body, stripe, flip) => {
+        c.save(); c.translate(x, y); c.scale(flip ? -s : s, s);
+        c.fillStyle = body; c.beginPath(); c.moveTo(-60, 0); c.lineTo(-100, -36); c.lineTo(-96, 36); c.closePath(); c.fill();
+        ell(c, 0, 0, 72, 50, rad(c, 0, 0, 75, ['#fff1c9', body, body]));
+        c.save(); c.beginPath(); c.ellipse(0, 0, 72, 50, 0, 0, 7); c.clip();
+        c.fillStyle = stripe; c.fillRect(-20, -60, 16, 120); c.fillRect(-55, -60, 12, 120);
+        c.restore();
+        ell(c, 6, -50, 22, 12, body, -0.2);
+        c.restore();
+        // 臉不翻轉
+        face(c, x + (flip ? -1 : 1) * 36 * s, y - 6 * s, s * .9);
+      };
+      fish(250, 230, 1.35, '#ff8a3d', '#fff', false);
+      fish(110, 120, .55, '#ffd65c', '#6cc4ff', true);
+      fish(410, 330, .6, '#ff8fb1', '#fff', true);
+      // 海星
+      c.save(); c.translate(150, 470); c.rotate(0.2); c.fillStyle = '#ff7b8f'; c.beginPath();
+      for (let i = 0; i < 10; i++) { const r = i % 2 ? 14 : 34, a = i / 10 * Math.PI * 2 - Math.PI / 2; c.lineTo(Math.cos(a) * r, Math.sin(a) * r); }
+      c.fill(); c.restore(); face(c, 150, 468, .45);
+      // 章魚
+      c.fillStyle = '#c38dff';
+      for (let i = 0; i < 5; i++) { c.beginPath(); c.ellipse(320 + i * 16, 470, 8, 26, (i - 2) * 0.25, 0, 7); c.fill(); }
+      ell(c, 352, 440, 46, 38, rad(c, 352, 440, 48, ['#e4c8ff', '#c38dff', '#a56be8']));
+      face(c, 352, 442, .7);
+      // 泡泡
+      [[400, 80, 14], [420, 140, 9], [380, 180, 6], [210, 70, 10], [60, 260, 12], [470, 230, 8]].forEach(([x, y, r]) => {
+        c.beginPath(); c.arc(x, y, r, 0, 7); c.strokeStyle = 'rgba(255,255,255,.8)'; c.lineWidth = 3; c.stroke();
+        circ(c, x - r * .35, y - r * .35, r * .3, 'rgba(255,255,255,.9)');
+      });
+    } },
+    { name: '兔兔', icon: '🐰', draw(c) {
+      c.fillStyle = lin(c, 0, 0, 0, 512, ['#ffd3e2', '#fff0e0', '#fffbea']); c.fillRect(0, 0, 512, 512);
+      cloud(c, 90, 80, .8, false); cloud(c, 420, 60, .7, false);
+      c.fillStyle = lin(c, 0, 360, 0, 512, ['#b5ea8f', '#73c768']);
+      c.beginPath(); c.moveTo(0, 400); c.quadraticCurveTo(256, 330, 512, 400); c.lineTo(512, 512); c.lineTo(0, 512); c.fill();
+      for (let i = 0; i < 9; i++) flower(c, 30 + i * 58, 470 + (i % 2) * 20, .8, ['#ff9fbe', '#fff', '#b49cff', '#ffa94d'][i % 4]);
+      // 耳朵
+      [[-1, -0.18], [1, 0.18]].forEach(([d, rot]) => {
+        ell(c, 256 + d * 60, 120, 38, 100, rad(c, 256 + d * 60, 120, 100, ['#fff', '#f7f1f4', '#e6dbe1']), rot);
+        ell(c, 256 + d * 60, 128, 20, 76, '#ffb7cb', rot);
+      });
+      // 身體＋頭
+      ell(c, 256, 430, 120, 90, rad(c, 256, 430, 130, ['#fff', '#f7f1f4', '#e2d7dd']));
+      circ(c, 256, 280, 130, rad(c, 256, 280, 140, ['#ffffff', '#f8f3f6', '#e4d9df']));
+      face(c, 256, 275, 2.1);
+      ell(c, 256, 300, 10, 7, '#ff8fb1');
+      // 紅蘿蔔
+      c.save(); c.translate(256, 430); c.rotate(0.5);
+      c.fillStyle = lin(c, -20, 0, 20, 0, ['#ff9a3c', '#ffb866', '#f07c1a']);
+      c.beginPath(); c.moveTo(-24, -50); c.quadraticCurveTo(0, -60, 24, -50); c.lineTo(0, 60); c.closePath(); c.fill();
+      c.strokeStyle = 'rgba(160,70,0,.35)'; c.lineWidth = 3;
+      for (let y = -30; y < 40; y += 18) { c.beginPath(); c.moveTo(-14 + (y + 30) * .15, y); c.lineTo(-2, y); c.stroke(); }
+      c.fillStyle = '#5fbf4f';
+      [-14, 0, 14].forEach(x => { c.beginPath(); c.ellipse(x, -70, 8, 22, x * .03, 0, 7); c.fill(); });
+      c.restore();
+      // 小手
+      circ(c, 210, 420, 24, '#fff'); circ(c, 300, 420, 24, '#fff');
+    } },
+  ];
+
+  // 預先畫好每張圖（1024px 比較清晰）
+  const IMG = 1024;
+  const sources = PICS.map(p => {
+    const oc = document.createElement('canvas'); oc.width = oc.height = IMG;
+    const c = oc.getContext('2d'); c.scale(IMG / 512, IMG / 512); p.draw(c);
+    return oc;
+  });
+
+  // ---------- 遊戲狀態 ----------
+  let N = 3, pic = 0, showNum = true;
+  let grid = [], tiles = [], blank = 0;  // grid[pos] = tileId
+  let moves = 0, time = 0, timing = false, solved = false, solveT = 0, playing = false;
+  let parts = [];
+  let W = 0, H = 0, dpr = 1, bx = 0, by = 0, bs = 0, cell = 0, gap = 0;
+  let winTimer = null;
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 3);
+    W = stage.clientWidth; H = stage.clientHeight;
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    bs = Math.max(120, Math.min(W, H, 640) - 30);
+    bx = (W - bs) / 2; by = (H - bs) / 2;
+    gap = Math.max(4, bs * 0.012);
+  }
+
+  function drawThumb() {
+    tctx.clearRect(0, 0, 128, 128);
+    tctx.save(); rr(tctx, 0, 0, 128, 128, 18); tctx.clip();
+    tctx.drawImage(sources[pic], 0, 0, 128, 128); tctx.restore();
+  }
+
+  function newGame() {
+    clearTimeout(winTimer);
+    const total = N * N;
+    grid = []; tiles = [];
+    for (let i = 0; i < total; i++) { grid.push(i); tiles.push({ x: i % N, y: Math.floor(i / N), pop: 0 }); }
+    blank = total - 1;
+    // 用合法步數洗牌：一定解得開
+    let bpos = total - 1, prev = -1;
+    const steps = N === 3 ? 36 : 90;
+    for (let s = 0; s < steps; s++) {
+      const opts = neighbors(bpos).filter(p => p !== prev);
+      const p = KG.pick(opts);
+      grid[bpos] = grid[p]; grid[p] = blank; prev = bpos; bpos = p;
+    }
+    if (isSolved()) return newGame();
+    grid.forEach((t, p) => { tiles[t].x = tiles[t].tx = p % N; tiles[t].y = tiles[t].ty = Math.floor(p / N); });
+    moves = 0; time = 0; timing = false; solved = false; solveT = 0; parts = [];
+    movesEl.textContent = '0'; timeEl.textContent = '0:00';
+    document.getElementById('bSize').textContent = N + '×' + N;
+    drawThumb();
+  }
+
+  function neighbors(p) {
+    const x = p % N, y = Math.floor(p / N), r = [];
+    if (x > 0) r.push(p - 1); if (x < N - 1) r.push(p + 1);
+    if (y > 0) r.push(p - N); if (y < N - 1) r.push(p + N);
+    return r;
+  }
+  const blankPos = () => grid.indexOf(blank);
+  const isSolved = () => grid.every((t, i) => t === i);
+
+  // 把 pos 的方塊（同一行或列可一次推多塊）滑向空格
+  function slideFrom(pos) {
+    if (solved || !playing) return false;
+    const b = blankPos();
+    const bxp = b % N, byp = Math.floor(b / N), x = pos % N, y = Math.floor(pos / N);
+    if (pos === b || (x !== bxp && y !== byp)) { KG.sound('tick'); return false; }
+    const step = x === bxp ? (y > byp ? N : -N) : (x > bxp ? 1 : -1);
+    let cur = b;
+    while (cur !== pos) { const nx = cur + step; grid[cur] = grid[nx]; grid[nx] = blank; cur = nx; moves++; }
+    grid.forEach((t, p) => { tiles[t].tx = p % N; tiles[t].ty = Math.floor(p / N); if (t === blank) { tiles[t].x = tiles[t].tx; tiles[t].y = tiles[t].ty; } });
+    movesEl.textContent = moves;
+    timing = true;
+    KG.note(520 + Math.random() * 80, 0.07, 'triangle', 0.18);
+    if (isSolved()) win();
+    return true;
+  }
+  // 方向 dx,dy：方塊往這方向移動
+  function slideDir(dx, dy) {
+    const b = blankPos(), x = b % N - dx, y = Math.floor(b / N) - dy;
+    if (x < 0 || y < 0 || x >= N || y >= N) { KG.sound('tick'); return; }
+    slideFrom(y * N + x);
+  }
+
+  function win() {
+    solved = true; timing = false;
+    KG.sound('sparkle');
+    for (let i = 0; i < 50; i++) parts.push({ x: bx + Math.random() * bs, y: by + Math.random() * bs, vx: KG.rand(-40, 40), vy: KG.rand(-120, -30), life: KG.rand(.8, 1.6), s: KG.rand(6, 14) });
+    const best = KG.best('slide-' + N, moves, true);
+    const par = N === 3 ? 40 : 140;
+    const stars = moves <= par ? 3 : moves <= par * 2.5 ? 2 : 1;
+    winTimer = setTimeout(() => {
+      KG.say('完成了！好棒！');
+      KG.showWin({
+        icon: PICS[pic].icon, title: '拼好了！', stars,
+        message: `用了 ${moves} 步、${fmt(time)}（最少 ${best} 步）`,
+        replayText: '下一張圖', onReplay: () => { pic = (pic + 1) % PICS.length; newGame(); }
+      });
+    }, 1800);
+  }
+
+  const fmt = t => Math.floor(t / 60) + ':' + String(Math.floor(t % 60)).padStart(2, '0');
+
+  // ---------- 輸入 ----------
+  let down = null;
+  cv.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    cv.setPointerCapture(e.pointerId);
+    const r = cv.getBoundingClientRect();
+    down = { x: e.clientX - r.left, y: e.clientY - r.top, id: e.pointerId };
+  });
+  cv.addEventListener('pointerup', e => {
+    if (!down || down.id !== e.pointerId) return;
+    const r = cv.getBoundingClientRect();
+    const ux = e.clientX - r.left, uy = e.clientY - r.top, dx = ux - down.x, dy = uy - down.y;
+    if (Math.hypot(dx, dy) > 28) {
+      // 滑動手勢
+      if (Math.abs(dx) > Math.abs(dy)) slideDir(Math.sign(dx), 0); else slideDir(0, Math.sign(dy));
+    } else {
+      const cx = Math.floor((down.x - bx) / (bs / N)), cy = Math.floor((down.y - by) / (bs / N));
+      if (cx >= 0 && cy >= 0 && cx < N && cy < N) slideFrom(cy * N + cx);
+    }
+    down = null;
+  });
+  cv.addEventListener('pointercancel', () => { down = null; });
+  window.addEventListener('keydown', e => {
+    const k = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+    if (k && !document.querySelector('.kg-overlay')) { e.preventDefault(); slideDir(k[0], k[1]); }
+  });
+
+  document.getElementById('bPic').addEventListener('click', () => { KG.sound('pop'); pic = (pic + 1) % PICS.length; newGame(); KG.toast(PICS[pic].icon + ' ' + PICS[pic].name); });
+  document.getElementById('bSize').addEventListener('click', () => { KG.sound('pop'); N = N === 3 ? 4 : 3; newGame(); KG.toast(N + '×' + N); });
+  const bNum = document.getElementById('bNum');
+  bNum.addEventListener('click', () => { KG.sound('click'); showNum = !showNum; bNum.classList.toggle('off', !showNum); });
+  document.getElementById('bShuffle').addEventListener('click', () => { KG.sound('whoosh'); newGame(); });
+  document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+
+  // ---------- 繪製 ----------
+  function draw(dt, now) {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    const src = sources[pic], sc = IMG / N;
+    cell = bs / N;
+    // 木框
+    ctx.save();
+    ctx.shadowColor = 'rgba(60,40,80,.3)'; ctx.shadowBlur = 24; ctx.shadowOffsetY = 10;
+    rr(ctx, bx - 12, by - 12, bs + 24, bs + 24, 26);
+    ctx.fillStyle = lin(ctx, bx, by, bx + bs, by + bs, ['#ffe0ef', '#ffc2da', '#f7a6c6']); ctx.fill();
+    ctx.restore();
+    rr(ctx, bx - 3, by - 3, bs + 6, bs + 6, 18); ctx.fillStyle = '#e895b8'; ctx.fill();
+    // 完成時淡淡顯示整張圖當底
+    rr(ctx, bx, by, bs, bs, 16); ctx.fillStyle = '#d97fa6'; ctx.fill();
+    ctx.save(); rr(ctx, bx, by, bs, bs, 16); ctx.clip(); ctx.globalAlpha = 0.18; ctx.drawImage(src, bx, by, bs, bs); ctx.restore();
+
+    if (solved) solveT = Math.min(1, solveT + dt * 1.6);
+    const g = gap * (1 - solveT);
+    const rad = Math.max(4, cell * 0.12) * (1 - solveT * 0.6);
+    const k = Math.min(1, dt * 16);
+    for (let t = 0; t < tiles.length; t++) {
+      const tl = tiles[t];
+      { tl.x += (tl.tx - tl.x) * k; tl.y += (tl.ty - tl.y) * k; if (Math.abs(tl.tx - tl.x) < .002) tl.x = tl.tx; if (Math.abs(tl.ty - tl.y) < .002) tl.y = tl.ty; }
+      if (t === blank && !solved) continue;
+      const x = bx + tl.x * cell + g / 2, y = by + tl.y * cell + g / 2, s = cell - g;
+      ctx.save();
+      if (t === blank) ctx.globalAlpha = solveT;
+      ctx.shadowColor = 'rgba(80,30,60,.35)'; ctx.shadowBlur = 6 * (1 - solveT); ctx.shadowOffsetY = 3 * (1 - solveT);
+      rr(ctx, x, y, s, s, rad); ctx.fillStyle = '#fff'; ctx.fill();
+      ctx.shadowColor = 'transparent';
+      ctx.clip();
+      const sx = (t % N) * sc, sy = Math.floor(t / N) * sc;
+      ctx.drawImage(src, sx, sy, sc, sc, x, y, s, s);
+      // 立體高光
+      ctx.fillStyle = lin(ctx, x, y, x, y + s, ['rgba(255,255,255,.28)', 'rgba(255,255,255,0)', 'rgba(0,0,0,.08)']);
+      ctx.globalAlpha *= (1 - solveT);
+      ctx.fillRect(x, y, s, s);
+      ctx.restore();
+      if (!solved || solveT < 1) {
+        ctx.save(); ctx.globalAlpha = 1 - solveT;
+        rr(ctx, x + 1.5, y + 1.5, s - 3, s - 3, rad); ctx.strokeStyle = 'rgba(255,255,255,.75)'; ctx.lineWidth = 3; ctx.stroke();
+        if (showNum) {
+          const r = Math.max(11, cell * 0.12);
+          circ(ctx, x + r + 5, y + r + 5, r, 'rgba(255,255,255,.92)');
+          ctx.fillStyle = '#e8648d'; ctx.font = `800 ${Math.round(r * 1.2)}px ${getComputedStyle(document.body).fontFamily}`;
+          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.fillText(String(t + 1), x + r + 5, y + r + 6);
+        }
+        ctx.restore();
+      }
+    }
+    // 閃亮粒子
+    parts = parts.filter(p => (p.life -= dt) > 0);
+    parts.forEach(p => {
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      ctx.save(); ctx.globalAlpha = Math.min(1, p.life); ctx.translate(p.x, p.y); ctx.rotate(now / 300);
+      ctx.fillStyle = '#fff6a8'; ctx.beginPath();
+      for (let i = 0; i < 8; i++) { const r = i % 2 ? p.s * .35 : p.s, a = i / 8 * Math.PI * 2; ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r); }
+      ctx.fill(); ctx.restore();
+    });
+  }
+
+  let last = performance.now(), acc = 0;
+  function loop(now) {
+    const dt = Math.min(0.05, (now - last) / 1000); last = now;
+    if (timing) { time += dt; acc += dt; if (acc > 0.25) { acc = 0; timeEl.textContent = fmt(time); } }
+    draw(dt, now);
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('resize', resize);
+  resize(); newGame();
+  requestAnimationFrame(loop);
+  KG.showStart({
+    icon: '🧩', title: '滑塊拼圖',
+    message: '點空格旁邊的方塊滑過去，把圖片拼回來！',
+    onStart: () => { playing = true; KG.sound('pop'); }
+  });
+})();
+</script>
+</body>
+</html>

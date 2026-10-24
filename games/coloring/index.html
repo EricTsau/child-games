@@ -1,0 +1,543 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>塗色本</title>
+<link rel="stylesheet" href="../../assets/common.css">
+<style>
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    background:
+      radial-gradient(circle, rgba(255,255,255,.75) 0 2px, transparent 3px) 0 0 / 26px 26px,
+      linear-gradient(160deg, #fff3c4 0%, #ffe1ea 55%, #e3ecff 100%);
+  }
+  #app {
+    position: fixed; inset: 0;
+    height: 100vh; height: 100dvh;
+    display: grid; gap: 10px;
+    padding: 70px max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto auto;
+    grid-template-areas: "stage" "thumbs" "side";
+    --sw: min(54px, calc((100vw - 64px) / 6));
+  }
+  #stage { grid-area: stage; position: relative; min-height: 0; min-width: 0; display: flex; align-items: center; justify-content: center; touch-action: none; }
+  #paper {
+    position: relative; background: #fff; border-radius: 22px; padding: 10px;
+    box-shadow: 0 8px 0 rgba(74,59,82,.12), 0 18px 34px rgba(74,59,82,.22);
+    transform: rotate(-0.6deg);
+  }
+  /* 線圈裝訂 */
+  #paper::before {
+    content: ''; position: absolute; left: 9%; right: 9%; top: -13px; height: 26px;
+    background: radial-gradient(circle at 50% 50%, transparent 0 4px, #9b93ad 5px 7px, transparent 8px) 0 0 / 30px 26px repeat-x;
+    pointer-events: none;
+  }
+  #art { display: block; width: 100%; height: 100%; border-radius: 14px; touch-action: none; cursor: pointer; }
+  #art [data-i] { transition: fill .35s ease; }
+
+  #thumbs { grid-area: thumbs; display: flex; gap: 8px; justify-content: safe center; overflow-x: auto; padding: 4px 2px; scrollbar-width: none; }
+  #thumbs::-webkit-scrollbar { display: none; }
+  .thumb {
+    flex: 0 0 auto; width: 56px; height: 56px; padding: 3px; border-radius: 16px; border: 3px solid #fff;
+    background: #fff; box-shadow: 0 4px 0 rgba(74,59,82,.15), 0 6px 12px rgba(74,59,82,.15); cursor: pointer;
+    transition: transform .15s ease, border-color .15s;
+  }
+  .thumb svg { width: 100%; height: 100%; display: block; border-radius: 10px; pointer-events: none; }
+  .thumb.on { border-color: var(--kg-pink-dark); transform: scale(1.08); }
+
+  #side { grid-area: side; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; }
+  #palette { display: grid; grid-template-columns: repeat(6, var(--sw)); gap: 8px; }
+  .sw {
+    width: var(--sw); height: var(--sw); border-radius: 50%; border: 3px solid #fff; padding: 0; cursor: pointer;
+    box-shadow: 0 4px 0 rgba(74,59,82,.18), inset 0 -7px 10px rgba(0,0,0,.18), inset 0 7px 9px rgba(255,255,255,.6);
+    transition: transform .18s cubic-bezier(.2,1.6,.4,1), box-shadow .18s;
+    position: relative;
+  }
+  .sw::after { /* 光澤 */
+    content: ''; position: absolute; left: 22%; top: 14%; width: 30%; height: 22%; border-radius: 50%;
+    background: rgba(255,255,255,.75); transform: rotate(-25deg); pointer-events: none;
+  }
+  .sw.on { transform: scale(1.16) translateY(-3px); box-shadow: 0 0 0 3px #fff, 0 0 0 6px var(--kg-ink), 0 8px 12px rgba(74,59,82,.3); z-index: 1; }
+  #tools { display: flex; gap: 8px; }
+  #tools .kg-btn { font-size: 17px; padding: 10px 14px; min-height: 52px; }
+  #tools .kg-btn:disabled { filter: grayscale(.7); opacity: .55; }
+
+  .kg-pill .dot { display: inline-block; width: 18px; height: 18px; border-radius: 50%; vertical-align: -3px; margin-right: 4px; border: 2px solid var(--kg-ink); }
+
+  /* 點下去的顏料噴濺效果 */
+  .splat { position: fixed; width: 70px; height: 70px; margin: -35px 0 0 -35px; border-radius: 50%; pointer-events: none; z-index: 50; animation: splat .55s ease-out forwards; }
+  @keyframes splat { from { transform: scale(.1); opacity: .85; } to { transform: scale(1.5); opacity: 0; } }
+  .spark { position: fixed; font-size: 22px; pointer-events: none; z-index: 51; animation: spark .8s ease-out forwards; }
+  @keyframes spark { from { transform: translate(-50%,-50%) scale(.4); opacity: 1; } to { transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy))) scale(1); opacity: 0; } }
+
+  @media (min-aspect-ratio: 1/1) {
+    #app {
+      grid-template-columns: 74px minmax(0, 1fr) auto;
+      grid-template-rows: minmax(0, 1fr);
+      grid-template-areas: "thumbs stage side";
+      --sw: min(54px, calc((100vh - 170px) / 3));
+      --sw: min(54px, calc((100dvh - 170px) / 3));
+    }
+    #thumbs { flex-direction: column; overflow-x: hidden; overflow-y: auto; justify-content: safe center; align-items: center; }
+  }
+</style>
+</head>
+<body>
+<div class="kg-hud"><div class="kg-pill" id="hudName">🐱 小貓</div><div class="kg-pill" id="hudColor"><span class="dot"></span><span id="hudColorName">紅色</span></div></div>
+<div id="app">
+  <div id="stage"><div id="paper"><svg id="art" viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg"></svg></div></div>
+  <div id="thumbs"></div>
+  <div id="side">
+    <div id="palette"></div>
+    <div id="tools">
+      <button class="kg-btn yellow" id="undoBtn">↩️ 復原</button>
+      <button class="kg-btn blue" id="clearBtn">🧽 清除</button>
+      <button class="kg-btn green" id="saveBtn">💾 存圖</button>
+    </div>
+  </div>
+</div>
+<script src="../../assets/common.js"></script>
+<script>
+'use strict';
+(function () {
+  const INK = '#2b2230';
+  const SVGNS = 'http://www.w3.org/2000/svg';
+
+  /* ---------- 畫圖小幫手：產生 SVG 字串 ---------- */
+  // 可塗色的區塊（data-r）
+  const R = (tag, attrs) => `<${tag} data-r="1" ${attrs}/>`;
+  // 只是線條（不可點）
+  const L = d => `<path d="${d}" fill="none" stroke-width="5" pointer-events="none"/>`;
+  // 深色眼珠、白色亮點
+  const DK = (cx, cy, r) => `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${INK}" stroke="none" pointer-events="none"/>`;
+  const WH = (cx, cy, r) => `<circle cx="${cx}" cy="${cy}" r="${r}" fill="#fff" stroke="none" pointer-events="none"/>`;
+  // 外框（蓋在剪裁區塊上面）
+  const OL = d => `<path d="${d}" fill="none" pointer-events="none"/>`;
+  const BG = () => R('rect', 'x="-10" y="-10" width="420" height="420"');
+  const cloud = (x, y, s) => R('path', `d="M10 50 A20 20 0 0 1 22 18 A28 28 0 0 1 72 14 A22 22 0 0 1 92 50 Z" transform="translate(${x} ${y}) scale(${s})" vector-effect="non-scaling-stroke"`);
+  function starPts(cx, cy, R1, r1, n) {
+    const pts = [];
+    for (let i = 0; i < n * 2; i++) {
+      const a = -Math.PI / 2 + i * Math.PI / n, rr = i % 2 ? r1 : R1;
+      pts.push((cx + Math.cos(a) * rr).toFixed(1) + ',' + (cy + Math.sin(a) * rr).toFixed(1));
+    }
+    return pts.join(' ');
+  }
+  const star = (cx, cy, R1, r1) => R('polygon', `points="${starPts(cx, cy, R1, r1 || R1 * 0.45, 5)}"`);
+  function rays(cx, cy, r1, r2, n) {
+    let d = '';
+    for (let i = 0; i < n; i++) {
+      const a = i / n * Math.PI * 2;
+      d += `M${(cx + Math.cos(a) * r1).toFixed(1)} ${(cy + Math.sin(a) * r1).toFixed(1)} L${(cx + Math.cos(a) * r2).toFixed(1)} ${(cy + Math.sin(a) * r2).toFixed(1)} `;
+    }
+    return L(d);
+  }
+  // 小雛菊：5 片花瓣 + 花心
+  function daisy(cx, cy, s) {
+    let out = '';
+    for (let i = 0; i < 5; i++) {
+      const a = -Math.PI / 2 + i * Math.PI * 2 / 5;
+      out += R('circle', `cx="${(cx + Math.cos(a) * 9 * s).toFixed(1)}" cy="${(cy + Math.sin(a) * 9 * s).toFixed(1)}" r="${(7 * s).toFixed(1)}" stroke-width="4"`);
+    }
+    return out + R('circle', `cx="${cx}" cy="${cy}" r="${(6 * s).toFixed(1)}" stroke-width="4"`);
+  }
+  const eye = (cx, cy, rx, ry) => R('ellipse', `cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}"`) + DK(cx + 2, cy + 3, rx * 0.5) + WH(cx + 5, cy - 3, rx * 0.28);
+
+  /* ---------- 六張線稿 ---------- */
+  const PICS = [
+    {
+      id: 'cat', name: '小貓', emoji: '🐱',
+      draw: () => BG() +
+        R('circle', 'cx="338" cy="62" r="30"') + rays(338, 62, 40, 54, 10) +
+        cloud(18, 28, 0.9) + cloud(170, 14, 0.7) +
+        R('path', 'd="M-10 318 Q100 294 200 312 T410 304 L410 410 L-10 410 Z"') +
+        daisy(48, 352, 1) + daisy(352, 360, 1.1) +
+        R('path', 'd="M272 300 C345 305 368 228 334 186 C322 172 300 180 310 196 C334 232 322 272 266 276 Z"') +
+        R('ellipse', 'cx="200" cy="272" rx="88" ry="70"') +
+        R('ellipse', 'cx="200" cy="292" rx="46" ry="42"') +
+        R('ellipse', 'cx="160" cy="338" rx="28" ry="17"') +
+        R('ellipse', 'cx="240" cy="338" rx="28" ry="17"') +
+        R('path', 'd="M126 128 L136 46 L196 98 Z"') + R('path', 'd="M274 128 L264 46 L204 98 Z"') +
+        R('path', 'd="M140 112 L146 70 L178 98 Z"') + R('path', 'd="M260 112 L254 70 L222 98 Z"') +
+        R('circle', 'cx="200" cy="152" r="80"') +
+        eye(168, 146, 14, 18) + eye(232, 146, 14, 18) +
+        R('circle', 'cx="148" cy="182" r="13"') + R('circle', 'cx="252" cy="182" r="13"') +
+        R('path', 'd="M190 170 L210 170 L200 182 Z"') +
+        L('M200 182 Q192 198 182 192 M200 182 Q208 198 218 192') +
+        L('M138 168 L98 160 M138 178 L96 182 M262 168 L302 160 M262 178 L304 182') +
+        R('path', 'd="M200 238 L170 222 L170 254 Z"') + R('path', 'd="M200 238 L230 222 L230 254 Z"') +
+        R('circle', 'cx="200" cy="238" r="10"')
+    },
+    {
+      id: 'fish', name: '小魚', emoji: '🐟',
+      defs: p => `<clipPath id="${p}fb"><path d="M74 200 C104 116 232 108 288 200 C232 292 104 284 74 200 Z"/></clipPath>`,
+      draw: p => BG() +
+        R('circle', 'cx="96" cy="92" r="12"') + R('circle', 'cx="76" cy="56" r="8"') + R('circle', 'cx="104" cy="28" r="6"') +
+        R('circle', 'cx="330" cy="70" r="10"') + R('circle', 'cx="350" cy="40" r="6"') +
+        R('path', 'd="M-10 336 Q100 314 200 334 T410 328 L410 410 L-10 410 Z"') +
+        R('path', 'd="M58 350 C38 300 78 272 52 216 C82 246 96 292 84 350 Z"') +
+        R('path', 'd="M342 346 C322 296 360 266 346 206 C374 246 378 292 364 346 Z"') +
+        R('polygon', `points="${starPts(292, 366, 26, 12, 5)}"`) +
+        R('path', 'd="M150 372 Q170 344 190 372 Z"') +
+        R('path', 'd="M140 152 Q180 70 252 152 Z"') +
+        R('path', 'd="M160 250 Q188 324 222 252 Z"') +
+        R('path', 'd="M262 200 L346 136 Q326 200 346 264 Z"') +
+        R('path', 'd="M74 200 C104 116 232 108 288 200 C232 292 104 284 74 200 Z"') +
+        `<g clip-path="url(#${p}fb)">` + R('rect', 'x="170" y="90" width="28" height="220"') + R('rect', 'x="226" y="90" width="22" height="220"') + '</g>' +
+        OL('M74 200 C104 116 232 108 288 200 C232 292 104 284 74 200 Z') +
+        L('M146 166 Q160 200 146 236') +
+        R('circle', 'cx="118" cy="186" r="18"') + DK(122, 188, 9) + WH(126, 183, 4) +
+        R('circle', 'cx="114" cy="218" r="7" stroke-width="4"') +
+        L('M84 212 Q92 218 100 213')
+    },
+    {
+      id: 'butterfly', name: '蝴蝶', emoji: '🦋',
+      draw: () => BG() +
+        cloud(270, 20, 0.95) + cloud(10, 300, 0.6) +
+        R('path', 'd="M-10 330 Q120 290 220 320 T410 310 L410 410 L-10 410 Z"') +
+        daisy(60, 360, 1.1) + daisy(150, 376, 0.9) + daisy(330, 356, 1.2) +
+        R('path', 'd="M196 196 C128 52 30 70 58 156 C72 204 140 214 196 206 Z"') +
+        R('path', 'd="M204 196 C272 52 370 70 342 156 C328 204 260 214 204 206 Z"') +
+        R('path', 'd="M196 212 C118 206 64 262 98 304 C130 338 182 296 198 234 Z"') +
+        R('path', 'd="M204 212 C282 206 336 262 302 304 C270 338 218 296 202 234 Z"') +
+        R('circle', 'cx="112" cy="138" r="24"') + R('circle', 'cx="288" cy="138" r="24"') +
+        R('circle', 'cx="152" cy="176" r="12"') + R('circle', 'cx="248" cy="176" r="12"') +
+        R('circle', 'cx="128" cy="272" r="16"') + R('circle', 'cx="272" cy="272" r="16"') +
+        L('M194 120 Q178 82 160 72 M206 120 Q222 82 240 72') +
+        R('circle', 'cx="158" cy="68" r="9"') + R('circle', 'cx="242" cy="68" r="9"') +
+        R('ellipse', 'cx="200" cy="222" rx="15" ry="72"') +
+        R('circle', 'cx="200" cy="138" r="24"') +
+        DK(191, 135, 4) + DK(209, 135, 4) + L('M192 147 Q200 155 208 147')
+    },
+    {
+      id: 'house', name: '房子', emoji: '🏠',
+      draw: () => BG() +
+        R('circle', 'cx="56" cy="56" r="28"') + rays(56, 56, 38, 50, 10) +
+        cloud(240, 18, 0.9) +
+        R('path', 'd="M-10 316 Q200 294 410 316 L410 410 L-10 410 Z"') +
+        R('path', 'd="M180 330 L220 330 L254 410 L146 410 Z"') +
+        R('rect', 'x="34" y="226" width="22" height="104" rx="4"') +
+        R('circle', 'cx="45" cy="206" r="40"') +
+        R('circle', 'cx="30" cy="196" r="6" stroke-width="4"') + R('circle', 'cx="60" cy="214" r="6" stroke-width="4"') + R('circle', 'cx="48" cy="182" r="6" stroke-width="4"') +
+        R('rect', 'x="252" y="88" width="32" height="72"') +
+        R('path', 'd="M76 186 L200 80 L324 186 Z"') +
+        R('rect', 'x="98" y="180" width="204" height="150"') +
+        R('path', 'd="M174 330 L174 272 A26 26 0 0 1 226 272 L226 330 Z"') + DK(216, 302, 4) +
+        R('rect', 'x="116" y="204" width="44" height="44" rx="4"') + R('rect', 'x="240" y="204" width="44" height="44" rx="4"') +
+        L('M138 204 V248 M116 226 H160 M262 204 V248 M240 226 H284') +
+        R('circle', 'cx="200" cy="146" r="18"') + L('M200 128 V164 M182 146 H218') +
+        R('ellipse', 'cx="352" cy="320" rx="44" ry="28"') +
+        R('circle', 'cx="336" cy="312" r="7" stroke-width="4"') + R('circle', 'cx="362" cy="304" r="7" stroke-width="4"') + R('circle', 'cx="372" cy="326" r="7" stroke-width="4"')
+    },
+    {
+      id: 'rocket', name: '火箭', emoji: '🚀',
+      defs: p => `<clipPath id="${p}rb"><path d="M200 46 C258 98 252 222 242 300 L158 300 C148 222 142 98 200 46 Z"/></clipPath>`,
+      draw: p => BG() +
+        star(44, 160, 14) + star(120, 230, 10) + star(340, 210, 13) + star(260, 40, 9) + star(360, 300, 10) + star(40, 290, 9) +
+        R('path', 'd="M96 42 A40 40 0 1 0 132 100 A40 40 0 0 1 96 42 Z"') +
+        R('ellipse', 'cx="322" cy="102" rx="66" ry="16"') + R('circle', 'cx="322" cy="102" r="38"') +
+        R('path', 'd="M300 82 Q322 74 342 86 Q322 94 300 82 Z" stroke-width="4"') +
+        R('path', 'd="M-10 410 L-10 360 A30 30 0 0 1 40 340 A36 36 0 0 1 110 350 A30 30 0 0 1 160 376 L170 410 Z"') +
+        R('path', 'd="M410 410 L410 360 A30 30 0 0 0 360 340 A36 36 0 0 0 290 350 A30 30 0 0 0 240 376 L230 410 Z"') +
+        R('path', 'd="M168 296 Q200 400 232 296 Z"') + R('path', 'd="M182 296 Q200 362 218 296 Z"') +
+        R('path', 'd="M162 222 L112 306 L168 292 Z"') + R('path', 'd="M238 222 L288 306 L232 292 Z"') +
+        R('path', 'd="M200 46 C258 98 252 222 242 300 L158 300 C148 222 142 98 200 46 Z"') +
+        `<g clip-path="url(#${p}rb)">` + R('rect', 'x="100" y="20" width="200" height="72"') + R('rect', 'x="100" y="252" width="200" height="22"') + '</g>' +
+        OL('M200 46 C258 98 252 222 242 300 L158 300 C148 222 142 98 200 46 Z') +
+        R('circle', 'cx="200" cy="168" r="30"') + R('circle', 'cx="200" cy="168" r="19"') +
+        L('M190 160 Q194 154 202 153') +
+        R('rect', 'x="191" y="258" width="18" height="58" rx="9"')
+    },
+    {
+      id: 'flower', name: '花花', emoji: '🌸',
+      draw: () => {
+        let petals = '';
+        for (let k = 0; k < 6; k++) petals += R('ellipse', `cx="200" cy="104" rx="30" ry="46" transform="rotate(${k * 60} 200 156)"`);
+        return BG() +
+          cloud(14, 30, 0.8) + cloud(300, 60, 0.7) +
+          R('path', 'd="M-10 368 L410 368 L410 410 L-10 410 Z"') +
+          R('path', 'd="M194 210 Q184 280 194 340 L206 340 Q196 280 206 210 Z"') +
+          R('path', 'd="M196 292 C156 258 120 272 104 284 C134 314 168 316 196 304 Z"') +
+          R('path', 'd="M204 272 C244 238 280 252 296 264 C266 294 232 296 204 284 Z"') +
+          R('path', 'd="M142 336 L258 336 L244 396 L156 396 Z"') +
+          R('rect', 'x="128" y="318" width="144" height="26" rx="8"') +
+          R('path', 'd="M200 384 C176 368 182 352 192 354 C196 354 199 357 200 360 C201 357 204 354 208 354 C218 352 224 368 200 384 Z" stroke-width="4"') +
+          petals +
+          R('circle', 'cx="200" cy="156" r="36"') +
+          DK(188, 150, 5) + DK(212, 150, 5) + WH(190, 148, 1.8) + WH(214, 148, 1.8) +
+          R('circle', 'cx="178" cy="166" r="6" stroke-width="3"') + R('circle', 'cx="222" cy="166" r="6" stroke-width="3"') +
+          L('M190 166 Q200 176 210 166') +
+          R('path', 'd="M320 200 C300 180 330 170 334 192 C338 170 368 180 348 200 C368 220 338 230 334 208 C330 230 300 220 320 200 Z" stroke-width="4"') +
+          R('ellipse', 'cx="334" cy="200" rx="4" ry="12" stroke-width="3"');
+      }
+    }
+  ];
+
+  /* ---------- 調色盤：16 色 + 彩虹 + 糖果漸層 ---------- */
+  const COLORS = [
+    { k: 'red', n: '紅色', c: '#ff4d5e' }, { k: 'orange', n: '橘色', c: '#ff9a3c' }, { k: 'yellow', n: '黃色', c: '#ffd93b' },
+    { k: 'lime', n: '淺綠色', c: '#a8e05f' }, { k: 'green', n: '綠色', c: '#3fbf6f' }, { k: 'teal', n: '湖水綠', c: '#2ec4b6' },
+    { k: 'sky', n: '天空藍', c: '#5ac8fa' }, { k: 'blue', n: '藍色', c: '#3b7ddd' }, { k: 'purple', n: '紫色', c: '#8e6cef' },
+    { k: 'pink', n: '粉紅色', c: '#ff8fc8' }, { k: 'rose', n: '桃紅色', c: '#e0479e' }, { k: 'peach', n: '膚色', c: '#ffc9a8' },
+    { k: 'brown', n: '咖啡色', c: '#a0673a' }, { k: 'gray', n: '灰色', c: '#9aa3ad' }, { k: 'black', n: '黑色', c: '#3a3340' },
+    { k: 'white', n: '白色', c: '#ffffff' },
+    { k: 'rainbow', n: '彩虹', grad: true, css: 'linear-gradient(135deg,#ff5b6e,#ffa53b,#ffe14d,#5fd38a,#4fb3ff,#a77bff)' },
+    { k: 'candy', n: '糖果色', grad: true, css: 'linear-gradient(180deg,#ffc1e0,#d7b8ff,#a8d8ff)' }
+  ];
+  const CMAP = {};
+  COLORS.forEach(c => { CMAP[c.k] = c; });
+  const gradDefs = p => `
+    <linearGradient id="${p}rainbow" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff5b6e"/><stop offset=".2" stop-color="#ffa53b"/><stop offset=".4" stop-color="#ffe14d"/>
+      <stop offset=".6" stop-color="#5fd38a"/><stop offset=".8" stop-color="#4fb3ff"/><stop offset="1" stop-color="#a77bff"/>
+    </linearGradient>
+    <linearGradient id="${p}candy" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffc1e0"/><stop offset=".5" stop-color="#d7b8ff"/><stop offset="1" stop-color="#a8d8ff"/>
+    </linearGradient>`;
+  const fillOf = (k, p) => { const c = CMAP[k]; if (!c) return '#ffffff'; return c.grad ? `url(#${p}${k})` : c.c; };
+
+  function svgInner(pic, p) {
+    return `<defs>${gradDefs(p)}${pic.defs ? pic.defs(p) : ''}</defs>` +
+      `<g fill="#ffffff" stroke="${INK}" stroke-width="6" stroke-linejoin="round" stroke-linecap="round">${pic.draw(p)}</g>`;
+  }
+
+  /* ---------- 狀態 ---------- */
+  const art = document.getElementById('art');
+  const paper = document.getElementById('paper');
+  const stage = document.getElementById('stage');
+  const thumbsEl = document.getElementById('thumbs');
+  const paletteEl = document.getElementById('palette');
+  const undoBtn = document.getElementById('undoBtn');
+  let cur = 0;              // 目前圖畫
+  let color = 'red';        // 目前顏色
+  let regions = [];         // 主畫面上的可塗區塊
+  const fills = {};         // 每張圖的顏色紀錄 picId -> [key|null]
+  const undos = {};         // 每張圖的復原堆疊
+  const celebrated = {};
+  const thumbRegions = [];
+
+  PICS.forEach(pic => {
+    const saved = KG.store.get('coloring:' + pic.id, null);
+    fills[pic.id] = Array.isArray(saved) ? saved : [];
+    undos[pic.id] = [];
+  });
+
+  /* 縮圖 */
+  PICS.forEach((pic, i) => {
+    const b = document.createElement('button');
+    b.className = 'thumb';
+    b.setAttribute('aria-label', pic.name);
+    b.innerHTML = `<svg viewBox="0 0 400 400" xmlns="${SVGNS}">${svgInner(pic, 't' + i)}</svg>`;
+    thumbRegions[i] = Array.from(b.querySelectorAll('[data-r]'));
+    b.addEventListener('click', () => { KG.sound('click'); loadPic(i); });
+    thumbsEl.appendChild(b);
+    applyFills(thumbRegions[i], fills[pic.id], 't' + i);
+  });
+
+  /* 調色盤 */
+  COLORS.forEach(c => {
+    const b = document.createElement('button');
+    b.className = 'sw';
+    b.style.background = c.grad ? c.css : c.c;
+    b.dataset.k = c.k;
+    b.setAttribute('aria-label', c.n);
+    b.addEventListener('click', () => pickColor(c.k, true));
+    paletteEl.appendChild(b);
+  });
+
+  function applyFills(els, arr, p) {
+    els.forEach((el, i) => { el.style.fill = arr[i] ? fillOf(arr[i], p) : ''; });
+  }
+
+  function pickColor(k, speak) {
+    color = k;
+    paletteEl.querySelectorAll('.sw').forEach(b => b.classList.toggle('on', b.dataset.k === k));
+    const c = CMAP[k];
+    const dot = document.querySelector('#hudColor .dot');
+    dot.style.background = c.grad ? c.css : c.c;
+    document.getElementById('hudColorName').textContent = c.n;
+    if (speak) { KG.sound('click'); KG.say(c.n); }
+  }
+
+  function loadPic(i) {
+    cur = i;
+    const pic = PICS[i];
+    art.innerHTML = svgInner(pic, 'm');
+    regions = Array.from(art.querySelectorAll('[data-r]'));
+    regions.forEach((el, j) => { el.dataset.i = j; });
+    // 先不要動畫，直接套用顏色
+    regions.forEach(el => { el.style.transition = 'none'; });
+    applyFills(regions, fills[pic.id], 'm');
+    void art.getBoundingClientRect();
+    regions.forEach(el => { el.style.transition = ''; });
+    thumbsEl.querySelectorAll('.thumb').forEach((b, j) => b.classList.toggle('on', j === i));
+    const tb = thumbsEl.children[i];
+    if (tb && tb.scrollIntoView) tb.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    document.getElementById('hudName').textContent = pic.emoji + ' ' + pic.name;
+    updateUndo();
+  }
+
+  function save() {
+    const pic = PICS[cur];
+    KG.store.set('coloring:' + pic.id, fills[pic.id]);
+  }
+  function setRegion(j, k) {
+    const pic = PICS[cur];
+    fills[pic.id][j] = k;
+    const f = k ? fillOf(k, 'm') : '';
+    regions[j].style.fill = f;
+    const t = thumbRegions[cur][j];
+    if (t) t.style.fill = k ? fillOf(k, 't' + cur) : '';
+  }
+  function updateUndo() { undoBtn.disabled = undos[PICS[cur].id].length === 0; }
+
+  /* 點區塊塗色 */
+  art.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    const el = e.target.closest('[data-i]');
+    if (!el) return;
+    const j = +el.dataset.i;
+    const pic = PICS[cur];
+    const prev = fills[pic.id][j] || null;
+    if (prev === color) { KG.sound('tick'); return; }
+    undos[pic.id].push({ t: 'fill', j, prev });
+    if (undos[pic.id].length > 200) undos[pic.id].shift();
+    setRegion(j, color);
+    save();
+    updateUndo();
+    splash(e.clientX, e.clientY);
+    KG.sound('pop');
+    checkDone();
+  });
+
+  function splash(x, y) {
+    const c = CMAP[color];
+    const s = document.createElement('div');
+    s.className = 'splat';
+    s.style.left = x + 'px'; s.style.top = y + 'px';
+    s.style.background = c.grad ? c.css : c.c;
+    if (c.k === 'white') s.style.boxShadow = '0 0 0 3px #ddd inset';
+    document.body.appendChild(s);
+    setTimeout(() => s.remove(), 600);
+    const n = c.grad ? 6 : 3;
+    for (let i = 0; i < n; i++) {
+      const sp = document.createElement('div');
+      sp.className = 'spark';
+      sp.textContent = c.grad ? KG.pick(['✨', '🌟', '💖']) : '✨';
+      const a = Math.random() * Math.PI * 2, d = 30 + Math.random() * 30;
+      sp.style.left = x + 'px'; sp.style.top = y + 'px';
+      sp.style.setProperty('--dx', Math.cos(a) * d + 'px');
+      sp.style.setProperty('--dy', Math.sin(a) * d + 'px');
+      document.body.appendChild(sp);
+      setTimeout(() => sp.remove(), 850);
+    }
+  }
+
+  function checkDone() {
+    const pic = PICS[cur];
+    const arr = fills[pic.id];
+    const all = regions.every((_, j) => arr[j] && arr[j] !== 'white');
+    if (all && !celebrated[pic.id]) {
+      celebrated[pic.id] = true;
+      const r = paper.getBoundingClientRect();
+      KG.confetti(r.left + r.width / 2, r.top + r.height / 2);
+      KG.sound('win');
+      KG.toast('好漂亮！🌈');
+      KG.say('哇！好漂亮喔！');
+    }
+  }
+
+  /* 復原 / 清除 */
+  undoBtn.addEventListener('click', () => {
+    const pic = PICS[cur];
+    const st = undos[pic.id];
+    const u = st.pop();
+    if (!u) return;
+    KG.sound('whoosh');
+    if (u.t === 'fill') setRegion(u.j, u.prev);
+    else u.prev.forEach((k, j) => setRegion(j, k || null));
+    save();
+    updateUndo();
+  });
+  document.getElementById('clearBtn').addEventListener('click', () => {
+    const pic = PICS[cur];
+    const arr = fills[pic.id];
+    if (!arr.some(Boolean)) { KG.sound('tick'); return; }
+    undos[pic.id].push({ t: 'clear', prev: regions.map((_, j) => arr[j] || null) });
+    regions.forEach((_, j) => setRegion(j, null));
+    celebrated[pic.id] = false;
+    save();
+    updateUndo();
+    KG.sound('whoosh');
+    KG.toast('變乾淨了！');
+  });
+
+  /* 存成 PNG 圖片 */
+  document.getElementById('saveBtn').addEventListener('click', () => {
+    KG.sound('click');
+    const clone = art.cloneNode(true);
+    clone.setAttribute('width', '1200');
+    clone.setAttribute('height', '1200');
+    clone.setAttribute('xmlns', SVGNS);
+    clone.querySelectorAll('[data-i]').forEach(el => { el.style.transition = ''; });
+    const str = new XMLSerializer().serializeToString(clone);
+    const url = URL.createObjectURL(new Blob([str], { type: 'image/svg+xml;charset=utf-8' }));
+    const img = new Image();
+    img.onload = () => {
+      const cv = document.createElement('canvas');
+      cv.width = 1200; cv.height = 1200;
+      const c = cv.getContext('2d');
+      c.fillStyle = '#fff';
+      c.fillRect(0, 0, 1200, 1200);
+      c.drawImage(img, 0, 0, 1200, 1200);
+      URL.revokeObjectURL(url);
+      cv.toBlob(b => {
+        if (!b) return;
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(b);
+        a.download = '我的塗色-' + PICS[cur].name + '.png';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+        KG.toast('存好了！📸');
+        KG.sound('sparkle');
+      }, 'image/png');
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); KG.toast('存不起來耶'); };
+    img.src = url;
+  });
+
+  /* 鍵盤：左右換圖、Ctrl+Z 復原 */
+  window.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undoBtn.click(); }
+    else if (e.key === 'ArrowRight') loadPic((cur + 1) % PICS.length);
+    else if (e.key === 'ArrowLeft') loadPic((cur + PICS.length - 1) % PICS.length);
+  });
+
+  /* 依畫面大小調整紙張 */
+  function layout() {
+    const r = stage.getBoundingClientRect();
+    const s = Math.max(120, Math.floor(Math.min(r.width - 8, r.height - 20)));
+    paper.style.width = s + 'px';
+    paper.style.height = s + 'px';
+  }
+  window.addEventListener('resize', layout);
+  if (window.ResizeObserver) new ResizeObserver(layout).observe(stage);
+  document.addEventListener('gesturestart', e => e.preventDefault());
+
+  pickColor('red', false);
+  loadPic(0);
+  layout();
+  KG.showStart({
+    icon: '🖍️', title: '塗色本',
+    message: '先點一個顏色，再點圖畫裡的格子，幫圖畫穿上漂亮的顏色！',
+    button: '開始塗色！',
+    onStart: () => KG.say('選一個顏色，開始塗色吧！')
+  });
+})();
+</script>
+</body>
+</html>

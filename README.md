@@ -4,7 +4,7 @@
 
 ## 🎮 馬上玩
 
-**👉 <https://erictsau.github.io/-/>**
+**👉 <https://erictsau.github.io/child-games/>**
 
 用手機或平板打開後，可以選「加到主畫面」，之後點圖示就能直接玩。
 
@@ -48,7 +48,7 @@
 1. 把這個專案推到 GitHub。
 2. 到 repository 的 **Settings → Pages**。
 3. **Source** 選 **Deploy from a branch**，Branch 選 `main`（或你的分支）和 `/ (root)`，按 **Save**。
-4. 等一兩分鐘，網址會是 `https://<你的帳號>.github.io/<repo 名稱>/`（本專案為 <https://erictsau.github.io/-/>）。
+4. 等一兩分鐘，網址會是 `https://<你的帳號>.github.io/<repo 名稱>/`（本專案為 <https://erictsau.github.io/child-games/>）。
 
 ## 在自己電腦上玩
 

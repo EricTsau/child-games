@@ -1,0 +1,1191 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>小小花園</title>
+<link rel="stylesheet" href="../../assets/common.css">
+<style>
+  html, body { height: 100%; overflow: hidden; background: #9fe0ff; }
+  body { height: 100vh; height: 100dvh; touch-action: none; }
+  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+
+  /* ===== 工具列 ===== */
+  #tools { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6000; display: flex; justify-content: center; gap: clamp(6px, 2.5vw, 18px);
+    padding: 10px 10px calc(10px + env(safe-area-inset-bottom)); pointer-events: none; }
+  #tools[hidden], #seeds[hidden] { display: none; }
+  .tool { pointer-events: auto; position: relative; width: clamp(70px, 21vw, 96px); height: clamp(78px, 23vw, 102px); border-radius: 26px; border: 4px solid #fff; cursor: pointer;
+    background: linear-gradient(180deg, #fff6e0, #ffd99a); box-shadow: 0 6px 0 #c98a3c, 0 10px 18px rgba(60, 40, 10, .3); padding: 2px 0 0;
+    font: 900 clamp(13px, 3.6vw, 16px) var(--kg-font); color: #7a4a1c; transition: transform .15s cubic-bezier(.2, 1.8, .4, 1), box-shadow .15s; touch-action: manipulation; }
+  .tool canvas { width: 70%; height: auto; display: block; margin: 0 auto -2px; pointer-events: none; }
+  .tool.sel { transform: translateY(-12px) scale(1.06); background: linear-gradient(180deg, #ffffff, #ffe9b8); box-shadow: 0 6px 0 #c98a3c, 0 0 0 4px #ffd23a, 0 14px 22px rgba(60, 40, 10, .35); }
+  .tool:active { transform: translateY(2px) scale(.96); }
+  #seeds { position: fixed; left: 50%; transform: translateX(-50%); z-index: 6000; display: flex; gap: 8px; padding: 8px 10px; max-width: calc(100vw - 16px); overflow-x: auto;
+    background: rgba(255, 255, 255, .92); border: 4px solid #fff; border-radius: 22px; box-shadow: 0 6px 0 rgba(120, 80, 30, .25), 0 10px 18px rgba(0, 0, 0, .2); animation: kg-pop .3s cubic-bezier(.2, 1.6, .4, 1); }
+  .seed { position: relative; flex: 0 0 auto; width: 62px; height: 70px; border-radius: 16px; border: 3px solid #fff; background: linear-gradient(180deg, #f2ffe0, #c8f0a0); box-shadow: 0 4px 0 #7cbf4a;
+    cursor: pointer; padding: 0; font: 900 11px var(--kg-font); color: #3a6a1a; touch-action: manipulation; }
+  .seed canvas { width: 48px; height: 48px; display: block; margin: 1px auto 0; pointer-events: none; }
+  .seed.sel { outline: 4px solid #ff8fb1; transform: scale(1.06); }
+  .seed.locked canvas { filter: grayscale(1) opacity(.4); }
+  .seed .need { position: absolute; top: -6px; right: -6px; display: flex; align-items: center; font: 900 11px var(--kg-font); color: #7a4a1c; background: #fff; border-radius: 999px; padding: 0 5px 0 2px; box-shadow: 0 2px 4px rgba(0, 0, 0, .2); }
+
+  /* ===== HUD：木牌 ===== */
+  .hud { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 8000; pointer-events: none; text-align: center;
+    width: min(250px, calc(100vw - 136px)); padding: 6px 10px 7px; color: #fff; font-weight: 900;
+    background: linear-gradient(180deg, #8fdc6a, #4fae3f); border: 3px solid #2f7a2a; border-radius: 16px;
+    box-shadow: inset 0 2px 0 rgba(255, 255, 255, .45), inset 0 -3px 0 rgba(0, 0, 0, .12), 0 6px 12px rgba(30, 60, 10, .3); }
+  .hud[hidden] { display: none; }
+  .hud .t { font-size: 15px; text-shadow: 0 2px 0 #2f7a2a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .goals { display: flex; justify-content: center; gap: 8px; margin-top: 3px; }
+  .goal { display: flex; align-items: center; gap: 2px; background: rgba(0, 60, 0, .25); border-radius: 999px; padding: 1px 8px 1px 2px; font-size: 15px; }
+  .goal canvas { width: 26px; height: 26px; }
+  .goal.done { background: #ffd23a; color: #7a4a1c; }
+  .bump { animation: bump .4s cubic-bezier(.2, 1.8, .4, 1); }
+  @keyframes bump { 0% { transform: scale(1); } 40% { transform: scale(1.3); } 100% { transform: scale(1); } }
+  #freeDone { position: fixed; top: 74px; left: 50%; transform: translateX(-50%); z-index: 7900; }
+  #freeDone[hidden] { display: none; }
+
+  /* ===== 共用介面元件 ===== */
+  .scr { position: fixed; inset: 0; z-index: 7000; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: clamp(10px, 2.4vh, 22px); padding: 72px 16px 24px; text-align: center; touch-action: none; }
+  .scr[hidden] { display: none; }
+  .scr.dim { background: radial-gradient(ellipse at center, rgba(30, 50, 20, .1), rgba(30, 50, 20, .5)); animation: kg-fade .25s ease; }
+  .logo { display: flex; justify-content: center; font-size: clamp(50px, 15vw, 110px); font-weight: 900; line-height: 1.05; letter-spacing: .02em; }
+  .logo span { display: inline-block; color: var(--c); -webkit-text-stroke: .14em #fff; paint-order: stroke fill;
+    text-shadow: 0 .07em 0 var(--d), 0 .12em .2em rgba(30, 60, 20, .35); animation: lgIn .7s cubic-bezier(.2, 1.7, .4, 1) both, lgBob 2.4s ease-in-out infinite; }
+  @keyframes lgIn { from { transform: translateY(-80px) scale(.3); opacity: 0; } to { transform: none; opacity: 1; } }
+  @keyframes lgBob { 0%, 100% { transform: translateY(0) rotate(-3deg); } 50% { transform: translateY(-8px) rotate(3deg); } }
+  .tag { font-size: clamp(16px, 4.4vw, 22px); font-weight: 900; color: #3a6a1a; background: linear-gradient(180deg, #fff, #eaffd8);
+    border: 3px solid #fff; border-radius: 999px; padding: 6px 18px; box-shadow: 0 4px 0 #8fd86a, 0 8px 16px rgba(0, 0, 0, .15); }
+  .cbtn { --b1: #9cf07a; --b2: #3fbf4c; --b3: #2a8f37; position: relative; font: 900 clamp(22px, 6.4vw, 32px)/1 var(--kg-font); color: #fff;
+    padding: .55em 1.5em .6em; border: 4px solid #fff; border-radius: 999px; cursor: pointer; background: linear-gradient(180deg, var(--b1), var(--b2));
+    box-shadow: 0 7px 0 var(--b3), 0 14px 24px rgba(30, 30, 60, .28); text-shadow: 0 3px 0 rgba(0, 0, 0, .18); transition: transform .1s, box-shadow .1s; min-height: 56px; touch-action: manipulation; }
+  .cbtn::before { content: ''; position: absolute; left: 14%; right: 14%; top: 7%; height: 36%; border-radius: 999px; background: linear-gradient(rgba(255, 255, 255, .75), rgba(255, 255, 255, 0)); pointer-events: none; }
+  .cbtn:active { transform: translateY(5px) scale(.97); box-shadow: 0 2px 0 var(--b3), 0 6px 12px rgba(30, 30, 60, .25); }
+  .cbtn.pulse { animation: pulse 1.3s ease-in-out infinite; }
+  .cbtn.blue { --b1: #8ad6ff; --b2: #3d9df0; --b3: #2470b8; }
+  .cbtn.pink { --b1: #ffb0cc; --b2: #f26a9b; --b3: #c2426f; }
+  .cbtn.small { font-size: 19px; padding: .5em 1.1em; min-height: 52px; }
+  .cbtn.tiny { font-size: 16px; padding: .35em .9em; min-height: 44px; }
+  @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.07); } }
+  .panel { width: min(560px, 100%); max-height: calc(100% - 10px); overflow: auto; background: linear-gradient(180deg, rgba(255, 255, 255, .97), rgba(240, 255, 230, .97));
+    border: 5px solid #fff; border-radius: 30px; padding: 18px 14px 20px; box-shadow: 0 10px 0 rgba(80, 150, 50, .3), 0 20px 40px rgba(20, 40, 10, .3); animation: kg-pop .4s cubic-bezier(.2, 1.6, .4, 1); }
+  .panel h2 { margin: 2px 0 12px; font-size: 28px; color: #3a6a1a; }
+  .lvls { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 12px; }
+  .lv { position: relative; border: 4px solid #fff; border-radius: 24px; padding: 8px 4px 8px; cursor: pointer; background: linear-gradient(180deg, var(--l1), var(--l2));
+    box-shadow: 0 6px 0 var(--l3), 0 10px 16px rgba(0, 0, 0, .15); font-family: var(--kg-font); color: #fff; min-height: 112px; transition: transform .1s; animation: kg-pop .45s cubic-bezier(.2, 1.6, .4, 1) both; }
+  .lv:active { transform: translateY(4px); box-shadow: 0 2px 0 var(--l3); }
+  .lv canvas { width: 50px; height: 50px; display: block; margin: 0 auto; }
+  .lv .num { position: absolute; left: 7px; top: 4px; font-size: 18px; font-weight: 900; text-shadow: 0 2px 0 rgba(0, 0, 0, .25); }
+  .lv small { display: block; font-size: 13px; font-weight: 800; margin: 2px 0 3px; text-shadow: 0 1px 0 rgba(0, 0, 0, .25); }
+  .lv.locked { filter: grayscale(.9) brightness(1.05); cursor: default; }
+  .stars-row { display: flex; justify-content: center; gap: 2px; }
+  .st path:first-child { fill: #e6dccf; stroke: #c9b8a6; }
+  .st.on path:first-child { fill: url(#gStar); stroke: #d98a00; }
+  .row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; align-items: center; }
+  .total { display: inline-flex; align-items: center; gap: 4px; font-weight: 900; font-size: 20px; color: #3a6a1a; }
+  .result { position: relative; width: min(400px, 100%); padding-top: 48px; overflow: visible; margin-top: 20px; }
+  .ribbon { position: absolute; left: 50%; top: -26px; transform: translateX(-50%); white-space: nowrap; font-size: 28px; font-weight: 900; color: #fff; padding: 8px 34px 10px;
+    background: linear-gradient(180deg, #ff9fc0, #f2668f); border-radius: 14px; border: 4px solid #fff; box-shadow: 0 6px 0 #c2426f, 0 10px 18px rgba(0, 0, 0, .2); text-shadow: 0 2px 0 rgba(0, 0, 0, .2); }
+  .bigstars { display: flex; justify-content: center; gap: 6px; margin: 4px 0 8px; }
+  .bigstars svg { width: 70px; height: 70px; animation: starIn .5s cubic-bezier(.2, 1.8, .4, 1) both; }
+  .bigstars svg:nth-child(2) { width: 86px; height: 86px; margin-top: -12px; }
+  @keyframes starIn { from { transform: scale(0) rotate(-120deg); opacity: 0; } to { transform: none; opacity: 1; } }
+  .result p { font-size: 19px; font-weight: 800; margin: 4px 0 14px; color: #4a5a3a; }
+  .unlock { display: inline-flex; align-items: center; gap: 8px; margin: -4px 0 12px; padding: 6px 14px; background: #fff3c4; border-radius: 999px; font-weight: 900; color: #a0620a; animation: kg-pop .5s .9s both; }
+  #resPic { width: 200px; height: 110px; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <linearGradient id="gStar" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff2a0"/><stop offset=".55" stop-color="#ffd23a"/><stop offset="1" stop-color="#ffab1a"/></linearGradient>
+</defs></svg>
+<canvas id="game" aria-label="小小花園遊戲畫面"></canvas>
+
+<div class="hud" id="hud" hidden>
+  <div class="t" id="hudT">種出 3 朵花</div>
+  <div class="goals" id="goals"></div>
+</div>
+<button class="cbtn tiny pink" id="freeDone" hidden>回選單</button>
+<div id="seeds" hidden></div>
+<div id="tools" hidden></div>
+
+<section class="scr" id="title">
+  <div style="flex:1.1"></div>
+  <div class="logo" id="logo"></div>
+  <div class="tag">種種子、澆澆水，開出漂亮的花！</div>
+  <div style="flex:2"></div>
+  <button class="cbtn pulse" id="btnStart">開始玩</button>
+  <div style="flex:.25"></div>
+</section>
+
+<section class="scr dim" id="select" hidden>
+  <div class="panel">
+    <h2>選擇關卡</h2>
+    <div class="row" style="margin:-4px 0 12px"><span class="total" id="totalStars"></span></div>
+    <div class="lvls" id="lvls"></div>
+    <p style="margin:14px 0 0;font-weight:800;color:#3a6a1a" id="unlockInfo"></p>
+  </div>
+</section>
+
+<section class="scr dim" id="resultScr" hidden>
+  <div class="panel result">
+    <div class="ribbon" id="resTitle">過關啦！</div>
+    <canvas id="resPic" width="400" height="220"></canvas>
+    <div class="bigstars" id="resStars"></div>
+    <p id="resMsg"></p>
+    <div id="resUnlock"></div>
+    <div class="row" id="resBtns"></div>
+  </div>
+</section>
+
+<script src="../../assets/common.js"></script>
+<script>
+'use strict';
+(function () {
+  const $ = id => document.getElementById(id);
+  const cv = $('game'), ctx = cv.getContext('2d');
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const lerp = (a, b, k) => a + (b - a) * k;
+  const easeOutBack = k => 1 + 2.7 * Math.pow(k - 1, 3) + 1.7 * Math.pow(k - 1, 2);
+  const elastic = k => k <= 0 ? 0 : k >= 1 ? 1 : Math.pow(2, -10 * k) * Math.sin((k * 10 - 0.75) * (2 * Math.PI / 3)) + 1;
+  const INK = '#4a2a3a';
+  const TAU = Math.PI * 2;
+
+  /* ======================= 資料 ======================= */
+  const SEEDS = {
+    daisy: { name: '雛菊', h: 0.85, flower: true, petal: '#ffffff', petal2: '#ffe0ec', center: '#ffd23a', lv: 0 },
+    tulip: { name: '鬱金香', h: 0.9, flower: true, petal: '#ff7aa6', petal2: '#e8457a', lv: 0 },
+    sunflower: { name: '向日葵', h: 1.25, flower: true, petal: '#ffd84a', petal2: '#f5a81a', center: '#8a5a2e', lv: 1 },
+    carrot: { name: '紅蘿蔔', h: 0.75, veg: true, lv: 2 },
+    tomato: { name: '番茄', h: 0.9, veg: true, lv: 4 },
+    rose: { name: '玫瑰', h: 1.0, flower: true, petal: '#ff5a7a', petal2: '#d0284a', stars: 5 },
+    rainbow: { name: '彩虹花', h: 1.1, flower: true, stars: 10 }
+  };
+  const SEED_ORDER = ['daisy', 'tulip', 'sunflower', 'carrot', 'tomato', 'rose', 'rainbow'];
+  const LEVELS = [
+    { name: '第一朵花', goal: [['flower', 3]], t: [100, 170], col: ['#ffd0e4', '#ff86b3', '#d2557f'] },
+    { name: '花花朋友', goal: [['flower', 5]], t: [140, 230], col: ['#fff1b0', '#ffc93d', '#d69a12'] },
+    { name: '拔蘿蔔', goal: [['carrot', 3]], t: [110, 190], weeds: true, col: ['#ffe0cc', '#ff9d66', '#d6703a'] },
+    { name: '花園派對', goal: [['sunflower', 2], ['tulip', 2]], t: [140, 230], weeds: true, col: ['#c9f5b8', '#62c972', '#3c9a4e'] },
+    { name: '番茄豐收', goal: [['tomato', 4]], t: [150, 240], snails: true, col: ['#ffd0d0', '#f06060', '#c03a3a'] },
+    { name: '夢幻花園', goal: [['flower', 5], ['carrot', 2]], t: [200, 320], weeds: true, snails: true, col: ['#e6dbff', '#a283f2', '#7559c9'] }
+  ];
+  const save = KG.store.get('garden:save', null) || { stars: [], picked: 0 };
+  const persist = () => KG.store.set('garden:save', save);
+  const totalStars = () => save.stars.reduce((a, b) => a + (b || 0), 0);
+  const maxLevel = () => { let m = 0; LEVELS.forEach((_, i) => { if (save.stars[i] > 0) m = i + 1; }); return m; };
+  function seedUnlocked(k, lvIdx) {
+    const s = SEEDS[k];
+    if (s.stars != null) return totalStars() >= s.stars;
+    return s.lv <= Math.max(lvIdx, maxLevel());
+  }
+
+  /* ======================= 版面 ======================= */
+  let W = 0, H = 0, plots = [], PW = 100, toolH = 110, gardenTop = 0;
+  function resize() {
+    const dpr = Math.min(devicePixelRatio || 1, 2.5);
+    W = innerWidth; H = innerHeight;
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    toolH = Math.min(W * 0.23, 102) + 24;
+    layoutPlots();
+    placeSeedBar();
+  }
+  function layoutPlots() {
+    const portrait = H > W;
+    gardenTop = portrait ? H * 0.36 : H * 0.38;
+    const bottom = H - toolH - 8;
+    const areaH = bottom - gardenTop;
+    PW = Math.min(W * (portrait ? 0.27 : 0.2), areaH * 0.46, 230);
+    const gapX = Math.min(W * 0.05, PW * 0.35);
+    const totalW = PW * 3 + gapX * 2;
+    const x0 = W / 2 - totalW / 2 + PW / 2;
+    const rows = [gardenTop + areaH * 0.38, gardenTop + areaH * 0.86];
+    for (let i = 0; i < 6; i++) {
+      const r = Math.floor(i / 3), c = i % 3;
+      if (!plots[i]) plots[i] = { i, plant: null, weed: null };
+      plots[i].x = x0 + c * (PW + gapX) + (r ? 0 : 0);
+      plots[i].y = rows[r];
+      plots[i].row = r;
+    }
+  }
+  addEventListener('resize', resize);
+
+  /* ======================= 背景音樂 ======================= */
+  const NOTE = n => 440 * Math.pow(2, (n - 69) / 12);
+  const BGM = (function () {
+    // G 大調 3/4 拍小圓舞曲
+    const mel = [79, 0, 83, 86, 0, 83, 81, 0, 79, 78, 0, 81, 79, 0, 76, 74, 0, 0, 76, 0, 79, 83, 0, 81, 79, 0, 78, 79, 0, 0];
+    const bass = [55, 50, 52, 50, 48, 50, 55, 55, 52, 50];
+    let timer = null, step = 0;
+    function tick() {
+      if (KG.isMuted() || document.hidden) { step++; return; }
+      const m = mel[step % mel.length];
+      if (m) KG.note(NOTE(m), 0.26, 'sine', 0.055);
+      if (step % 3 === 0) KG.note(NOTE(bass[(step / 3 | 0) % bass.length]), 0.4, 'triangle', 0.06);
+      else KG.note(NOTE(bass[(step / 3 | 0) % bass.length] + 16), 0.1, 'sine', 0.02);
+      step++;
+    }
+    return { start() { if (!timer) { step = 0; timer = setInterval(tick, 260); } }, stop() { clearInterval(timer); timer = null; } };
+  })();
+
+  /* ======================= 狀態 ======================= */
+  let state = 'title', lvIdx = 0, L = LEVELS[0], free = false;
+  let tool = 'seed', seedKind = 'daisy', basket = {}, startTime = 0, t = 0;
+  let pointer = { x: -999, y: -999, down: false, inside: false, pourT: 0 };
+  let drops = [], parts = [], texts = [], flyers = [], bugs = [], snails = [], ripples = [];
+  let weedTimer = 8, snailTimer = 12, bloomsTotal = 0;
+  const clouds = Array.from({ length: 5 }, (_, i) => ({ x: Math.random(), y: 0.05 + i * 0.05 + Math.random() * 0.05, s: KG.rand(0.7, 1.3), v: KG.rand(0.004, 0.01) }));
+
+  function resetGarden() {
+    plots.forEach(p => { p.plant = null; p.weed = null; });
+    drops = []; parts = []; texts = []; flyers = []; bugs = []; snails = []; ripples = [];
+    basket = {};
+    weedTimer = 6; snailTimer = 10;
+  }
+
+  /* ======================= 繪圖：工具 ======================= */
+  function drawCan(g, x, y, s, tilt) {
+    g.save(); g.translate(x, y); g.rotate(tilt || 0); g.scale(s, s);
+    g.lineJoin = 'round'; g.lineCap = 'round';
+    // 壺嘴
+    g.strokeStyle = INK; g.lineWidth = 11; g.beginPath(); g.moveTo(14, 2); g.lineTo(40, -18); g.stroke();
+    g.strokeStyle = '#5ab0f0'; g.lineWidth = 6; g.beginPath(); g.moveTo(14, 2); g.lineTo(40, -18); g.stroke();
+    g.fillStyle = '#8ad6ff'; g.strokeStyle = INK; g.lineWidth = 3;
+    g.beginPath(); g.ellipse(42, -20, 6, 8, -0.9, 0, TAU); g.fill(); g.stroke();
+    // 把手
+    g.strokeStyle = INK; g.lineWidth = 10; g.beginPath(); g.arc(-14, -14, 14, Math.PI * 0.9, Math.PI * 2.1); g.stroke();
+    g.strokeStyle = '#ff8fb1'; g.lineWidth = 5; g.beginPath(); g.arc(-14, -14, 14, Math.PI * 0.9, Math.PI * 2.1); g.stroke();
+    // 壺身
+    const gr = g.createLinearGradient(-26, -22, 18, 20);
+    gr.addColorStop(0, '#9ad8ff'); gr.addColorStop(1, '#3d8fe0');
+    g.fillStyle = gr; g.strokeStyle = INK; g.lineWidth = 3;
+    g.beginPath(); g.moveTo(-26, -14); g.lineTo(18, -14); g.lineTo(16, 18); g.quadraticCurveTo(16, 22, 12, 22); g.lineTo(-22, 22); g.quadraticCurveTo(-26, 22, -26, 18); g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = 'rgba(255,255,255,.55)'; g.fillRect(-20, -9, 6, 24);
+    g.fillStyle = '#ffd23a'; g.beginPath(); g.arc(-4, 4, 6, 0, TAU); g.fill();
+    g.fillStyle = '#ff6f9a'; for (let i = 0; i < 5; i++) { const a = i / 5 * TAU; g.beginPath(); g.arc(-4 + Math.cos(a) * 7, 4 + Math.sin(a) * 7, 3.5, 0, TAU); g.fill(); }
+    g.fillStyle = '#ffd23a'; g.beginPath(); g.arc(-4, 4, 3.5, 0, TAU); g.fill();
+    g.restore();
+  }
+  function drawSunTool(g, x, y, s, rot) {
+    g.save(); g.translate(x, y); g.scale(s, s);
+    g.save(); g.rotate(rot || 0);
+    g.fillStyle = '#ffb02e';
+    for (let i = 0; i < 10; i++) { g.rotate(TAU / 10); g.beginPath(); g.moveTo(-6, -24); g.lineTo(0, -38); g.lineTo(6, -24); g.fill(); }
+    g.restore();
+    const gr = g.createRadialGradient(-7, -8, 3, 0, 0, 26);
+    gr.addColorStop(0, '#fffbe0'); gr.addColorStop(0.6, '#ffd84a'); gr.addColorStop(1, '#ffab1a');
+    g.fillStyle = gr; g.strokeStyle = '#d98a00'; g.lineWidth = 3;
+    g.beginPath(); g.arc(0, 0, 24, 0, TAU); g.fill(); g.stroke();
+    face(g, 0, 2, 1.1, 'happy');
+    g.restore();
+  }
+  function drawSeedBag(g, x, y, s, kind) {
+    g.save(); g.translate(x, y); g.scale(s, s);
+    const gr = g.createLinearGradient(0, -26, 0, 26);
+    gr.addColorStop(0, '#f5d29a'); gr.addColorStop(1, '#d8a058');
+    g.fillStyle = gr; g.strokeStyle = INK; g.lineWidth = 3; g.lineJoin = 'round';
+    g.beginPath(); g.moveTo(-20, -18); g.lineTo(20, -18); g.lineTo(24, 22); g.quadraticCurveTo(0, 30, -24, 22); g.closePath(); g.fill(); g.stroke();
+    g.beginPath(); g.moveTo(-20, -18); g.lineTo(-14, -30); g.lineTo(-6, -22); g.lineTo(0, -32); g.lineTo(6, -22); g.lineTo(14, -30); g.lineTo(20, -18); g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = '#fff'; g.beginPath(); g.ellipse(0, 4, 13, 13, 0, 0, TAU); g.fill();
+    g.save(); g.translate(0, 13); g.scale(0.22, 0.22); drawPlantHead(g, kind || 'daisy', 1, 0); g.restore();
+    g.restore();
+  }
+  function drawBasket(g, x, y, s) {
+    g.save(); g.translate(x, y); g.scale(s, s);
+    g.strokeStyle = INK; g.lineWidth = 9; g.beginPath(); g.arc(0, -6, 20, Math.PI, TAU); g.stroke();
+    g.strokeStyle = '#c98a4c'; g.lineWidth = 5; g.beginPath(); g.arc(0, -6, 20, Math.PI, TAU); g.stroke();
+    g.fillStyle = '#ff8fb1'; g.beginPath(); g.arc(-8, -8, 7, 0, TAU); g.arc(6, -10, 6, 0, TAU); g.fill();
+    g.fillStyle = '#ffd23a'; g.beginPath(); g.arc(-8, -8, 2.5, 0, TAU); g.fill();
+    const gr = g.createLinearGradient(0, -6, 0, 22);
+    gr.addColorStop(0, '#e8b070'); gr.addColorStop(1, '#a8703f');
+    g.fillStyle = gr; g.strokeStyle = INK; g.lineWidth = 3; g.lineJoin = 'round';
+    g.beginPath(); g.moveTo(-26, -6); g.lineTo(26, -6); g.lineTo(20, 22); g.lineTo(-20, 22); g.closePath(); g.fill(); g.stroke();
+    g.strokeStyle = 'rgba(90,50,20,.45)'; g.lineWidth = 2;
+    for (let i = -2; i <= 2; i++) { g.beginPath(); g.moveTo(i * 9, -4); g.lineTo(i * 7.5, 20); g.stroke(); }
+    g.beginPath(); g.moveTo(-24, 5); g.lineTo(24, 5); g.moveTo(-22, 14); g.lineTo(22, 14); g.stroke();
+    g.restore();
+  }
+
+  /* ======================= 繪圖：臉、植物 ======================= */
+  function face(g, x, y, s, mood) {
+    g.save(); g.translate(x, y); g.scale(s, s);
+    g.fillStyle = '#2e2235'; g.strokeStyle = '#2e2235'; g.lineCap = 'round'; g.lineWidth = 2;
+    const blink = ((t + x * 0.013) % 4) < 0.12;
+    if (mood === 'happy' || blink) {
+      [-6, 6].forEach(ex => { g.beginPath(); g.arc(ex, 0, 3, Math.PI * 1.1, Math.PI * 1.9); g.stroke(); });
+    } else {
+      [-6, 6].forEach(ex => { g.beginPath(); g.ellipse(ex, 0, 2.4, 3, 0, 0, TAU); g.fill(); g.fillStyle = '#fff'; g.beginPath(); g.arc(ex - 0.8, -1.2, 1, 0, TAU); g.fill(); g.fillStyle = '#2e2235'; });
+    }
+    g.fillStyle = 'rgba(255,100,140,.5)'; g.beginPath(); g.ellipse(-10, 4, 3, 1.8, 0, 0, TAU); g.ellipse(10, 4, 3, 1.8, 0, 0, TAU); g.fill();
+    if (mood === 'sad') { g.beginPath(); g.arc(0, 7, 3, Math.PI * 1.15, Math.PI * 1.85); g.stroke(); }
+    else { g.beginPath(); g.arc(0, 3, 3, 0.15 * Math.PI, 0.85 * Math.PI); g.stroke(); }
+    g.restore();
+  }
+
+  function leaf(g, x, y, len, ang, w) {
+    g.save(); g.translate(x, y); g.rotate(ang);
+    const gr = g.createLinearGradient(0, 0, len, 0);
+    gr.addColorStop(0, '#4fae3f'); gr.addColorStop(1, '#9be37e');
+    g.fillStyle = gr; g.strokeStyle = '#2f6a2a'; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(0, 0); g.quadraticCurveTo(len * 0.5, -len * (w || 0.35), len, 0); g.quadraticCurveTo(len * 0.5, len * (w || 0.35), 0, 0); g.fill(); g.stroke();
+    g.strokeStyle = 'rgba(255,255,255,.4)'; g.lineWidth = 1.5; g.beginPath(); g.moveTo(len * 0.1, 0); g.lineTo(len * 0.8, 0); g.stroke();
+    g.restore();
+  }
+
+  // 花頭，k = 開花程度 0..1
+  function drawPlantHead(g, kind, k, sway, mood) {
+    const S = SEEDS[kind];
+    g.save(); g.rotate(sway || 0);
+    const r = 14 + 8 * k;
+    if (kind === 'daisy' || kind === 'rainbow') {
+      const n = kind === 'daisy' ? 12 : 8;
+      const cols = ['#ff6f6f', '#ffa94d', '#ffd84a', '#7bd88f', '#5cc8ff', '#7a8cff', '#c78cff', '#ff8fd0'];
+      for (let i = 0; i < n; i++) {
+        g.save(); g.rotate(i / n * TAU + t * 0.1 * (kind === 'rainbow' ? 1 : 0));
+        const pg = g.createLinearGradient(0, 0, 0, -r * 1.5);
+        pg.addColorStop(0, kind === 'daisy' ? S.petal2 : cols[i]); pg.addColorStop(1, kind === 'daisy' ? S.petal : '#ffffff');
+        g.fillStyle = pg; g.strokeStyle = 'rgba(74,42,58,.55)'; g.lineWidth = 1.5;
+        g.beginPath(); g.ellipse(0, -r * 0.85 * k, r * 0.32, r * 0.7 * k + 2, 0, 0, TAU); g.fill(); g.stroke();
+        g.restore();
+      }
+      const cg = g.createRadialGradient(-3, -3, 1, 0, 0, r * 0.55);
+      cg.addColorStop(0, '#fff6b0'); cg.addColorStop(1, kind === 'daisy' ? '#ffb81a' : '#ffffff');
+      g.fillStyle = cg; g.strokeStyle = INK; g.lineWidth = 2;
+      g.beginPath(); g.arc(0, 0, r * 0.55, 0, TAU); g.fill(); g.stroke();
+      if (k > 0.6) face(g, 0, 0, r * 0.045, mood);
+    } else if (kind === 'sunflower') {
+      for (let ring = 0; ring < 2; ring++) {
+        for (let i = 0; i < 14; i++) {
+          g.save(); g.rotate(i / 14 * TAU + ring * 0.22);
+          g.fillStyle = ring ? S.petal : S.petal2; g.strokeStyle = 'rgba(160,90,10,.6)'; g.lineWidth = 1.5;
+          g.beginPath(); g.moveTo(-r * 0.22, -r * 0.6); g.quadraticCurveTo(0, -r * (0.6 + 1.0 * k) - 4, r * 0.22, -r * 0.6); g.closePath(); g.fill(); g.stroke();
+          g.restore();
+        }
+      }
+      const cg = g.createRadialGradient(-4, -4, 2, 0, 0, r * 0.75);
+      cg.addColorStop(0, '#b57a4a'); cg.addColorStop(1, '#6a3a1a');
+      g.fillStyle = cg; g.strokeStyle = INK; g.lineWidth = 2; g.beginPath(); g.arc(0, 0, r * 0.75, 0, TAU); g.fill(); g.stroke();
+      g.fillStyle = 'rgba(255,220,150,.35)';
+      for (let i = 0; i < 12; i++) { const a = i * 2.4, d = Math.sqrt(i) * r * 0.18; g.beginPath(); g.arc(Math.cos(a) * d, Math.sin(a) * d + 4, 1.4, 0, TAU); g.fill(); }
+      if (k > 0.6) { g.save(); g.globalCompositeOperation = 'source-over'; face(g, 0, -1, r * 0.05, mood); g.restore(); }
+    } else if (kind === 'tulip') {
+      const h = r * (0.9 + 0.5 * k);
+      const pg = g.createLinearGradient(0, -h, 0, h * 0.4);
+      pg.addColorStop(0, '#ffc2d8'); pg.addColorStop(1, S.petal2);
+      g.fillStyle = pg; g.strokeStyle = INK; g.lineWidth = 2; g.lineJoin = 'round';
+      const spread = 0.3 + 0.7 * k;
+      [-1, 1].forEach(sd => {
+        g.beginPath(); g.moveTo(0, h * 0.35); g.quadraticCurveTo(sd * r * (0.9 + spread * 0.4), h * 0.2, sd * r * (0.55 + spread * 0.35), -h * 0.85);
+        g.quadraticCurveTo(sd * r * 0.2, -h * 0.4, 0, -h * 0.2); g.closePath(); g.fill(); g.stroke();
+      });
+      g.beginPath(); g.moveTo(-r * 0.62, h * 0.05); g.quadraticCurveTo(-r * 0.7, -h * 0.9, 0, -h); g.quadraticCurveTo(r * 0.7, -h * 0.9, r * 0.62, h * 0.05); g.quadraticCurveTo(0, h * 0.55, -r * 0.62, h * 0.05); g.fill(); g.stroke();
+      g.fillStyle = 'rgba(255,255,255,.5)'; g.beginPath(); g.ellipse(-r * 0.3, -h * 0.5, r * 0.1, h * 0.25, 0.2, 0, TAU); g.fill();
+      if (k > 0.6) face(g, 0, -h * 0.25, r * 0.045, mood);
+    } else if (kind === 'rose') {
+      const rr = r * (0.75 + 0.35 * k);
+      const pg = g.createRadialGradient(-4, -6, 2, 0, 0, rr);
+      pg.addColorStop(0, '#ffb0c0'); pg.addColorStop(1, S.petal2);
+      g.fillStyle = pg; g.strokeStyle = INK; g.lineWidth = 2;
+      for (let i = 0; i < 5; i++) { const a = i / 5 * TAU - Math.PI / 2; g.beginPath(); g.arc(Math.cos(a) * rr * 0.45 * k, Math.sin(a) * rr * 0.45 * k, rr * 0.6, 0, TAU); g.fill(); g.stroke(); }
+      g.beginPath(); g.arc(0, 0, rr * 0.62, 0, TAU); g.fill(); g.stroke();
+      g.strokeStyle = 'rgba(140,20,50,.6)'; g.lineWidth = 2;
+      g.beginPath(); for (let a = 0; a < TAU * 1.6; a += 0.2) { const d = rr * 0.08 + a * rr * 0.05; g.lineTo(Math.cos(a) * d, Math.sin(a) * d - rr * 0.1); } g.stroke();
+      if (k > 0.6) face(g, 0, rr * 0.1, r * 0.04, mood);
+    }
+    g.restore();
+  }
+
+  // size：0..3（種子、發芽、長大、開花），p 是植物
+  function drawPlant(g, p, x, y, s, sway) {
+    const S = SEEDS[p.kind];
+    const z = p.size;
+    g.save(); g.translate(x, y); g.scale(s, s);
+    // 土堆
+    g.fillStyle = '#6a4024'; g.beginPath(); g.ellipse(0, 0, 18, 7, 0, 0, TAU); g.fill();
+    g.fillStyle = 'rgba(255,255,255,.12)'; g.beginPath(); g.ellipse(-4, -2, 8, 2.5, 0, 0, TAU); g.fill();
+    if (z < 0.6) {
+      // 種子
+      g.fillStyle = '#e8c890'; g.strokeStyle = INK; g.lineWidth = 1.5;
+      g.beginPath(); g.ellipse(0, -3, 5, 3.6, -0.3, 0, TAU); g.fill(); g.stroke();
+    }
+    if (z > 0.15) {
+      const k1 = clamp(z, 0, 1), k2 = clamp(z - 1, 0, 1), k3 = clamp(z - 2, 0, 1);
+      const sw = sway * (0.4 + k2);
+      if (S.veg && p.kind === 'carrot') {
+        const lh = 14 + 26 * k1 + 18 * k2 + 10 * k3;
+        for (let i = -2; i <= 2; i++) {
+          if (Math.abs(i) > 0 && k1 < 0.5) continue;
+          g.save(); g.rotate(i * 0.32 + sw);
+          g.strokeStyle = '#3f8a2f'; g.lineWidth = 3; g.beginPath(); g.moveTo(0, -2); g.lineTo(0, -lh); g.stroke();
+          for (let j = 1; j < 4; j++) { leaf(g, 0, -lh * j / 4, lh * 0.32, -0.9, 0.3); leaf(g, 0, -lh * j / 4, lh * 0.32, Math.PI + 0.9, 0.3); }
+          g.restore();
+        }
+        if (k2 > 0) {
+          const cw = 8 + 6 * k2 + 4 * k3;
+          const cg = g.createLinearGradient(-cw, 0, cw, 0); cg.addColorStop(0, '#ffb35a'); cg.addColorStop(1, '#e8701a');
+          g.fillStyle = cg; g.strokeStyle = INK; g.lineWidth = 2;
+          g.beginPath(); g.moveTo(-cw, -2); g.quadraticCurveTo(-cw, -cw * 1.2, 0, -cw * 1.3); g.quadraticCurveTo(cw, -cw * 1.2, cw, -2); g.closePath(); g.fill(); g.stroke();
+          g.strokeStyle = 'rgba(150,60,10,.5)'; g.beginPath(); g.moveTo(-cw * 0.6, -cw * 0.5); g.lineTo(-cw * 0.2, -cw * 0.5); g.stroke();
+          if (k3 > 0.5) face(g, 0, -cw * 0.55, cw * 0.06, p.mood);
+        }
+      } else if (S.veg && p.kind === 'tomato') {
+        const bh = 12 + 22 * k1 + 26 * k2 + 6 * k3;
+        g.save(); g.rotate(sw);
+        g.strokeStyle = '#3f8a2f'; g.lineWidth = 4; g.lineCap = 'round';
+        g.beginPath(); g.moveTo(0, 0); g.quadraticCurveTo(-6, -bh * 0.5, 0, -bh); g.stroke();
+        leaf(g, 0, -bh * 0.35, 18 * k1 + 6, -0.5); leaf(g, 0, -bh * 0.35, 18 * k1 + 6, Math.PI + 0.5);
+        if (k1 > 0.6) { leaf(g, 0, -bh * 0.7, 16 * k2 + 8, -0.7); leaf(g, 0, -bh * 0.7, 16 * k2 + 8, Math.PI + 0.7); }
+        if (k2 > 0) {
+          g.fillStyle = '#5cc46a';
+          g.beginPath(); g.arc(0, -bh, 12 * k2 + 4, 0, TAU); g.arc(-12 * k2, -bh * 0.8, 10 * k2, 0, TAU); g.arc(12 * k2, -bh * 0.8, 10 * k2, 0, TAU); g.fill();
+          const tc = [[-12, -bh * 0.55], [12, -bh * 0.6], [0, -bh * 0.82]];
+          tc.forEach(([tx, ty], i) => {
+            const rr2 = 4 + 5 * k2 + 3 * k3;
+            const red = k3;
+            const tg = g.createRadialGradient(tx - rr2 * 0.4, ty - rr2 * 0.4, 1, tx, ty, rr2);
+            tg.addColorStop(0, red > 0.5 ? '#ffb0a0' : '#d8ffb0'); tg.addColorStop(1, red > 0.5 ? '#e8303a' : '#6cc44a');
+            g.fillStyle = tg; g.strokeStyle = INK; g.lineWidth = 1.6;
+            g.beginPath(); g.arc(tx, ty, rr2, 0, TAU); g.fill(); g.stroke();
+            g.fillStyle = '#3f8a2f'; g.beginPath(); g.moveTo(tx - 3, ty - rr2 + 1); g.lineTo(tx, ty - rr2 - 3); g.lineTo(tx + 3, ty - rr2 + 1); g.fill();
+            if (red > 0.6 && i === 2) face(g, tx, ty + 1, rr2 * 0.07, p.mood);
+          });
+        }
+        g.restore();
+      } else {
+        const stemH = (14 + 30 * k1 + 36 * k2 + 10 * k3) * S.h;
+        const tipX = sw * stemH, tipY = -stemH;
+        g.lineCap = 'round';
+        g.strokeStyle = '#2f6a2a'; g.lineWidth = 6.5;
+        g.beginPath(); g.moveTo(0, 0); g.quadraticCurveTo(tipX * 0.2, -stemH * 0.5, tipX, tipY); g.stroke();
+        g.strokeStyle = '#5cc46a'; g.lineWidth = 3.5;
+        g.beginPath(); g.moveTo(0, 0); g.quadraticCurveTo(tipX * 0.2, -stemH * 0.5, tipX, tipY); g.stroke();
+        if (k1 > 0.4) {
+          const ls = (10 + 10 * k2 + 4 * k3) * (kind2big(p.kind));
+          leaf(g, tipX * 0.1, -stemH * 0.3, ls, -0.5 + sw); leaf(g, tipX * 0.15, -stemH * 0.42, ls * 0.9, Math.PI + 0.5 + sw);
+        }
+        g.save(); g.translate(tipX, tipY);
+        if (z < 1.6) {
+          // 子葉
+          const cs = 4 + 6 * k1;
+          g.fillStyle = '#7bd36a'; g.strokeStyle = '#2f6a2a'; g.lineWidth = 1.5;
+          g.beginPath(); g.ellipse(-cs * 0.8, -1, cs, cs * 0.6, -0.4, 0, TAU); g.fill(); g.stroke();
+          g.beginPath(); g.ellipse(cs * 0.8, -1, cs, cs * 0.6, 0.4, 0, TAU); g.fill(); g.stroke();
+        } else if (z < 2.55) {
+          // 花苞
+          const bs = 5 + 6 * k2;
+          const col = p.kind === 'sunflower' ? '#ffd84a' : p.kind === 'daisy' ? '#ffffff' : p.kind === 'rainbow' ? '#c78cff' : S.petal;
+          g.fillStyle = col; g.strokeStyle = INK; g.lineWidth = 1.5;
+          g.beginPath(); g.moveTo(0, -bs * 2); g.quadraticCurveTo(bs * 1.2, -bs * 0.6, 0, 0); g.quadraticCurveTo(-bs * 1.2, -bs * 0.6, 0, -bs * 2); g.fill(); g.stroke();
+          g.fillStyle = '#5cc46a';
+          g.beginPath(); g.moveTo(-bs * 0.8, -bs * 0.2); g.lineTo(0, -bs * 1.1); g.lineTo(bs * 0.8, -bs * 0.2); g.quadraticCurveTo(0, bs * 0.4, -bs * 0.8, -bs * 0.2); g.fill();
+        } else {
+          drawPlantHead(g, p.kind, clamp((z - 2.55) / 0.45, 0.2, 1) * (1 + (p.pulse || 0) * 0.15), sw * 0.5, p.mood);
+        }
+        g.restore();
+      }
+    }
+    g.restore();
+  }
+  const kind2big = k => (k === 'sunflower' ? 1.3 : 1);
+
+  function plantHeight(p) { const S = SEEDS[p.kind]; return (20 + 30 * clamp(p.size, 0, 1) + 36 * clamp(p.size - 1, 0, 1) + 24 * clamp(p.size - 2, 0, 1)) * S.h; }
+
+  /* ======================= 繪圖：蟲蟲、雜草、蝸牛 ======================= */
+  function drawButterfly(g, b) {
+    g.save(); g.translate(b.x, b.y); g.rotate(b.vx * 0.002);
+    const s = b.s, flap = 0.25 + Math.abs(Math.sin(t * (b.land > 0 ? 4 : 14) + b.ph)) * 0.75;
+    g.scale(s, s);
+    [-1, 1].forEach(sd => {
+      g.save(); g.scale(sd * flap, 1);
+      const gr = g.createRadialGradient(10, -8, 2, 10, -6, 18);
+      gr.addColorStop(0, '#fff'); gr.addColorStop(0.4, b.c1); gr.addColorStop(1, b.c2);
+      g.fillStyle = gr; g.strokeStyle = INK; g.lineWidth = 1.5;
+      g.beginPath(); g.ellipse(11, -8, 12, 10, -0.5, 0, TAU); g.fill(); g.stroke();
+      g.beginPath(); g.ellipse(9, 7, 8, 7, 0.5, 0, TAU); g.fill(); g.stroke();
+      g.fillStyle = 'rgba(255,255,255,.7)'; g.beginPath(); g.arc(13, -10, 3, 0, TAU); g.fill();
+      g.restore();
+    });
+    g.fillStyle = '#4a2a3a'; g.beginPath(); g.ellipse(0, 0, 3, 11, 0, 0, TAU); g.fill();
+    g.strokeStyle = '#4a2a3a'; g.lineWidth = 1.5; g.beginPath(); g.moveTo(-1, -10); g.quadraticCurveTo(-6, -18, -8, -17); g.moveTo(1, -10); g.quadraticCurveTo(6, -18, 8, -17); g.stroke();
+    g.restore();
+  }
+  function drawBee(g, b) {
+    g.save(); g.translate(b.x, b.y + Math.sin(t * 9 + b.ph) * 3); g.scale(b.vx < 0 ? -b.s : b.s, b.s);
+    g.fillStyle = 'rgba(220,240,255,.8)'; g.strokeStyle = 'rgba(74,42,58,.5)'; g.lineWidth = 1.2;
+    const fl = Math.sin(t * 40) * 0.4;
+    g.save(); g.rotate(-0.4 + fl); g.beginPath(); g.ellipse(-2, -12, 6, 9, 0, 0, TAU); g.fill(); g.stroke(); g.restore();
+    g.save(); g.rotate(0.3 - fl); g.beginPath(); g.ellipse(4, -12, 5, 8, 0, 0, TAU); g.fill(); g.stroke(); g.restore();
+    const gr = g.createRadialGradient(-3, -3, 1, 0, 0, 12);
+    gr.addColorStop(0, '#fff6b0'); gr.addColorStop(1, '#ffc21a');
+    g.fillStyle = gr; g.strokeStyle = INK; g.lineWidth = 1.8;
+    g.beginPath(); g.ellipse(0, 0, 12, 9, 0, 0, TAU); g.fill(); g.stroke();
+    g.fillStyle = '#4a2a3a'; g.fillRect(-4, -8, 3.5, 16); g.fillRect(3, -8, 3, 16);
+    g.beginPath(); g.moveTo(-12, 0); g.lineTo(-16, 1); g.lineTo(-12, 3); g.fill();
+    g.fillStyle = '#2e2235'; g.beginPath(); g.arc(8, -2, 1.8, 0, TAU); g.fill();
+    g.fillStyle = 'rgba(255,100,140,.6)'; g.beginPath(); g.arc(8, 3, 1.8, 0, TAU); g.fill();
+    g.restore();
+  }
+  function drawWeed(g, w, x, y, s) {
+    g.save(); g.translate(x, y - (w.pull || 0) * 60); g.rotate((w.pull || 0) * 3); g.scale(s * w.k, s * w.k);
+    for (let i = -3; i <= 3; i++) {
+      g.save(); g.rotate(i * 0.3 + Math.sin(t * 3 + i) * 0.05);
+      g.fillStyle = i % 2 ? '#3f9a2f' : '#6cc44a'; g.strokeStyle = '#2a5a1a'; g.lineWidth = 1.5;
+      g.beginPath(); g.moveTo(-4, 0); g.lineTo(0, -26 - Math.abs(i) * -2); g.lineTo(4, 0); g.fill(); g.stroke();
+      g.restore();
+    }
+    g.fillStyle = '#5aa83a'; g.strokeStyle = '#2a5a1a'; g.lineWidth = 2;
+    g.beginPath(); g.ellipse(0, -6, 13, 9, 0, 0, TAU); g.fill(); g.stroke();
+    // 調皮的臉
+    g.fillStyle = '#2e2235'; g.beginPath(); g.arc(-4, -7, 1.8, 0, TAU); g.arc(4, -7, 1.8, 0, TAU); g.fill();
+    g.strokeStyle = '#2e2235'; g.lineWidth = 1.5; g.beginPath(); g.moveTo(-7, -11); g.lineTo(-2, -9.5); g.moveTo(7, -11); g.lineTo(2, -9.5); g.stroke();
+    g.beginPath(); g.arc(0, -3, 2.5, 0.1 * Math.PI, 0.9 * Math.PI); g.stroke();
+    g.restore();
+  }
+  function drawSnail(g, sn) {
+    g.save(); g.translate(sn.x, sn.y); if (sn.fly) g.rotate(sn.fly * 8);
+    g.scale(sn.dir < 0 ? -sn.s : sn.s, sn.s);
+    const st = Math.sin(t * 4) * 1.5;
+    g.fillStyle = '#c8f0a0'; g.strokeStyle = INK; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(-18, 0); g.quadraticCurveTo(-20, -6, -10, -6); g.lineTo(14, -6); g.quadraticCurveTo(22, -8, 22, -16); g.lineTo(26, -16); g.quadraticCurveTo(28, 0, 18, 0); g.closePath(); g.fill(); g.stroke();
+    g.beginPath(); g.moveTo(21, -16); g.lineTo(19 + st * 0.5, -27); g.moveTo(25, -16); g.lineTo(28 + st * 0.5, -26); g.stroke();
+    g.fillStyle = '#2e2235'; g.beginPath(); g.arc(19 + st * 0.5, -28, 2.4, 0, TAU); g.arc(28 + st * 0.5, -27, 2.4, 0, TAU); g.fill();
+    g.fillStyle = 'rgba(255,100,140,.6)'; g.beginPath(); g.arc(22, -9, 2, 0, TAU); g.fill();
+    const gr = g.createRadialGradient(-6, -18, 2, 0, -14, 15);
+    gr.addColorStop(0, '#ffe0f4'); gr.addColorStop(1, '#c86ad0');
+    g.fillStyle = gr; g.beginPath(); g.arc(0, -14, 13, 0, TAU); g.fill(); g.stroke();
+    g.strokeStyle = 'rgba(100,30,110,.6)'; g.lineWidth = 2;
+    g.beginPath(); for (let a = 0; a < TAU * 2.2; a += 0.25) { const d = 1 + a * 1.6; g.lineTo(Math.cos(a) * d, -14 + Math.sin(a) * d); } g.stroke();
+    g.restore();
+  }
+
+  /* ======================= 繪圖：場景 ======================= */
+  function drawScene() {
+    const sky = ctx.createLinearGradient(0, 0, 0, gardenTop);
+    sky.addColorStop(0, '#7fd0ff'); sky.addColorStop(1, '#e8f8ff');
+    ctx.fillStyle = sky; ctx.fillRect(0, 0, W, H);
+    // 太陽
+    const sx = W * 0.84, sy = Math.min(H * 0.14, 110) + 20, sr = Math.min(W, H) * 0.07;
+    ctx.save(); ctx.globalAlpha = 0.18; ctx.translate(sx, sy); ctx.rotate(t * 0.05); ctx.fillStyle = '#fff';
+    for (let i = 0; i < 12; i++) { ctx.rotate(TAU / 12); ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(Math.max(W, H), -40); ctx.lineTo(Math.max(W, H), 40); ctx.fill(); }
+    ctx.restore();
+    drawSunTool(ctx, sx, sy, sr / 26, t * 0.3);
+    clouds.forEach(c => {
+      const x = ((c.x + t * c.v) % 1.3 - 0.15) * W, y = c.y * H, s = c.s * Math.min(W, H) / 500;
+      ctx.fillStyle = 'rgba(120,170,220,.2)'; ctx.beginPath(); ctx.ellipse(x + 4 * s, y + 10 * s, 50 * s, 12 * s, 0, 0, TAU); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.ellipse(x, y, 52 * s, 20 * s, 0, 0, TAU); ctx.arc(x - 20 * s, y - 10 * s, 22 * s, 0, TAU); ctx.arc(x + 14 * s, y - 16 * s, 26 * s, 0, TAU); ctx.fill();
+    });
+    // 遠山與樹
+    const hb = gardenTop - 10;
+    ctx.fillStyle = '#b8ecaa'; ctx.beginPath(); ctx.moveTo(0, hb);
+    for (let x = 0; x <= W; x += 12) ctx.lineTo(x, hb - 40 - Math.sin(x / W * 6 + 1) * 30 - Math.sin(x / W * 13) * 8);
+    ctx.lineTo(W, hb + 20); ctx.lineTo(0, hb + 20); ctx.fill();
+    for (let i = 0; i < 6; i++) {
+      const x = (i + 0.4) / 6 * W + Math.sin(i * 7) * 30, y = hb - 18, r = Math.min(W, H) * 0.045;
+      ctx.fillStyle = '#8a5a2e'; ctx.fillRect(x - r * 0.15, y - r * 0.4, r * 0.3, r * 0.9);
+      ctx.fillStyle = i % 2 ? '#5bb35b' : '#6cc46a';
+      ctx.beginPath(); ctx.arc(x, y - r, r, 0, TAU); ctx.arc(x - r * 0.6, y - r * 0.5, r * 0.7, 0, TAU); ctx.arc(x + r * 0.6, y - r * 0.5, r * 0.7, 0, TAU); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,.2)'; ctx.beginPath(); ctx.arc(x - r * 0.3, y - r * 1.3, r * 0.35, 0, TAU); ctx.fill();
+      if (i % 2 === 0) { ctx.fillStyle = '#ff6f6f'; [[-0.4, -1.1], [0.3, -0.7], [0.5, -1.3]].forEach(([a, b]) => { ctx.beginPath(); ctx.arc(x + a * r, y + b * r, r * 0.12, 0, TAU); ctx.fill(); }); }
+    }
+    // 草地
+    const gg = ctx.createLinearGradient(0, gardenTop - 10, 0, H);
+    gg.addColorStop(0, '#9be37e'); gg.addColorStop(1, '#4fae3f');
+    ctx.fillStyle = gg; ctx.beginPath(); ctx.moveTo(0, gardenTop + 4);
+    for (let x = 0; x <= W; x += 16) ctx.lineTo(x, gardenTop - 2 + Math.sin(x * 0.05) * 4);
+    ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.fill();
+    // 木頭籬笆
+    const fy = gardenTop - 4, fh = Math.min(60, H * 0.07);
+    ctx.fillStyle = '#e8b878'; ctx.strokeStyle = '#8a5a2e'; ctx.lineWidth = 2;
+    ctx.fillRect(0, fy - fh * 0.75, W, fh * 0.14); ctx.strokeRect(-2, fy - fh * 0.75, W + 4, fh * 0.14);
+    ctx.fillRect(0, fy - fh * 0.38, W, fh * 0.14); ctx.strokeRect(-2, fy - fh * 0.38, W + 4, fh * 0.14);
+    for (let x = 10; x < W; x += fh * 0.55) {
+      const fg = ctx.createLinearGradient(x, 0, x + fh * 0.3, 0); fg.addColorStop(0, '#f5d29a'); fg.addColorStop(1, '#d8a058');
+      ctx.fillStyle = fg;
+      ctx.beginPath(); ctx.moveTo(x, fy); ctx.lineTo(x, fy - fh + 8); ctx.lineTo(x + fh * 0.15, fy - fh); ctx.lineTo(x + fh * 0.3, fy - fh + 8); ctx.lineTo(x + fh * 0.3, fy); ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+    // 草叢小花
+    for (let i = 0; i < 14; i++) {
+      const x = (i * 0.073 + 0.02) * W, y = gardenTop + 8 + (i % 3) * 6;
+      ctx.fillStyle = ['#ff8fb1', '#ffd65c', '#ffffff', '#b49cff'][i % 4];
+      for (let k = 0; k < 5; k++) { const a = k / 5 * TAU; ctx.beginPath(); ctx.arc(x + Math.cos(a) * 3.5, y + Math.sin(a) * 3.5, 2.8, 0, TAU); ctx.fill(); }
+      ctx.fillStyle = '#ffb02e'; ctx.beginPath(); ctx.arc(x, y, 2, 0, TAU); ctx.fill();
+    }
+    // 土地區塊
+    plots.forEach(p => {
+      const w = PW, h = PW * 0.34;
+      ctx.fillStyle = 'rgba(40,70,20,.25)'; ctx.beginPath(); ctx.ellipse(p.x, p.y + h * 0.18, w * 0.55, h * 0.55, 0, 0, TAU); ctx.fill();
+      const sg = ctx.createRadialGradient(p.x - w * 0.15, p.y - h * 0.2, 4, p.x, p.y, w * 0.55);
+      sg.addColorStop(0, '#a8703f'); sg.addColorStop(1, '#6a4024');
+      ctx.fillStyle = sg; ctx.strokeStyle = '#4a2a14'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.ellipse(p.x, p.y, w * 0.5, h * 0.5, 0, 0, TAU); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = 'rgba(255,230,180,.18)';
+      for (let k = 0; k < 7; k++) { ctx.beginPath(); ctx.ellipse(p.x + Math.sin(k * 3.1 + p.i) * w * 0.32, p.y + Math.cos(k * 2.3) * h * 0.22, 3, 1.6, 0, 0, TAU); ctx.fill(); }
+      // 濕潤的土
+      if (p.plant && p.plant.water > 0) {
+        ctx.fillStyle = `rgba(40,20,60,${0.25 * p.plant.water})`;
+        ctx.beginPath(); ctx.ellipse(p.x, p.y, w * 0.42, h * 0.38, 0, 0, TAU); ctx.fill();
+      }
+      ctx.strokeStyle = 'rgba(255,255,255,.18)'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.ellipse(p.x, p.y - 1, w * 0.46, h * 0.42, 0, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke();
+    });
+  }
+
+  function bubble(x, y, icon, pulse) {
+    const r = Math.max(16, PW * 0.17) * (1 + Math.sin(t * 5) * 0.06 * (pulse ? 1.6 : 1));
+    ctx.save(); ctx.translate(x, y);
+    ctx.fillStyle = 'rgba(255,255,255,.92)'; ctx.strokeStyle = 'rgba(74,42,58,.25)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-5, r - 1); ctx.lineTo(0, r + 7); ctx.lineTo(5, r - 1); ctx.fill();
+    const s = r / 34;
+    if (icon === 'water') {
+      ctx.fillStyle = '#4aa8ec'; ctx.beginPath(); ctx.moveTo(0, -r * 0.6); ctx.quadraticCurveTo(r * 0.55, 0, 0, r * 0.5); ctx.quadraticCurveTo(-r * 0.55, 0, 0, -r * 0.6); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,.7)'; ctx.beginPath(); ctx.arc(-r * 0.12, r * 0.05, r * 0.1, 0, TAU); ctx.fill();
+    } else if (icon === 'sun') drawSunTool(ctx, 0, 0, s * 0.85, t);
+    else if (icon === 'seed') drawSeedBag(ctx, 0, 2, s * 0.9, seedKind);
+    else if (icon === 'basket') drawBasket(ctx, 0, 2, s * 0.9);
+    else if (icon === 'snail') { ctx.fillStyle = '#c86ad0'; ctx.font = `900 ${r}px sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('!', 0, 0); }
+    ctx.restore();
+  }
+
+  function render() {
+    drawScene();
+    // 植物（由後往前）
+    const order = plots.slice().sort((a, b) => a.y - b.y);
+    order.forEach(p => {
+      const s = PW / 70;
+      if (p.plant) {
+        const pl = p.plant;
+        const sway = Math.sin(t * 1.6 + p.i) * 0.06 + (pl.wiggle || 0) * Math.sin(t * 30) * 0.2;
+        if (pl.size >= 2.55) {
+          // 開花光暈
+          ctx.save(); ctx.globalAlpha = 0.25 + Math.sin(t * 3 + p.i) * 0.1;
+          const hy = p.y - plantHeight(pl) * s;
+          const hg = ctx.createRadialGradient(p.x, hy, 2, p.x, hy, PW * 0.45);
+          hg.addColorStop(0, '#fffbd0'); hg.addColorStop(1, 'rgba(255,255,200,0)');
+          ctx.fillStyle = hg; ctx.beginPath(); ctx.arc(p.x, hy, PW * 0.45, 0, TAU); ctx.fill(); ctx.restore();
+        }
+        drawPlant(ctx, pl, p.x, p.y, s, sway);
+      }
+      if (p.weed) drawWeed(ctx, p.weed, p.x + PW * 0.18, p.y + 4, s * 0.9);
+    });
+    snails.forEach(sn => drawSnail(ctx, sn));
+    // 提示泡泡
+    if (state === 'play') plots.forEach(p => {
+      const s = PW / 70;
+      let icon = null, pulse = false;
+      if (p.weed) return;
+      const pl = p.plant;
+      if (!pl) icon = (tool === 'seed') ? null : 'seed';
+      else if (pl.blocked) icon = 'snail';
+      else if (pl.stage >= 3 && pl.size > 2.9) { icon = 'basket'; pulse = true; }
+      else if (pl.ready) { icon = 'sun'; pulse = true; }
+      else if (pl.water < 1 && pl.size >= pl.stage - 0.05) icon = 'water';
+      if (!icon) return;
+      const hy = pl ? p.y - plantHeight(pl) * s - PW * 0.3 : p.y - PW * 0.38;
+      bubble(p.x + PW * 0.32, Math.max(80, hy), icon, pulse);
+    });
+    // 水滴
+    drops.forEach(d => {
+      ctx.fillStyle = '#5ab8ff'; ctx.strokeStyle = 'rgba(30,80,160,.5)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(d.x, d.y - 7); ctx.quadraticCurveTo(d.x + 4.5, d.y, d.x, d.y + 4); ctx.quadraticCurveTo(d.x - 4.5, d.y, d.x, d.y - 7); ctx.fill(); ctx.stroke();
+    });
+    ripples.forEach(r => { ctx.strokeStyle = `rgba(160,220,255,${r.life})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(r.x, r.y, (1 - r.life) * 16 + 3, ((1 - r.life) * 16 + 3) * 0.35, 0, 0, TAU); ctx.stroke(); });
+    bugs.forEach(b => b.kind === 'bee' ? drawBee(ctx, b) : drawButterfly(ctx, b));
+    // 粒子
+    parts.forEach(p => {
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot); ctx.globalAlpha = clamp(p.life * 2, 0, 1); ctx.fillStyle = p.col;
+      if (p.k === 'star') { ctx.beginPath(); for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, q = i % 2 ? p.r * 0.45 : p.r; ctx.lineTo(Math.cos(a) * q, Math.sin(a) * q); } ctx.fill(); }
+      else if (p.k === 'heart') { const r = p.r; ctx.beginPath(); ctx.moveTo(0, r * 0.9); ctx.bezierCurveTo(-r * 1.6, -r * 0.2, -r * 0.6, -r * 1.3, 0, -r * 0.4); ctx.bezierCurveTo(r * 0.6, -r * 1.3, r * 1.6, -r * 0.2, 0, r * 0.9); ctx.fill(); }
+      else { ctx.beginPath(); ctx.arc(0, 0, p.r, 0, TAU); ctx.fill(); }
+      ctx.restore();
+    });
+    // 飛向籃子的收成
+    flyers.forEach(f => {
+      const k = clamp(f.t, 0, 1), e = 1 - Math.pow(1 - k, 3);
+      const x = lerp(f.x0, f.x1, e), y = lerp(f.y0, f.y1, e) - Math.sin(k * Math.PI) * 120;
+      ctx.save(); ctx.translate(x, y); ctx.rotate(k * 6); ctx.scale(1 - k * 0.5, 1 - k * 0.5);
+      const S = SEEDS[f.kind];
+      if (S.veg) drawPlant(ctx, { kind: f.kind, size: 3, mood: 'happy' }, 0, 20, PW / 90, 0);
+      else { ctx.scale(PW / 80, PW / 80); drawPlantHead(ctx, f.kind, 1, 0, 'happy'); }
+      ctx.restore();
+    });
+    // 文字
+    const font = getComputedStyle(document.body).fontFamily;
+    texts.forEach(tx => {
+      const k = 1 - tx.life, intro = Math.min(1, k / 0.18);
+      ctx.save(); ctx.translate(tx.x, tx.y - k * 50); const sc = easeOutBack(intro); ctx.scale(sc, sc);
+      ctx.globalAlpha = Math.min(1, tx.life * 3);
+      ctx.font = `900 ${tx.size}px ${font}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+      ctx.lineWidth = tx.size * 0.22; ctx.strokeStyle = '#fff'; ctx.strokeText(tx.s, 0, 0);
+      ctx.fillStyle = tx.col; ctx.fillText(tx.s, 0, 0);
+      ctx.restore();
+    });
+    // 工具游標
+    if (state === 'play' && pointer.inside) {
+      const s = Math.max(1.1, PW / 70);
+      if (tool === 'water') drawCan(ctx, pointer.x - 46 * s, pointer.y - 58 * s, s * 1.1, pointer.down || pointer.pourT > 0 ? 0.65 : 0.05);
+      else if (tool === 'sun') {
+        if (pointer.down) {
+          ctx.save(); ctx.globalAlpha = 0.35;
+          const bg = ctx.createLinearGradient(pointer.x, pointer.y - 110 * s, pointer.x, pointer.y);
+          bg.addColorStop(0, 'rgba(255,240,150,1)'); bg.addColorStop(1, 'rgba(255,240,150,0)');
+          ctx.fillStyle = bg; ctx.beginPath(); ctx.moveTo(pointer.x - 18 * s, pointer.y - 100 * s); ctx.lineTo(pointer.x + 18 * s, pointer.y - 100 * s); ctx.lineTo(pointer.x + 50 * s, pointer.y + 10); ctx.lineTo(pointer.x - 50 * s, pointer.y + 10); ctx.fill(); ctx.restore();
+        }
+        drawSunTool(ctx, pointer.x, pointer.y - 100 * s * (pointer.down ? 1 : 0.6), s * 0.9, t * 2);
+      } else if (tool === 'seed') drawSeedBag(ctx, pointer.x + 18 * s, pointer.y - 30 * s, s * 0.8, seedKind);
+      else if (tool === 'basket') drawBasket(ctx, pointer.x + 14 * s, pointer.y - 26 * s, s * 0.8);
+    }
+    // 暗角
+    const vg = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.5, W / 2, H / 2, Math.max(W, H) * 0.85);
+    vg.addColorStop(0, 'rgba(30,40,10,0)'); vg.addColorStop(1, 'rgba(30,40,10,0.2)');
+    ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+  }
+
+  /* ======================= 互動 ======================= */
+  function burst(x, y, n, kinds, cols, sp) {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * TAU, v = (sp || 200) * KG.rand(0.4, 1.1);
+      parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 100, rot: Math.random() * 6, vr: KG.rand(-6, 6), r: KG.rand(4, 9), k: KG.pick(kinds), col: KG.pick(cols), life: 1, g: 380 });
+    }
+  }
+  function say(x, y, s, col, size) { texts.push({ x: clamp(x, 110, W - 110), y: Math.max(110, y), s, col: col || '#ff5f95', size: size || 34, life: 1 }); }
+
+  function plotAt(x, y) {
+    const s = PW / 70;
+    let best = null, bd = Infinity;
+    plots.forEach(p => {
+      const top = p.y - (p.plant ? plantHeight(p.plant) * s : 20) - PW * 0.2;
+      if (x < p.x - PW * 0.6 || x > p.x + PW * 0.6 || y < top || y > p.y + PW * 0.3) return;
+      const d = Math.abs(x - p.x) + Math.abs(y - p.y) * 0.3;
+      if (d < bd) { bd = d; best = p; }
+    });
+    return best;
+  }
+
+  function pointerPos(e) { pointer.x = e.clientX; pointer.y = e.clientY; }
+  cv.addEventListener('pointerdown', e => {
+    if (state !== 'play') return;
+    e.preventDefault();
+    pointerPos(e); pointer.inside = true; pointer.down = true;
+    try { cv.setPointerCapture(e.pointerId); } catch (err) { /* 忽略 */ }
+    // 先看有沒有點到蝸牛或雜草
+    const s = PW / 70;
+    for (const sn of snails) {
+      if (!sn.fly && Math.hypot(pointer.x - sn.x, pointer.y - (sn.y - 14 * sn.s)) < 34 * sn.s + 10) { shooSnail(sn); pointer.down = false; return; }
+    }
+    for (const p of plots) {
+      if (p.weed && !p.weed.pull && Math.hypot(pointer.x - (p.x + PW * 0.18), pointer.y - (p.y - 8 * s)) < PW * 0.4) { pullWeed(p); pointer.down = false; return; }
+    }
+    const p = plotAt(pointer.x, pointer.y);
+    if (tool === 'seed') {
+      if (!p) return;
+      if (p.weed) { say(p.x, p.y - PW * 0.6, '先拔草喔！', '#3f8a2f', 26); KG.sound('boing'); return; }
+      if (p.plant) { p.plant.wiggle = 0.5; KG.sound('boing'); return; }
+      p.plant = { kind: seedKind, stage: 0, size: 0, water: 0, ready: false, wait: 0, mood: 'smile', wiggle: 0, pulse: 0 };
+      KG.sound('pop');
+      burst(p.x, p.y, 10, ['dot'], ['#a8703f', '#8a5a2e', '#c89a6a'], 140);
+      say(p.x, p.y - PW * 0.5, '種好了！', '#3f8a2f', 26);
+    } else if (tool === 'water') {
+      pointer.pourT = 0.6;
+    } else if (tool === 'sun') {
+      KG.sound('sparkle');
+    } else if (tool === 'basket') {
+      if (!p || !p.plant) return;
+      if (p.plant.stage >= 3 && p.plant.size > 2.9) harvest(p);
+      else { p.plant.wiggle = 0.5; say(p.x, p.y - PW * 0.7, '還沒好喔～', '#7a6cff', 24); KG.sound('boing'); }
+    }
+  });
+  cv.addEventListener('pointermove', e => { pointerPos(e); pointer.inside = true; });
+  const up = () => { pointer.down = false; };
+  cv.addEventListener('pointerup', up);
+  cv.addEventListener('pointercancel', () => { pointer.down = false; pointer.inside = false; });
+  cv.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') pointer.inside = false; });
+
+  function growStep(p, bySun) {
+    const pl = p.plant;
+    pl.stage = Math.min(3, pl.stage + 1);
+    pl.water = 0; pl.ready = false; pl.wait = 0;
+    pl.from = pl.size; pl.anim = 0;
+    const s = PW / 70;
+    burst(p.x, p.y - plantHeight(pl) * s * 0.6, bySun ? 18 : 10, ['star', 'dot'], ['#fff6a0', '#ffffff', '#b8f08a'], 220);
+    KG.note(523 + pl.stage * 130, 0.15, 'triangle', 0.2);
+    KG.note(784 + pl.stage * 130, 0.2, 'triangle', 0.15, 0.08);
+    if (pl.stage === 3) {
+      setTimeout(() => {
+        if (!p.plant || p.plant !== pl) return;
+        bloomsTotal++;
+        KG.sound('sparkle');
+        const S = SEEDS[pl.kind];
+        say(p.x, p.y - plantHeight(pl) * s - PW * 0.3, S.veg ? '成熟了！' : '開花了！', '#ff5f95', 32);
+        burst(p.x, p.y - plantHeight(pl) * s, 22, ['heart', 'star'], ['#ff8fb1', '#ffd23a', '#ffffff', '#c78cff'], 280);
+        pl.mood = 'happy';
+        setTimeout(() => { if (p.plant === pl) pl.mood = 'smile'; }, 1800);
+        if (bugs.length < 5) spawnBug();
+      }, 500);
+    }
+  }
+
+  function harvest(p) {
+    const pl = p.plant;
+    const s = PW / 70;
+    const hb = $('goals').getBoundingClientRect();
+    flyers.push({ kind: pl.kind, x0: p.x, y0: p.y - plantHeight(pl) * s, x1: hb.left + hb.width / 2, y1: hb.top + hb.height / 2, t: 0 });
+    p.plant = null;
+    KG.sound('whoosh');
+    burst(p.x, p.y, 12, ['dot', 'star'], ['#a8703f', '#fff6a0'], 160);
+    KG.say(SEEDS[pl.kind].name);
+  }
+
+  function arrive(f) {
+    basket[f.kind] = (basket[f.kind] || 0) + 1;
+    save.picked = (save.picked || 0) + 1; persist();
+    KG.sound('coin');
+    updHud(true);
+    if (!free && goalsDone()) setTimeout(levelClear, 900);
+    else say(W / 2, 120, KG.pick(['好棒！', '收成囉！', '太厲害了！']), '#ff5f95', 30);
+  }
+
+  function pullWeed(p) {
+    p.weed.pull = 0.001;
+    KG.sound('pop');
+    burst(p.x + PW * 0.18, p.y - 10, 12, ['dot', 'star'], ['#6cc44a', '#a8703f', '#fff6a0'], 200);
+    say(p.x, p.y - PW * 0.5, '拔掉了！', '#3f8a2f', 26);
+  }
+  function shooSnail(sn) {
+    sn.fly = 0.001;
+    KG.sound('boing');
+    if (sn.target && sn.target.plant) sn.target.plant.blocked = false;
+    say(sn.x, sn.y - 40, '蝸牛再見～', '#c86ad0', 24);
+  }
+
+  function spawnBug() {
+    const bee = Math.random() < 0.4;
+    const pal = [['#ffd0f0', '#ff6fb0'], ['#d0f0ff', '#4aa8ec'], ['#fff0b0', '#ffa94d'], ['#e8d8ff', '#9a78f0']];
+    const c = KG.pick(pal);
+    bugs.push({ kind: bee ? 'bee' : 'fly', x: Math.random() < 0.5 ? -30 : W + 30, y: KG.rand(gardenTop * 0.6, gardenTop + 60), vx: 0, vy: 0, s: Math.max(0.9, PW / 90), c1: c[0], c2: c[1], ph: Math.random() * 6, target: null, land: 0, life: KG.rand(14, 24) });
+  }
+
+  /* ======================= 更新 ======================= */
+  function update(dt) {
+    t += dt;
+    const s = PW / 70;
+    // 澆水
+    if (state === 'play' && tool === 'water' && (pointer.down || pointer.pourT > 0)) {
+      pointer.pourT -= dt;
+      const sx = pointer.x - 46 * s * 1.1 + 40 * s * 1.1 * Math.cos(0.65) + 22 * s * Math.sin(0.65), sy = pointer.y - 58 * s * 1.1 + 6 * s;
+      if (Math.random() < dt * 40) drops.push({ x: sx + KG.rand(-4, 4), y: sy + KG.rand(-3, 3), vx: KG.rand(10, 40), vy: KG.rand(20, 60), ty: pointer.y + KG.rand(-6, 6) });
+      const p = plotAt(pointer.x, pointer.y);
+      if (p && p.plant && p.plant.stage < 3 && !p.plant.ready && p.plant.size >= p.plant.stage - 0.05) {
+        p.plant.water = Math.min(1, p.plant.water + dt / 0.9);
+        if (p.plant.water >= 1) {
+          p.plant.ready = true; p.plant.wait = 0;
+          KG.sound('correct');
+          say(p.x, p.y - PW * 0.5, '喝飽了！', '#3d9df0', 26);
+        }
+      }
+      if (Math.random() < dt * 3) KG.sound('splash');
+    }
+    // 太陽：讓喝飽的植物馬上長大
+    if (state === 'play' && tool === 'sun' && pointer.down) {
+      const p = plotAt(pointer.x, pointer.y);
+      if (p && p.plant && p.plant.ready && !p.plant.blocked) growStep(p, true);
+      if (Math.random() < dt * 10) parts.push({ x: pointer.x + KG.rand(-30, 30), y: pointer.y - KG.rand(0, 60), vx: 0, vy: -30, rot: 0, vr: 2, r: KG.rand(3, 6), k: 'star', col: '#fff6a0', life: 0.6, g: 0 });
+    }
+    drops = drops.filter(d => {
+      d.vy += 900 * dt; d.x += d.vx * dt; d.y += d.vy * dt;
+      if (d.y >= d.ty) { ripples.push({ x: d.x, y: d.ty, life: 1 }); return false; }
+      return true;
+    });
+    ripples = ripples.filter(r => (r.life -= dt * 2.5) > 0);
+    // 植物生長
+    plots.forEach(p => {
+      const pl = p.plant;
+      if (p.weed) { p.weed.k = Math.min(1, p.weed.k + dt * 2); if (p.weed.pull) { p.weed.pull += dt * 1.5; if (p.weed.pull > 1) p.weed = null; } }
+      if (!pl) return;
+      pl.wiggle = Math.max(0, (pl.wiggle || 0) - dt);
+      if (pl.anim != null) {
+        pl.anim = Math.min(1, pl.anim + dt / 0.9);
+        pl.size = lerp(pl.from, pl.stage, elastic(pl.anim));
+        if (pl.anim >= 1) { pl.anim = null; pl.size = pl.stage; }
+      } else if (pl.size < pl.stage) pl.size = pl.stage;
+      if (pl.ready && !pl.blocked) {
+        pl.wait += dt;
+        if (pl.wait > 2.6) growStep(p, false);
+      }
+      pl.pulse = pl.stage === 3 ? Math.max(0, Math.sin(t * 4 + p.i)) * 0.3 : 0;
+    });
+    // 雜草與蝸牛
+    if (state === 'play' && !free) {
+      if (L.weeds) {
+        weedTimer -= dt;
+        if (weedTimer <= 0) {
+          weedTimer = KG.rand(9, 14);
+          const empty = plots.filter(p => !p.weed && (!p.plant || p.plant.stage < 3));
+          if (empty.length && plots.filter(p => p.weed).length < 2) { const p = KG.pick(empty); p.weed = { k: 0, pull: 0 }; KG.sound('boing'); }
+        }
+      }
+      if (L.snails) {
+        snailTimer -= dt;
+        if (snailTimer <= 0 && snails.filter(x => !x.fly).length < 1) {
+          snailTimer = KG.rand(12, 18);
+          const targets = plots.filter(p => p.plant && p.plant.stage < 3);
+          if (targets.length) {
+            const tg = KG.pick(targets), fromLeft = tg.x > W / 2 ? false : true;
+            snails.push({ x: fromLeft ? -40 : W + 40, y: tg.y + 6, dir: fromLeft ? 1 : -1, s: Math.max(0.9, PW / 80), target: tg, fly: 0 });
+          }
+        }
+      }
+    }
+    snails = snails.filter(sn => {
+      if (sn.fly) { sn.fly += dt; sn.x += sn.dir * -500 * dt; sn.y -= 300 * dt; return sn.fly < 1.2; }
+      const tg = sn.target;
+      if (!tg.plant) { sn.fly = 0.001; return true; }
+      const dx = tg.x - PW * 0.25 * sn.dir - sn.x;
+      if (Math.abs(dx) > 4) { sn.x += Math.sign(dx) * 26 * dt; sn.y = lerp(sn.y, tg.y + 6, dt); }
+      else if (!tg.plant.blocked) { tg.plant.blocked = true; tg.plant.mood = 'sad'; KG.sound('wrong'); }
+      return true;
+    });
+    plots.forEach(p => { if (p.plant && p.plant.blocked && !snails.some(sn => sn.target === p && !sn.fly)) { p.plant.blocked = false; p.plant.mood = 'smile'; } });
+    // 蝴蝶、蜜蜂
+    const blooms = plots.filter(p => p.plant && p.plant.stage === 3);
+    bugs = bugs.filter(b => {
+      b.life -= dt;
+      if (!b.target || !b.target.plant || b.target.plant.stage < 3) b.target = blooms.length ? KG.pick(blooms) : null;
+      let tx, ty;
+      if (b.target && b.life > 0) { tx = b.target.x + Math.sin(t * 1.3 + b.ph) * PW * 0.35; ty = b.target.y - plantHeight(b.target.plant) * s - 14 + Math.cos(t * 1.7 + b.ph) * 18; }
+      else { tx = b.x < W / 2 ? -80 : W + 80; ty = b.y - 40; }
+      b.vx += (tx - b.x) * dt * 2.2 - b.vx * dt * 1.6;
+      b.vy += (ty - b.y) * dt * 2.2 - b.vy * dt * 1.6 + Math.sin(t * 6 + b.ph) * 40 * dt;
+      b.x += b.vx * dt; b.y += b.vy * dt;
+      return b.life > -6;
+    });
+    if (blooms.length && bugs.length < Math.min(4, blooms.length + 1) && Math.random() < dt * 0.3) spawnBug();
+    // 粒子、文字、飛行物
+    parts = parts.filter(p => { p.vy += p.g * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.rot += p.vr * dt; return (p.life -= dt / 1.1) > 0; });
+    texts = texts.filter(tx => (tx.life -= dt / 1.3) > 0);
+    flyers = flyers.filter(f => { f.t += dt / 0.8; if (f.t >= 1) { arrive(f); return false; } return true; });
+  }
+
+  /* ======================= 介面 ======================= */
+  const STAR_PATH = 'M12 1.8l3 6.4 7 .8-5.2 4.8 1.4 6.9L12 17.2l-6.2 3.5 1.4-6.9L2 9l7-.8z';
+  const starSvg = (on, size) => `<svg class="st ${on ? 'on' : ''}" viewBox="0 0 24 24" width="${size}" height="${size}"><path d="${STAR_PATH}" stroke-width="1.6" stroke-linejoin="round"/><path d="M8.5 7.5l2-.3" stroke="#fff" stroke-width="1.6" stroke-linecap="round" opacity="${on ? .8 : 0}"/></svg>`;
+  function iconCanvas(w, h, fn) {
+    const c = document.createElement('canvas'); c.width = w * 2; c.height = h * 2;
+    const g = c.getContext('2d'); g.scale(2, 2); fn(g); return c;
+  }
+  const kindIcon = (kind, size) => iconCanvas(size, size, g => {
+    if (kind === 'flower') { g.translate(size / 2, size / 2); g.scale(size / 52, size / 52); drawPlantHead(g, 'daisy', 1, 0, 'happy'); return; }
+    if (SEEDS[kind].veg) drawPlant(g, { kind, size: 3, mood: 'happy' }, size / 2, size * 0.85, size / 64, 0);
+    else { g.translate(size / 2, size / 2); g.scale(size / 52, size / 52); drawPlantHead(g, kind, 1, 0, 'happy'); }
+  });
+
+  function goalCount(kind) {
+    if (kind === 'flower') return Object.keys(basket).filter(k => SEEDS[k].flower).reduce((a, k) => a + basket[k], 0);
+    return basket[kind] || 0;
+  }
+  const goalsDone = () => L.goal.every(([k, n]) => goalCount(k) >= n);
+
+  function updHud(bump) {
+    const box = $('goals');
+    box.innerHTML = '';
+    const list = free ? [['flower', 0]] : L.goal;
+    list.forEach(([k, n]) => {
+      const d = document.createElement('div');
+      const c = goalCount(k);
+      d.className = 'goal' + (!free && c >= n ? ' done' : '') + (bump ? ' bump' : '');
+      d.appendChild(kindIcon(k, 26));
+      d.insertAdjacentText('beforeend', free ? `${Object.values(basket).reduce((a, b) => a + b, 0)}` : `${Math.min(c, n)}/${n}`);
+      box.appendChild(d);
+    });
+    $('hudT').textContent = free ? '自由花園' : `${lvIdx + 1}. ${L.name}`;
+  }
+  function goalText() { return L.goal.map(([k, n]) => k === 'flower' ? `${n} 朵花` : `${n} 個${SEEDS[k].name}`).join('＋'); }
+
+  function buildTools() {
+    const box = $('tools'); box.innerHTML = '';
+    [['seed', '種子'], ['water', '澆水'], ['sun', '太陽'], ['basket', '收成']].forEach(([id, label]) => {
+      const b = document.createElement('button');
+      b.className = 'tool' + (tool === id ? ' sel' : '');
+      b.dataset.tool = id;
+      b.appendChild(iconCanvas(64, 56, g => {
+        if (id === 'seed') drawSeedBag(g, 32, 30, 0.85, seedKind);
+        else if (id === 'water') drawCan(g, 28, 34, 0.85, 0.2);
+        else if (id === 'sun') drawSunTool(g, 32, 28, 0.62, 0);
+        else drawBasket(g, 32, 30, 0.95);
+      }));
+      b.insertAdjacentText('beforeend', label);
+      b.addEventListener('click', () => {
+        if (tool === id && id === 'seed') { $('seeds').hidden = !$('seeds').hidden; KG.sound('click'); return; }
+        tool = id; KG.sound('click');
+        $('seeds').hidden = id !== 'seed';
+        [...box.children].forEach(c => c.classList.toggle('sel', c.dataset.tool === id));
+      });
+      box.appendChild(b);
+    });
+  }
+  function buildSeeds() {
+    const box = $('seeds'); box.innerHTML = '';
+    SEED_ORDER.forEach(k => {
+      const ok = seedUnlocked(k, free ? 99 : lvIdx);
+      const S = SEEDS[k];
+      if (!ok && S.stars == null) return;
+      const b = document.createElement('button');
+      b.className = 'seed' + (seedKind === k ? ' sel' : '') + (ok ? '' : ' locked');
+      b.appendChild(kindIcon(k, 48));
+      b.insertAdjacentText('beforeend', S.name);
+      if (!ok) b.insertAdjacentHTML('beforeend', `<span class="need">${starSvg(true, 12)}${S.stars}</span>`);
+      b.addEventListener('click', () => {
+        if (!ok) { KG.toast(`收集 ${S.stars} 顆星星就能解鎖！`); KG.sound('wrong'); return; }
+        seedKind = k; KG.sound('pop');
+        buildSeeds(); buildTools();
+        KG.say(S.name);
+      });
+      box.appendChild(b);
+    });
+    placeSeedBar();
+  }
+  function placeSeedBar() { $('seeds').style.bottom = (toolH + 12) + 'px'; }
+
+  function show(id) {
+    ['title', 'select', 'resultScr'].forEach(s => { $(s).hidden = s !== id; });
+    const playing = state === 'play';
+    $('tools').hidden = !playing;
+    $('hud').hidden = !playing;
+    $('freeDone').hidden = !(playing && free);
+    if (!playing) $('seeds').hidden = true;
+  }
+
+  function startLevel(i) {
+    free = i < 0;
+    lvIdx = Math.max(0, i); L = free ? { goal: [], name: '自由花園' } : LEVELS[i];
+    state = 'play';
+    resetGarden();
+    // 預設選一個符合目標的種子
+    const want = !free && L.goal.find(([k]) => k !== 'flower');
+    seedKind = want ? want[0] : 'daisy';
+    tool = 'seed';
+    show(null);
+    buildTools(); buildSeeds();
+    $('seeds').hidden = false;
+    updHud();
+    startTime = performance.now();
+    BGM.start();
+    setTimeout(() => KG.say(free ? '自由種花囉' : `請種出${goalText().replace('＋', '和')}`), 400);
+  }
+
+  function levelClear() {
+    if (state !== 'play') return;
+    state = 'result';
+    BGM.stop();
+    const sec = (performance.now() - startTime) / 1000;
+    const starsN = sec <= L.t[0] ? 3 : sec <= L.t[1] ? 2 : 1;
+    const before = totalStars();
+    const firstClear = !(save.stars[lvIdx] > 0);
+    save.stars[lvIdx] = Math.max(save.stars[lvIdx] || 0, starsN);
+    persist();
+    const after = totalStars();
+    const newSeed = SEED_ORDER.find(k => { const S = SEEDS[k]; return (S.stars != null && S.stars > before && S.stars <= after) || (firstClear && S.lv === lvIdx + 1); });
+    show('resultScr');
+    $('resTitle').textContent = starsN === 3 ? '超級園丁！' : '過關啦！';
+    $('resMsg').textContent = `花了 ${Math.round(sec)} 秒完成任務！`;
+    $('resUnlock').innerHTML = newSeed ? `<div class="unlock">🎁 新種子：${SEEDS[newSeed].name}！</div>` : '';
+    $('resStars').innerHTML = [0, 1, 2].map(k => starSvg(k < starsN, 70)).join('');
+    [...$('resStars').children].forEach((s, k) => { s.style.animationDelay = (0.25 + k * 0.25) + 's'; if (k < starsN) setTimeout(() => KG.note(880 + k * 220, 0.18, 'triangle', 0.2), 250 + k * 250); });
+    KG.sound('win'); KG.confetti();
+    const box = $('resBtns'); box.innerHTML = '';
+    const mk = (txt, cls, fn) => { const b = document.createElement('button'); b.className = 'cbtn small ' + cls; b.textContent = txt; b.addEventListener('click', () => { KG.sound('click'); fn(); }); box.appendChild(b); };
+    const hasNext = lvIdx < LEVELS.length - 1;
+    if (hasNext) mk('下一關', '', () => startLevel(lvIdx + 1));
+    mk('再玩一次', hasNext ? 'blue' : '', () => startLevel(lvIdx));
+    mk('選關卡', 'pink', openSelect);
+    // 結算圖：一排開心的花
+    const rc = $('resPic'), rg = rc.getContext('2d');
+    const kinds = Object.keys(basket).length ? Object.keys(basket) : ['daisy'];
+    const t0 = performance.now();
+    (function anim(now) {
+      if (state !== 'result') return;
+      rg.setTransform(2, 0, 0, 2, 0, 0); rg.clearRect(0, 0, 200, 110);
+      for (let i = 0; i < 5; i++) {
+        const k = kinds[i % kinds.length];
+        const hop = Math.abs(Math.sin((now - t0) / 300 + i)) * 6;
+        drawPlant(rg, { kind: k, size: 3, mood: 'happy' }, 24 + i * 38, 100 - hop, 0.75, Math.sin((now - t0) / 500 + i) * 0.1);
+      }
+      requestAnimationFrame(anim);
+    })(t0);
+  }
+
+  function openSelect() {
+    state = 'select';
+    show('select');
+    BGM.start();
+    const total = totalStars();
+    $('totalStars').innerHTML = starSvg(true, 28) + ` ${total} / ${LEVELS.length * 3}`;
+    const box = $('lvls'); box.innerHTML = '';
+    LEVELS.forEach((lv, i) => {
+      const ok = i === 0 || (save.stars[i - 1] || 0) > 0;
+      const s = save.stars[i] || 0;
+      const b = document.createElement('button');
+      b.className = 'lv' + (ok ? '' : ' locked');
+      b.style.cssText = `--l1:${lv.col[0]};--l2:${lv.col[1]};--l3:${lv.col[2]};animation-delay:${i * 0.05}s`;
+      b.innerHTML = `<span class="num">${i + 1}</span>`;
+      b.appendChild(kindIcon(lv.goal[0][0] === 'flower' ? 'tulip' : lv.goal[0][0], 50));
+      b.insertAdjacentHTML('beforeend', `<small>${lv.name}</small><div class="stars-row">${[0, 1, 2].map(k => starSvg(k < s, 20)).join('')}</div>`);
+      b.addEventListener('click', () => {
+        if (!ok) { KG.sound('wrong'); b.classList.remove('kg-shake'); void b.offsetWidth; b.classList.add('kg-shake'); KG.toast('先過前一關喔！'); return; }
+        KG.sound('pop'); startLevel(i);
+      });
+      box.appendChild(b);
+    });
+    const f = document.createElement('button');
+    f.className = 'lv';
+    f.style.cssText = '--l1:#d6f7ff;--l2:#6cc4ff;--l3:#2f82c2;animation-delay:.35s';
+    f.innerHTML = '<span class="num">∞</span>';
+    f.appendChild(kindIcon('sunflower', 50));
+    f.insertAdjacentHTML('beforeend', '<small>自由花園</small><div class="stars-row" style="font-size:12px;font-weight:900">想種就種</div>');
+    f.addEventListener('click', () => { KG.sound('pop'); startLevel(-1); });
+    box.appendChild(f);
+    const locked = SEED_ORDER.filter(k => SEEDS[k].stars != null && total < SEEDS[k].stars);
+    $('unlockInfo').textContent = locked.length ? `收集星星解鎖：${locked.map(k => `${SEEDS[k].name}（${SEEDS[k].stars}★）`).join('、')}` : '所有種子都解鎖了！';
+    resetGarden();
+    demoGarden();
+  }
+
+  function demoGarden() {
+    // 選單背後的示範花園
+    const kinds = ['tulip', 'daisy', 'sunflower', 'carrot', 'rose', 'tomato'];
+    plots.forEach((p, i) => { p.plant = { kind: kinds[i], stage: 3, size: 3, water: 0, mood: 'smile', wiggle: 0 }; });
+    for (let i = 0; i < 3; i++) spawnBug();
+  }
+
+  $('btnStart').addEventListener('click', () => { KG.sound('click'); openSelect(); });
+  $('freeDone').addEventListener('click', () => { KG.sound('click'); openSelect(); });
+  window.addEventListener('keydown', e => {
+    if (state !== 'play') return;
+    const map = { Digit1: 'seed', Digit2: 'water', Digit3: 'sun', Digit4: 'basket' };
+    if (map[e.code]) { const b = document.querySelector(`.tool[data-tool="${map[e.code]}"]`); if (b) b.click(); }
+  });
+  document.addEventListener('contextmenu', e => e.preventDefault());
+  document.addEventListener('visibilitychange', () => { if (document.hidden) BGM.stop(); else if (state === 'play' || state === 'select') BGM.start(); });
+
+  (function () {
+    const cols = [['#ff7fa8', '#c2426f'], ['#ffb347', '#c87a12'], ['#7bd88f', '#2f8a48'], ['#5cc8ff', '#2a7fc0']];
+    $('logo').innerHTML = '小小花園'.split('').map((ch, i) => `<span style="--c:${cols[i][0]};--d:${cols[i][1]};animation-delay:${i * 0.1}s,${0.7 + i * 0.25}s">${ch}</span>`).join('');
+  })();
+
+  let last = performance.now();
+  function loop(now) {
+    const dt = Math.min(0.05, (now - last) / 1000); last = now;
+    update(dt); render();
+    requestAnimationFrame(loop);
+  }
+  resize();
+  demoGarden();
+  show('title');
+  requestAnimationFrame(loop);
+  window.__garden = () => ({ state, tool, basket: Object.assign({}, basket), plots: plots.map(p => ({ x: p.x, y: p.y, plant: p.plant && { stage: p.plant.stage, size: p.plant.size, water: p.plant.water, ready: p.plant.ready }, weed: !!p.weed })), PW });
+})();
+</script>
+</body>
+</html>

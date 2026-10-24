@@ -1,0 +1,1267 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>貪吃毛毛蟲</title>
+<link rel="stylesheet" href="../../assets/common.css">
+<style>
+  /* ===== 遊戲共用 UI 套件（標題、關卡、結算、特效） ===== */
+  :root { --k-main: #ff7eb0; --k-dark: #7a2f57; --k-light: #fff0f6; --k-accent: #ffd34d; }
+  .kit-hidden-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
+  .kit-title {
+    position: fixed; inset: 0; z-index: 8900; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: clamp(4px, 1.6vh, 16px); padding: 64px 16px max(18px, env(safe-area-inset-bottom)); overflow: hidden;
+    transition: opacity .35s ease, transform .35s ease;
+  }
+  .kit-title.out, .kit-screen.out { opacity: 0; transform: scale(1.06); pointer-events: none; }
+  .kit-tdeco { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+  .kit-logo { position: relative; animation: kit-drop .9s cubic-bezier(.2,1.6,.4,1) both; }
+  .kit-logo-svg { display: block; width: min(92vw, 600px, 75vh); height: auto; overflow: visible; filter: drop-shadow(0 8px 10px rgba(0,0,0,.18)); }
+  .kit-logo-svg text { font-family: var(--kg-font); }
+  .kit-lc { animation: kit-lc 2.4s ease-in-out infinite; }
+  @keyframes kit-lc { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-7px); } }
+  @keyframes kit-drop { from { transform: translateY(-50px) scale(.6); opacity: 0; } to { transform: none; opacity: 1; } }
+  .kit-hero { position: relative; width: min(72vw, 40vh, 330px); aspect-ratio: 1; display: grid; place-items: center; animation: kit-drop 1s .15s cubic-bezier(.2,1.6,.4,1) both; }
+  .kit-hero > svg, .kit-hero > canvas { width: 100%; height: 100%; overflow: visible; display: block; }
+  .kit-tbtns { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; animation: kit-drop 1s .3s cubic-bezier(.2,1.6,.4,1) both; }
+  .kit-tsub { font-size: 17px; font-weight: 800; color: var(--k-dark); background: rgba(255,255,255,.8); border-radius: 999px; padding: 6px 16px; text-align: center; max-width: 92vw; animation: kit-drop 1s .4s both; }
+  .kit-bigbtn {
+    font-family: var(--kg-font); font-weight: 900; font-size: clamp(24px, 6.5vw, 32px); color: #fff; letter-spacing: 2px;
+    border: 5px solid #fff; border-radius: 999px; padding: 10px 32px 10px 18px; min-height: 72px;
+    display: inline-flex; align-items: center; gap: 8px; cursor: pointer; position: relative;
+    background: linear-gradient(180deg, #8ff0a4 0%, #3fbf63 55%, #2fa552 100%);
+    box-shadow: 0 8px 0 #22803f, 0 14px 24px rgba(20,90,40,.35), inset 0 4px 0 rgba(255,255,255,.55);
+    text-shadow: 0 3px 0 rgba(0,0,0,.22); animation: kit-pulse 1.6s ease-in-out infinite;
+  }
+  .kit-bigbtn svg { width: 40px; height: 40px; flex: 0 0 auto; filter: drop-shadow(0 3px 0 rgba(0,0,0,.18)); }
+  .kit-bigbtn:active { transform: translateY(6px) scale(.97); box-shadow: 0 2px 0 #22803f, 0 4px 8px rgba(20,90,40,.35); animation: none; }
+  .kit-bigbtn.alt { background: linear-gradient(180deg, #a6dcff 0%, #3a9ee8 60%, #2f86cc 100%); box-shadow: 0 8px 0 #2268a3, 0 14px 24px rgba(30,80,140,.35), inset 0 4px 0 rgba(255,255,255,.55); animation-delay: .4s; }
+  .kit-bigbtn.alt:active { box-shadow: 0 2px 0 #2268a3; }
+  .kit-bigbtn.pink { background: linear-gradient(180deg, #ffb3d1 0%, #ff6fa5 60%, #e8558d 100%); box-shadow: 0 8px 0 #b83a6c, 0 14px 24px rgba(160,40,90,.35), inset 0 4px 0 rgba(255,255,255,.55); }
+  .kit-bigbtn.pink:active { box-shadow: 0 2px 0 #b83a6c; }
+  .kit-bigbtn.small { font-size: 22px; min-height: 60px; padding: 8px 24px 8px 14px; }
+  .kit-bigbtn.small svg { width: 30px; height: 30px; }
+  @keyframes kit-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+
+  /* 關卡選擇 */
+  .kit-screen {
+    position: fixed; inset: 0; z-index: 8900; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch;
+    padding: 70px 14px max(20px, env(safe-area-inset-bottom)); display: flex; flex-direction: column; align-items: center;
+    transition: opacity .3s ease, transform .3s ease; touch-action: pan-y;
+  }
+  .kit-banner {
+    position: relative; display: inline-block; color: #fff; font-size: clamp(24px, 6.5vw, 32px); font-weight: 900; letter-spacing: 2px;
+    padding: 8px 34px; border-radius: 16px; border: 4px solid #fff; background: linear-gradient(180deg, var(--k-main), var(--k-dark));
+    box-shadow: 0 6px 0 rgba(0,0,0,.18), 0 10px 18px rgba(0,0,0,.18); text-shadow: 0 3px 0 rgba(0,0,0,.25); animation: kit-drop .6s both cubic-bezier(.2,1.6,.4,1);
+  }
+  .kit-banner::before, .kit-banner::after { content: ''; position: absolute; top: 14px; width: 26px; height: 100%; background: var(--k-dark); z-index: -1; border-radius: 4px; }
+  .kit-banner::before { left: -18px; clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, 40% 50%); }
+  .kit-banner::after { right: -18px; clip-path: polygon(0 0, 100% 0, 60% 50%, 100% 100%, 0 100%); }
+  .kit-total { margin-top: 10px; display: inline-flex; align-items: center; gap: 6px; font-size: 20px; font-weight: 900; color: var(--k-dark);
+    background: rgba(255,255,255,.9); border: 3px solid #fff; border-radius: 999px; padding: 3px 14px 3px 6px; box-shadow: 0 4px 0 rgba(0,0,0,.12); }
+  .kit-total svg { width: 30px; height: 30px; }
+  .kit-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 14px; width: min(640px, 100%); margin: 16px auto 8px; }
+  .kit-lv {
+    position: relative; aspect-ratio: 1 / 1.08; border-radius: 26px; border: 5px solid #fff; cursor: pointer; font-family: var(--kg-font);
+    background: linear-gradient(180deg, #fff 0%, var(--k-light) 100%); color: var(--k-dark);
+    box-shadow: 0 7px 0 rgba(0,0,0,.13), 0 12px 20px rgba(0,0,0,.12);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; padding: 4px;
+    animation: kit-drop .5s both cubic-bezier(.2,1.6,.4,1); transition: transform .12s;
+  }
+  .kit-lv:active { transform: scale(.93); }
+  .kit-lv .num {
+    width: 58%; aspect-ratio: 1; border-radius: 50%; display: grid; place-items: center; font-size: clamp(26px, 7vw, 36px); font-weight: 900; color: #fff;
+    background: radial-gradient(circle at 35% 28%, rgba(255,255,255,.7) 0 12%, transparent 13%), linear-gradient(180deg, var(--k-main), var(--k-dark));
+    box-shadow: inset 0 -5px 0 rgba(0,0,0,.15), 0 4px 0 rgba(0,0,0,.12); text-shadow: 0 3px 0 rgba(0,0,0,.25);
+  }
+  .kit-lv .lname { font-size: 13px; font-weight: 800; line-height: 1.1; text-align: center; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .kit-lv .stars { display: flex; gap: 1px; }
+  .kit-lv .stars svg { width: 22px; height: 22px; }
+  .kit-lv.locked { background: linear-gradient(180deg, #f2eef6, #ddd6e6); cursor: default; }
+  .kit-lv.locked .num { background: linear-gradient(180deg, #cfc6da, #a99dba); }
+  .kit-lv .lock { position: absolute; width: 46%; top: 16%; left: 27%; }
+  .kit-lv.locked .num span { opacity: 0; }
+  .kit-lv.next::after { content: ''; position: absolute; inset: -9px; border-radius: 30px; border: 4px solid var(--k-accent); animation: kit-ring 1.2s ease-in-out infinite; pointer-events: none; }
+  @keyframes kit-ring { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.06); opacity: .5; } }
+  .kit-extra { width: min(640px, 100%); }
+  .kit-shelf-title { font-size: 18px; font-weight: 900; color: var(--k-dark); margin: 10px 0 6px; text-align: center; }
+  .kit-shelf { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+  .kit-item { width: 84px; border-radius: 20px; border: 4px solid #fff; background: rgba(255,255,255,.85); box-shadow: 0 5px 0 rgba(0,0,0,.12);
+    display: flex; flex-direction: column; align-items: center; padding: 4px 2px; font-size: 12px; font-weight: 800; color: var(--k-dark); cursor: pointer; font-family: var(--kg-font); position: relative; }
+  .kit-item svg.pv { width: 62px; height: 62px; }
+  .kit-item.sel { border-color: var(--k-accent); box-shadow: 0 0 0 3px var(--k-main), 0 5px 0 rgba(0,0,0,.12); }
+  .kit-item.locked { filter: grayscale(1); opacity: .6; cursor: default; }
+  .kit-item .need { display: flex; align-items: center; gap: 2px; }
+  .kit-item .need svg { width: 14px; height: 14px; }
+
+  /* 結算卡 */
+  .kit-ov { position: fixed; inset: 0; z-index: 9500; display: grid; place-items: center; padding: 16px; background: rgba(60,40,80,.5); backdrop-filter: blur(3px); animation: kg-fade .25s ease; overflow-y: auto; }
+  .kit-rcard {
+    position: relative; width: min(420px, 100%); margin-top: 30px; text-align: center; color: var(--k-dark);
+    background: linear-gradient(180deg, #fff 0%, var(--k-light) 100%); border: 6px solid #fff; border-radius: 34px; padding: 50px 18px 20px;
+    box-shadow: 0 10px 0 rgba(0,0,0,.12), 0 24px 44px rgba(40,20,60,.35); animation: kit-cardin .6s cubic-bezier(.2,1.5,.4,1) both;
+  }
+  @keyframes kit-cardin { from { transform: translateY(60px) scale(.6); opacity: 0; } to { transform: none; opacity: 1; } }
+  .kit-ribbon { position: absolute; left: 50%; top: -34px; transform: translateX(-50%); width: 112%; max-width: 440px; }
+  .kit-ribbon svg { width: 100%; height: auto; display: block; overflow: visible; }
+  .kit-ribbon svg text { font-family: var(--kg-font); }
+  .kit-rstars { display: flex; justify-content: center; align-items: flex-end; gap: 4px; margin: 0 0 6px; }
+  .kit-rstar { position: relative; width: 74px; height: 74px; }
+  .kit-rstar.mid { width: 96px; height: 96px; margin-bottom: 14px; }
+  .kit-rstar svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .kit-rstar .on { transform: scale(0); }
+  .kit-rstar.lit .on { animation: kit-starin .55s cubic-bezier(.2,1.8,.4,1) forwards; }
+  @keyframes kit-starin { 0% { transform: scale(0) rotate(-90deg); } 100% { transform: scale(1) rotate(0); } }
+  .kit-rhero { width: 120px; height: 120px; margin: -6px auto 2px; }
+  .kit-rhero svg { width: 100%; height: 100%; overflow: visible; }
+  .kit-rmsg { font-size: 19px; font-weight: 800; line-height: 1.45; margin: 4px 0 12px; }
+  .kit-unlock { display: flex; align-items: center; gap: 10px; text-align: left; margin: 0 auto 14px; padding: 8px 12px; border-radius: 20px; border: 3px dashed var(--k-main);
+    background: #fff; font-weight: 900; font-size: 17px; animation: kit-drop .6s 1.2s both cubic-bezier(.2,1.6,.4,1); max-width: 340px; }
+  .kit-unlock .ic { width: 58px; height: 58px; flex: 0 0 auto; }
+  .kit-unlock .ic svg { width: 100%; height: 100%; }
+  .kit-rbtns { display: flex; justify-content: center; gap: 14px; flex-wrap: wrap; }
+  .kit-rbtn { font-family: var(--kg-font); display: flex; flex-direction: column; align-items: center; gap: 4px; background: none; border: none; cursor: pointer; font-size: 15px; font-weight: 900; color: var(--k-dark); padding: 0; }
+  .kit-rbtn .b { width: 70px; height: 70px; border-radius: 50%; border: 4px solid #fff; display: grid; place-items: center; transition: transform .1s; }
+  .kit-rbtn .b svg { width: 38px; height: 38px; }
+  .kit-rbtn:active .b { transform: translateY(4px) scale(.95); }
+  .kit-rbtn.g .b { background: linear-gradient(180deg, #8ff0a4, #34b45a); box-shadow: 0 6px 0 #22803f, 0 10px 16px rgba(0,0,0,.2); }
+  .kit-rbtn.y .b { background: linear-gradient(180deg, #ffe58a, #f2a91f); box-shadow: 0 6px 0 #b9790c, 0 10px 16px rgba(0,0,0,.2); }
+  .kit-rbtn.b2 .b { background: linear-gradient(180deg, #a6dcff, #3a9ee8); box-shadow: 0 6px 0 #2268a3, 0 10px 16px rgba(0,0,0,.2); }
+  .kit-rbtn.big .b { width: 84px; height: 84px; animation: kit-pulse 1.4s ease-in-out infinite; }
+
+  /* HUD */
+  .kit-hud { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 8000; display: flex; gap: 8px; pointer-events: none; max-width: calc(100vw - 136px); }
+  .kit-chip {
+    height: 48px; display: inline-flex; align-items: center; gap: 4px; padding: 0 14px 0 6px; border-radius: 999px; white-space: nowrap;
+    background: var(--chip-bg, linear-gradient(180deg, #fff, #ffeef6)); border: 4px solid var(--chip-border, #fff); color: var(--k-dark);
+    box-shadow: 0 5px 0 rgba(0,0,0,.15), 0 8px 14px rgba(0,0,0,.12); font-size: 20px; font-weight: 900;
+  }
+  .kit-chip svg { width: 32px; height: 32px; flex: 0 0 auto; }
+  .kit-chip.bump { animation: kit-bump .4s cubic-bezier(.2,1.8,.4,1); }
+  @keyframes kit-bump { 0% { transform: scale(1); } 40% { transform: scale(1.25); } 100% { transform: scale(1); } }
+  .kit-prog { width: 74px; height: 16px; border-radius: 99px; background: rgba(0,0,0,.12); overflow: hidden; box-shadow: inset 0 2px 3px rgba(0,0,0,.15); }
+  .kit-prog i { display: block; height: 100%; width: 0; border-radius: 99px; background: linear-gradient(180deg, #ffe680, #ffb21f); box-shadow: inset 0 3px 0 rgba(255,255,255,.5); transition: width .4s cubic-bezier(.2,1.4,.4,1); }
+
+  /* 特效 */
+  .kit-fx { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 9550; }
+  .kit-float {
+    position: fixed; z-index: 9560; pointer-events: none; font-weight: 900; font-size: 30px; color: var(--c, #fff); white-space: nowrap;
+    text-shadow: 3px 0 0 var(--o, #6b3a8a), -3px 0 0 var(--o, #6b3a8a), 0 3px 0 var(--o, #6b3a8a), 0 -3px 0 var(--o, #6b3a8a), 2px 2px 0 var(--o, #6b3a8a), -2px 2px 0 var(--o, #6b3a8a), 2px -2px 0 var(--o, #6b3a8a), -2px -2px 0 var(--o, #6b3a8a), 0 6px 0 rgba(0,0,0,.2);
+    animation: kit-float 1s ease-out forwards;
+  }
+  @keyframes kit-float { 0% { transform: translate(-50%, -50%) scale(.4); opacity: 0; } 20% { transform: translate(-50%, -80%) scale(1.25); opacity: 1; } 100% { transform: translate(-50%, -200%) scale(1); opacity: 0; } }
+  .kit-callout {
+    position: fixed; left: 50%; top: 38%; z-index: 9560; pointer-events: none; white-space: nowrap; letter-spacing: 3px;
+    font-size: clamp(40px, 11vw, 74px); font-weight: 900; color: var(--c, #ffd23f);
+    text-shadow: 4px 0 0 #fff, -4px 0 0 #fff, 0 4px 0 #fff, 0 -4px 0 #fff, 3px 3px 0 #fff, -3px 3px 0 #fff, 3px -3px 0 #fff, -3px -3px 0 #fff, 0 9px 0 var(--o, #7a2f57), 0 14px 18px rgba(0,0,0,.25);
+    animation: kit-callout 1.3s forwards;
+  }
+  @keyframes kit-callout {
+    0% { transform: translate(-50%, -50%) scale(.2) rotate(-12deg); opacity: 0; }
+    22% { transform: translate(-50%, -50%) scale(1.18) rotate(3deg); opacity: 1; }
+    38% { transform: translate(-50%, -50%) scale(1) rotate(-2deg); }
+    80% { opacity: 1; transform: translate(-50%, -55%) scale(1) rotate(0); }
+    100% { transform: translate(-50%, -90%) scale(.9); opacity: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) { .kit-lc, .kit-bigbtn, .kit-rbtn.big .b { animation: none; } }
+
+  :root { --k-main: #6cc33a; --k-dark: #2f6e1c; --k-light: #f0ffe4; --k-accent: #ffd34d; }
+  html, body { height: 100%; overflow: hidden; background: #bfe9ff; }
+  #cv { position: fixed; inset: 0; display: block; touch-action: none; }
+  #pad {
+    position: fixed; z-index: 30; display: grid; gap: 6px;
+    grid-template-columns: repeat(3, 66px); grid-template-rows: repeat(3, 66px);
+    grid-template-areas: ". u ." "l c r" ". d .";
+    left: 50%; bottom: max(14px, env(safe-area-inset-bottom)); transform: translateX(-50%);
+    touch-action: none; display: none;
+  }
+  #pad button {
+    width: 66px; height: 66px; border-radius: 22px; border: 4px solid #fff; padding: 0; cursor: pointer; display: grid; place-items: center;
+    background: radial-gradient(circle at 35% 30%, #c7f59a 0%, #7fd04f 55%, #4fa830 100%);
+    box-shadow: 0 6px 0 #2f7a1f, 0 10px 14px rgba(0,0,0,.2); touch-action: none; transition: transform .08s;
+  }
+  #pad button svg { width: 34px; height: 34px; }
+  #pad button.on, #pad button:active { transform: translateY(4px) scale(.95); box-shadow: 0 2px 0 #2f7a1f; }
+  #pad .u { grid-area: u; } #pad .d { grid-area: d; } #pad .l { grid-area: l; } #pad .r { grid-area: r; }
+  #pad .c { grid-area: c; width: 66px; height: 66px; border-radius: 50%; background: radial-gradient(circle at 40% 35%, #fff 0%, #e9f9dc 100%); border: 4px solid #fff; box-shadow: inset 0 -4px 0 rgba(0,0,0,.08); display: grid; place-items: center; }
+  #pad .c svg { width: 44px; height: 44px; }
+  @media (min-aspect-ratio: 11/10) {
+    #pad { left: auto; right: max(16px, env(safe-area-inset-right)); bottom: auto; top: calc(50% + 30px); transform: translateY(-50%); }
+  }
+  .kit-item canvas.pv { width: 66px; height: 66px; }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div id="pad">
+  <button class="u" data-d="0" aria-label="上"><svg viewBox="0 0 100 100"><path d="M50 18 L84 62 H62 V84 H38 V62 H16 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/></svg></button>
+  <button class="l" data-d="3" aria-label="左"><svg viewBox="0 0 100 100" style="transform:rotate(-90deg)"><path d="M50 18 L84 62 H62 V84 H38 V62 H16 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/></svg></button>
+  <div class="c"><svg viewBox="0 0 100 100"><path d="M50 88 C20 70 14 40 30 24 C40 14 50 22 50 22 C50 22 60 14 70 24 C86 40 80 70 50 88 Z" fill="#7fd04f" stroke="#2f7a1f" stroke-width="5"/><path d="M50 26 V82" stroke="#2f7a1f" stroke-width="4"/></svg></div>
+  <button class="r" data-d="1" aria-label="右"><svg viewBox="0 0 100 100" style="transform:rotate(90deg)"><path d="M50 18 L84 62 H62 V84 H38 V62 H16 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/></svg></button>
+  <button class="d" data-d="2" aria-label="下"><svg viewBox="0 0 100 100" style="transform:rotate(180deg)"><path d="M50 18 L84 62 H62 V84 H38 V62 H16 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/></svg></button>
+</div>
+<div class="kit-hud" id="hud" style="display:none">
+  <div class="kit-chip" id="chipLen"><svg viewBox="0 0 100 100"><path d="M50 92 C18 74 10 42 28 22 C38 12 50 20 50 20 C50 20 62 12 72 22 C90 42 82 74 50 92 Z" fill="#7fd04f" stroke="#2f7a1f" stroke-width="6" stroke-linejoin="round"/><path d="M50 24 V86 M50 46 L34 36 M50 62 L66 50" stroke="#2f7a1f" stroke-width="5" stroke-linecap="round"/></svg><div class="kit-prog"><i id="lenBar"></i></div></div>
+  <div class="kit-chip" id="chipTime"><svg viewBox="0 0 100 100"><circle cx="50" cy="54" r="38" fill="#fff" stroke="#e8558d" stroke-width="8"/><rect x="42" y="4" width="16" height="12" rx="4" fill="#e8558d"/><path d="M50 54 V30 M50 54 L66 64" stroke="#5a2d6e" stroke-width="7" stroke-linecap="round"/></svg><span id="timeTxt">90</span></div>
+</div>
+<script src="../../assets/common.js"></script>
+<script>
+/* ===== 遊戲共用 UI 套件 Kit：標題畫面、關卡選擇、結算、圖示、特效、背景音樂 ===== */
+const Kit = (function () {
+  'use strict';
+  /* ---------- 緩動函式 ---------- */
+  const E = {
+    linear: t => t,
+    outQuad: t => 1 - (1 - t) * (1 - t),
+    outCubic: t => 1 - Math.pow(1 - t, 3),
+    inOut: t => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2),
+    outBack: t => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); },
+    outElastic: t => (t === 0 ? 0 : t === 1 ? 1 : Math.pow(2, -10 * t) * Math.sin((t * 10 - 0.75) * (2 * Math.PI / 3)) + 1),
+    outBounce: t => {
+      const n1 = 7.5625, d1 = 2.75;
+      if (t < 1 / d1) return n1 * t * t;
+      if (t < 2 / d1) return n1 * (t -= 1.5 / d1) * t + 0.75;
+      if (t < 2.5 / d1) return n1 * (t -= 2.25 / d1) * t + 0.9375;
+      return n1 * (t -= 2.625 / d1) * t + 0.984375;
+    }
+  };
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const lerp = (a, b, t) => a + (b - a) * t;
+
+  /* ---------- 顏色小工具 ---------- */
+  function hex2rgb(h) { h = h.replace('#', ''); if (h.length === 3) h = h.split('').map(c => c + c).join(''); const n = parseInt(h, 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
+  function rgb2hex(r) { return '#' + r.map(v => clamp(Math.round(v), 0, 255).toString(16).padStart(2, '0')).join(''); }
+  function mix(a, b, t) { const A = hex2rgb(a), B = hex2rgb(b); return rgb2hex(A.map((v, i) => lerp(v, B[i], t))); }
+  const lighten = (c, t) => mix(c, '#ffffff', t);
+  const darken = (c, t) => mix(c, '#000000', t);
+
+  /* ---------- 共用 SVG 漸層 ---------- */
+  function ensureDefs() {
+    if (document.getElementById('kitDefs')) return;
+    const d = document.createElement('div');
+    d.className = 'kit-hidden-defs';
+    d.innerHTML = `<svg id="kitDefs" width="0" height="0" aria-hidden="true"><defs>
+      <linearGradient id="kitStarG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff38a"/><stop offset=".55" stop-color="#ffd02e"/><stop offset="1" stop-color="#ff9f1a"/></linearGradient>
+      <linearGradient id="kitLockG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffe27a"/><stop offset="1" stop-color="#e9a628"/></linearGradient>
+      <linearGradient id="kitGiftG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff9ccc"/><stop offset="1" stop-color="#e8558d"/></linearGradient>
+      <linearGradient id="kitRibbonG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--k-main)"/><stop offset="1" stop-color="var(--k-dark)"/></linearGradient>
+    </defs></svg>`;
+    document.body.appendChild(d);
+  }
+
+  /* ---------- 圖示（全部手繪向量） ---------- */
+  const STAR_D = 'M50 7 C53 7 55 9 56 12 L64 31 L85 33 C91 34 93 41 89 45 L73 59 L78 80 C79 86 73 90 68 87 L50 76 L32 87 C27 90 21 86 22 80 L27 59 L11 45 C7 41 9 34 15 33 L36 31 L44 12 C45 9 47 7 50 7 Z';
+  const ICON = {
+    star: (on = true) => `<svg viewBox="0 0 100 100"><path d="${STAR_D}" transform="translate(0 4)" fill="${on ? '#d9800b' : '#b9afc6'}" opacity=".55"/><path d="${STAR_D}" fill="${on ? 'url(#kitStarG)' : '#e3dcea'}" stroke="${on ? '#c46f00' : '#b4aac2'}" stroke-width="5" stroke-linejoin="round"/>${on ? '<path d="M36 34 Q44 22 54 26" stroke="#fff" stroke-width="7" fill="none" stroke-linecap="round" opacity=".85"/><circle cx="66" cy="44" r="4" fill="#fff" opacity=".7"/>' : ''}</svg>`,
+    lock: () => '<svg viewBox="0 0 100 100" class="lock"><path d="M31 46 V33 a19 19 0 0 1 38 0 V46" fill="none" stroke="#8a7a99" stroke-width="11" stroke-linecap="round"/><rect x="18" y="42" width="64" height="48" rx="14" fill="url(#kitLockG)" stroke="#a46f12" stroke-width="5"/><rect x="26" y="48" width="48" height="8" rx="4" fill="#fff" opacity=".45"/><circle cx="50" cy="64" r="7" fill="#8a5a0a"/><rect x="47" y="66" width="6" height="13" rx="3" fill="#8a5a0a"/></svg>',
+    play: () => '<svg viewBox="0 0 100 100"><path d="M34 20 Q30 18 30 24 V76 Q30 82 35 79 L80 54 Q85 50 80 46 Z" fill="#fff" stroke="#fff" stroke-width="6" stroke-linejoin="round"/></svg>',
+    replay: () => '<svg viewBox="0 0 100 100"><path d="M74 58 A26 26 0 1 1 66 31" fill="none" stroke="#fff" stroke-width="12" stroke-linecap="round"/><path d="M56 16 L80 26 L62 44 Z" fill="#fff" stroke="#fff" stroke-width="6" stroke-linejoin="round"/></svg>',
+    next: () => '<svg viewBox="0 0 100 100"><path d="M22 50 H70 M50 28 L74 50 L50 72" stroke="#fff" stroke-width="13" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    back: () => '<svg viewBox="0 0 100 100"><path d="M78 50 H30 M50 28 L26 50 L50 72" stroke="#fff" stroke-width="13" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    menu: () => '<svg viewBox="0 0 100 100"><g fill="#fff"><rect x="18" y="18" width="27" height="27" rx="8"/><rect x="55" y="18" width="27" height="27" rx="8"/><rect x="18" y="55" width="27" height="27" rx="8"/><rect x="55" y="55" width="27" height="27" rx="8"/></g></svg>',
+    gift: () => '<svg viewBox="0 0 100 100"><path d="M50 30 C40 10 20 16 28 28 C32 33 44 32 50 30 C56 32 68 33 72 28 C80 16 60 10 50 30 Z" fill="#ffd34d" stroke="#c48a12" stroke-width="4" stroke-linejoin="round"/><rect x="14" y="30" width="72" height="20" rx="6" fill="url(#kitGiftG)" stroke="#a83a6a" stroke-width="4"/><rect x="20" y="48" width="60" height="40" rx="6" fill="url(#kitGiftG)" stroke="#a83a6a" stroke-width="4"/><rect x="44" y="30" width="12" height="58" fill="#ffd34d" stroke="#c48a12" stroke-width="3"/><rect x="24" y="52" width="10" height="20" rx="4" fill="#fff" opacity=".4"/></svg>',
+    note: () => '<svg viewBox="0 0 100 100"><path d="M40 70 V24 L78 16 V60" fill="none" stroke="#fff" stroke-width="9" stroke-linejoin="round"/><ellipse cx="32" cy="72" rx="12" ry="9" fill="#fff"/><ellipse cx="70" cy="62" rx="12" ry="9" fill="#fff"/></svg>'
+  };
+  const starRow = (n, total = 3) => { let s = ''; for (let i = 0; i < total; i++) s += ICON.star(i < n); return s; };
+
+  /* ---------- 標誌文字（每個字分開彈跳） ---------- */
+  function logoSVG(text, colors, stroke) {
+    const ch = Array.from(text);
+    const step = 92, W = ch.length * step + 40;
+    let s = `<svg class="kit-logo-svg" viewBox="0 0 ${W} 150" aria-label="${text}"><defs>`;
+    colors.forEach((c, i) => {
+      s += `<linearGradient id="kitLg${i}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${lighten(c, 0.55)}"/><stop offset=".5" stop-color="${lighten(c, 0.15)}"/><stop offset="1" stop-color="${c}"/></linearGradient>`;
+    });
+    s += '</defs>';
+    ch.forEach((c, i) => {
+      const x = 20 + i * step + step / 2, rot = (i % 2 ? 5 : -5);
+      s += `<g class="kit-lc" style="animation-delay:${(i * 0.13).toFixed(2)}s"><g transform="rotate(${rot} ${x} 95)">` +
+        `<text x="${x}" y="124" text-anchor="middle" font-size="90" font-weight="900" fill="${stroke}" stroke="${stroke}" stroke-width="24" stroke-linejoin="round">${c}</text>` +
+        `<text x="${x}" y="114" text-anchor="middle" font-size="90" font-weight="900" fill="#fff" stroke="#fff" stroke-width="22" stroke-linejoin="round">${c}</text>` +
+        `<text x="${x}" y="114" text-anchor="middle" font-size="90" font-weight="900" fill="url(#kitLg${i % colors.length})" stroke="${stroke}" stroke-width="7" stroke-linejoin="round" paint-order="stroke">${c}</text>` +
+        `</g></g>`;
+    });
+    return s + '</svg>';
+  }
+
+  /* ---------- 背景音樂（用 KG.note 合成） ---------- */
+  const Music = (function () {
+    let timer = null, step = 0, song = null;
+    const mf = m => 440 * Math.pow(2, (m - 69) / 12);
+    function tick() {
+      if (!song) return;
+      const dur = 60 / song.bpm / 2;
+      if (!KG.isMuted() && !document.hidden) {
+        const m = song.mel[step % song.mel.length];
+        if (m) KG.note(mf(m), dur * 1.5, song.wave || 'triangle', song.vol || 0.045);
+        if (song.bass && step % 2 === 0) {
+          const b = song.bass[(step / 2 | 0) % song.bass.length];
+          if (b) KG.note(mf(b), dur * 1.9, 'sine', (song.vol || 0.045) * 1.4);
+        }
+        if (song.tick && step % 4 === 2) KG.note(2200, 0.03, 'square', 0.012);
+      }
+      step++;
+      timer = setTimeout(tick, dur * 1000);
+    }
+    return {
+      start(s) { this.stop(); song = s; step = 0; timer = setTimeout(tick, 80); },
+      stop() { clearTimeout(timer); timer = null; song = null; },
+      get playing() { return !!song; }
+    };
+  })();
+  // 幾首可愛的旋律（MIDI 音高，0 = 休止，每格 = 八分音符）
+  const SONGS = {
+    happy: { bpm: 112, mel: [72, 0, 76, 79, 81, 79, 76, 0, 74, 0, 77, 81, 79, 0, 0, 0, 72, 74, 76, 79, 77, 76, 74, 0, 72, 0, 67, 0, 72, 0, 0, 0], bass: [48, 55, 53, 55, 48, 55, 43, 48], tick: true },
+    bouncy: { bpm: 120, mel: [67, 72, 76, 72, 79, 0, 76, 0, 74, 77, 81, 77, 79, 0, 0, 0, 76, 79, 84, 79, 81, 79, 76, 0, 74, 76, 72, 0, 72, 0, 0, 0], bass: [48, 52, 53, 55, 48, 52, 50, 48], tick: true },
+    gentle: { bpm: 92, mel: [76, 0, 79, 0, 84, 0, 83, 81, 79, 0, 76, 0, 77, 0, 0, 0, 74, 0, 77, 0, 81, 0, 79, 77, 76, 0, 72, 0, 74, 0, 0, 0], bass: [48, 55, 53, 50, 48, 52, 53, 55], wave: 'sine', vol: 0.05 },
+    march: { bpm: 126, mel: [72, 72, 79, 79, 81, 81, 79, 0, 77, 77, 76, 76, 74, 74, 72, 0, 79, 79, 77, 77, 76, 76, 74, 0, 79, 79, 77, 77, 76, 76, 74, 0], bass: [48, 53, 48, 43, 48, 53, 55, 48], tick: true }
+  };
+  document.addEventListener('visibilitychange', () => { /* tick 內會檢查 document.hidden */ });
+
+  /* ---------- 粒子特效（全螢幕畫布） ---------- */
+  const FX = (function () {
+    let cv = null, c = null, parts = [], running = false, last = 0;
+    const DEF = ['#ff7eb0', '#ffd34d', '#7bd88f', '#6cc4ff', '#b49cff', '#ffa94d'];
+    function ensure() {
+      if (cv) return;
+      cv = document.createElement('canvas');
+      cv.className = 'kit-fx';
+      document.body.appendChild(cv);
+      resize();
+      window.addEventListener('resize', resize);
+    }
+    function resize() {
+      const d = window.devicePixelRatio || 1;
+      cv.width = innerWidth * d; cv.height = innerHeight * d;
+      c = cv.getContext('2d');
+      c.setTransform(d, 0, 0, d, 0, 0);
+    }
+    function starPath(ctx, r) {
+      ctx.beginPath();
+      for (let i = 0; i < 10; i++) {
+        const a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? r * 0.45 : r;
+        ctx.lineTo(Math.cos(a) * rr, Math.sin(a) * rr);
+      }
+      ctx.closePath();
+    }
+    function heartPath(ctx, r) {
+      ctx.beginPath();
+      ctx.moveTo(0, r * 0.9);
+      ctx.bezierCurveTo(-r * 1.4, -r * 0.1, -r * 0.7, -r * 1.2, 0, -r * 0.45);
+      ctx.bezierCurveTo(r * 0.7, -r * 1.2, r * 1.4, -r * 0.1, 0, r * 0.9);
+      ctx.closePath();
+    }
+    function sparkPath(ctx, r) {
+      ctx.beginPath();
+      ctx.moveTo(0, -r); ctx.quadraticCurveTo(0, 0, r, 0); ctx.quadraticCurveTo(0, 0, 0, r);
+      ctx.quadraticCurveTo(0, 0, -r, 0); ctx.quadraticCurveTo(0, 0, 0, -r); ctx.closePath();
+    }
+    function draw(ctx, p) {
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot);
+      const s = p.size * (p.grow ? (1 + (1 - p.life) * 1.5) : (0.4 + p.life * 0.6));
+      ctx.globalAlpha = Math.min(1, p.life * 1.6);
+      ctx.fillStyle = p.color;
+      if (p.type === 'star') { starPath(ctx, s); ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,.8)'; ctx.stroke(); }
+      else if (p.type === 'heart') { heartPath(ctx, s); ctx.fill(); }
+      else if (p.type === 'spark') { sparkPath(ctx, s * 1.3); ctx.fill(); }
+      else if (p.type === 'ring') { ctx.beginPath(); ctx.arc(0, 0, s, 0, Math.PI * 2); ctx.lineWidth = 4 * p.life; ctx.strokeStyle = p.color; ctx.stroke(); }
+      else if (p.type === 'confetti') { ctx.fillRect(-s, -s * 0.5, s * 2, s); }
+      else {
+        ctx.beginPath(); ctx.arc(0, 0, s, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = 'rgba(255,255,255,.6)'; ctx.beginPath(); ctx.arc(-s * 0.3, -s * 0.3, s * 0.35, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
+    }
+    function loop(now) {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      c.clearRect(0, 0, innerWidth, innerHeight);
+      for (let i = parts.length - 1; i >= 0; i--) {
+        const p = parts[i];
+        p.vy += p.g * dt; p.vx *= Math.pow(p.drag, dt); p.vy *= Math.pow(p.drag, dt);
+        p.x += p.vx * dt; p.y += p.vy * dt; p.rot += p.vr * dt;
+        p.life -= p.decay * dt;
+        if (p.life <= 0) { parts.splice(i, 1); continue; }
+        draw(c, p);
+      }
+      if (parts.length) requestAnimationFrame(loop);
+      else { running = false; c.clearRect(0, 0, innerWidth, innerHeight); }
+    }
+    function burst(x, y, o) {
+      o = o || {};
+      ensure();
+      const n = o.n || 14;
+      for (let i = 0; i < n; i++) {
+        const a = o.angle != null ? o.angle + KG.rand(-o.spread, o.spread) : Math.random() * Math.PI * 2;
+        const sp = KG.rand(o.speed ? o.speed * 0.5 : 120, o.speed || 360);
+        const types = o.types || ['star', 'circle', 'heart', 'spark'];
+        parts.push({
+          x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - (o.up || 80),
+          g: o.gravity != null ? o.gravity : 500, drag: o.drag || 0.4,
+          size: KG.rand(o.size ? o.size * 0.6 : 5, o.size || 11), rot: Math.random() * 6, vr: KG.rand(-6, 6),
+          color: KG.pick(o.colors || DEF), type: KG.pick(types), life: 1, decay: o.decay || KG.rand(0.9, 1.4), grow: o.grow
+        });
+      }
+      if (parts.length > 500) parts.splice(0, parts.length - 500);
+      if (!running) { running = true; last = performance.now(); requestAnimationFrame(loop); }
+    }
+    function ring(x, y, color) { burst(x, y, { n: 1, types: ['ring'], speed: 1, up: 0, gravity: 0, size: 30, grow: true, colors: [color || '#fff'], decay: 2 }); }
+    return { burst, ring, starPath, heartPath, sparkPath };
+  })();
+
+  function floatText(x, y, text, color, outline) {
+    const el = document.createElement('div');
+    el.className = 'kit-float';
+    el.textContent = text;
+    el.style.left = x + 'px'; el.style.top = y + 'px';
+    if (color) el.style.setProperty('--c', color);
+    if (outline) el.style.setProperty('--o', outline);
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 1050);
+  }
+  let lastCallout = null;
+  function callout(text, color, outline) {
+    if (lastCallout) lastCallout.remove();
+    const el = document.createElement('div');
+    el.className = 'kit-callout';
+    el.textContent = text;
+    if (color) el.style.setProperty('--c', color);
+    if (outline) el.style.setProperty('--o', outline);
+    document.body.appendChild(el);
+    lastCallout = el;
+    setTimeout(() => { el.remove(); if (lastCallout === el) lastCallout = null; }, 1350);
+  }
+  const PRAISE = ['好棒！', '太厲害了！', '完美！', '超讚的！', '你好聰明！', '好厲害！'];
+  function shake(el, mag, dur) {
+    if (!el || !el.animate) return;
+    mag = mag || 8;
+    const k = [];
+    for (let i = 0; i < 8; i++) k.push({ transform: `translate(${KG.rand(-mag, mag).toFixed(1)}px, ${KG.rand(-mag, mag).toFixed(1)}px)` });
+    k.push({ transform: 'translate(0,0)' });
+    el.animate(k, { duration: dur || 380, easing: 'ease-out' });
+  }
+  function bump(el) { if (!el) return; el.classList.remove('bump'); void el.offsetWidth; el.classList.add('bump'); }
+
+  /* ---------- 存檔：每關星星 ---------- */
+  function progress(key, count) {
+    const k = key + ':stars';
+    let arr = KG.store.get(k, []);
+    if (!Array.isArray(arr)) arr = [];
+    while (arr.length < count) arr.push(0);
+    return {
+      stars: arr,
+      get total() { return arr.reduce((a, b) => a + (b || 0), 0); },
+      unlocked(i) { return i === 0 || (arr[i - 1] || 0) > 0; },
+      set(i, s) { const old = arr[i] || 0; if (s > old) { arr[i] = s; KG.store.set(k, arr); } return s > old; }
+    };
+  }
+
+  /* ---------- 標題畫面 ---------- */
+  function title(o) {
+    ensureDefs();
+    const ov = document.createElement('div');
+    ov.className = 'kit-title';
+    if (o.bg) ov.style.background = o.bg;
+    ov.innerHTML = `<div class="kit-tdeco">${o.deco || ''}</div><div class="kit-logo">${logoSVG(o.logo, o.colors, o.stroke || '#5a2d6e')}</div>` +
+      `<div class="kit-hero">${o.hero || ''}</div>${o.sub ? `<div class="kit-tsub">${o.sub}</div>` : ''}<div class="kit-tbtns"></div>`;
+    const box = ov.querySelector('.kit-tbtns');
+    (o.buttons || [{ text: '開始', onClick: o.onStart }]).forEach((b, i) => {
+      const btn = document.createElement('button');
+      btn.className = 'kit-bigbtn ' + (b.cls || '');
+      btn.innerHTML = (b.icon || ICON.play()) + `<span>${b.text}</span>`;
+      btn.addEventListener('click', () => {
+        KG.sound('pop');
+        ov.classList.add('out');
+        setTimeout(() => ov.remove(), 350);
+        if (b.onClick) b.onClick();
+      });
+      box.appendChild(btn);
+    });
+    document.body.appendChild(ov);
+    if (o.onMount) o.onMount(ov);
+    return ov;
+  }
+
+  /* ---------- 關卡選擇 ---------- */
+  function levelSelect(o) {
+    ensureDefs();
+    const ov = document.createElement('div');
+    ov.className = 'kit-screen';
+    if (o.bg) ov.style.background = o.bg;
+    const prog = o.progress;
+    let nextIdx = -1;
+    for (let i = 0; i < o.count; i++) if (prog.unlocked(i) && !prog.stars[i]) { nextIdx = i; break; }
+    let html = `<div class="kit-banner">${o.title || '選擇關卡'}</div><div class="kit-total">${ICON.star(true)}<span>${prog.total} / ${o.count * 3}</span></div><div class="kit-grid">`;
+    for (let i = 0; i < o.count; i++) {
+      const un = prog.unlocked(i);
+      html += `<button class="kit-lv${un ? '' : ' locked'}${i === nextIdx ? ' next' : ''}" data-i="${i}" style="animation-delay:${(i * 0.04).toFixed(2)}s" aria-label="第 ${i + 1} 關">` +
+        `<div class="num"><span>${i + 1}</span></div>${un ? '' : ICON.lock()}` +
+        (o.names && o.names[i] ? `<div class="lname">${o.names[i]}</div>` : '') +
+        `<div class="stars">${starRow(prog.stars[i] || 0)}</div></button>`;
+    }
+    html += '</div><div class="kit-extra"></div>';
+    ov.innerHTML = html;
+    if (o.extra) o.extra(ov.querySelector('.kit-extra'), close);
+    ov.querySelectorAll('.kit-lv').forEach(b => b.addEventListener('click', () => {
+      const i = +b.dataset.i;
+      if (!prog.unlocked(i)) { KG.sound('wrong'); shake(b, 6); return; }
+      KG.sound('pop');
+      close();
+      o.onPick(i);
+    }));
+    function close() { ov.classList.add('out'); setTimeout(() => ov.remove(), 300); }
+    document.body.appendChild(ov);
+    return ov;
+  }
+
+  /* ---------- 結算畫面 ---------- */
+  function result(o) {
+    ensureDefs();
+    const ov = document.createElement('div');
+    ov.className = 'kit-ov';
+    const s = o.stars || 0;
+    const title = o.title || (s >= 3 ? '太完美了！' : s === 2 ? '好棒喔！' : '過關了！');
+    const ribbon = `<svg viewBox="0 0 440 96"><path d="M14 30 L70 30 L70 82 L14 82 L34 56 Z" fill="var(--k-dark)"/><path d="M426 30 L370 30 L370 82 L426 82 L406 56 Z" fill="var(--k-dark)"/>` +
+      `<path d="M50 14 Q220 -4 390 14 L390 70 Q220 52 50 70 Z" fill="url(#kitRibbonG)" stroke="#fff" stroke-width="5" stroke-linejoin="round"/>` +
+      `<text x="220" y="54" text-anchor="middle" font-size="36" font-weight="900" fill="#fff" stroke="rgba(0,0,0,.25)" stroke-width="6" paint-order="stroke">${title}</text></svg>`;
+    ov.innerHTML = `<div class="kit-rcard"><div class="kit-ribbon">${ribbon}</div>` +
+      `<div class="kit-rstars">${[0, 1, 2].map(i => `<div class="kit-rstar${i === 1 ? ' mid' : ''}"><div class="off">${ICON.star(false)}</div><div class="on" style="position:absolute;inset:0">${ICON.star(true)}</div></div>`).join('')}</div>` +
+      (o.hero ? `<div class="kit-rhero">${o.hero}</div>` : '') +
+      `<div class="kit-rmsg">${o.message || ''}</div>` +
+      (o.unlock ? `<div class="kit-unlock"><div class="ic">${o.unlockIcon || ICON.gift()}</div><div>${o.unlock}</div></div>` : '') +
+      `<div class="kit-rbtns"></div></div>`;
+    const box = ov.querySelector('.kit-rbtns');
+    const btns = [];
+    if (o.onMenu) btns.push({ cls: 'b2', icon: ICON.menu(), text: '關卡', fn: o.onMenu });
+    if (o.onReplay) btns.push({ cls: 'y', icon: ICON.replay(), text: '再玩一次', fn: o.onReplay });
+    if (o.onNext) btns.push({ cls: 'g big', icon: ICON.next(), text: o.nextText || '下一關', fn: o.onNext });
+    btns.forEach(b => {
+      const el = document.createElement('button');
+      el.className = 'kit-rbtn ' + b.cls;
+      el.innerHTML = `<div class="b">${b.icon}</div><span>${b.text}</span>`;
+      el.addEventListener('click', () => { KG.sound('pop'); ov.remove(); b.fn(); });
+      box.appendChild(el);
+    });
+    document.body.appendChild(ov);
+    // 星星一顆一顆亮起來
+    const stars = ov.querySelectorAll('.kit-rstar');
+    for (let i = 0; i < s; i++) {
+      setTimeout(() => {
+        stars[i].classList.add('lit');
+        KG.note([784, 988, 1319][i], 0.25, 'triangle', 0.22);
+        KG.note([1568, 1976, 2637][i], 0.2, 'sine', 0.08, 0.05);
+        setTimeout(() => {
+          const r = stars[i].getBoundingClientRect();
+          FX.burst(r.left + r.width / 2, r.top + r.height / 2, { n: 12, types: ['star', 'spark'], colors: ['#ffd34d', '#fff1a8', '#ffb21f', '#ffffff'], speed: 300 });
+        }, 120);
+      }, 450 + i * 380);
+    }
+    setTimeout(() => {
+      if (s > 0) { KG.sound('win'); KG.confetti(); } else KG.sound('lose');
+    }, 450 + s * 380);
+    return ov;
+  }
+
+  /* ---------- 小幫手：高解析畫布 ---------- */
+  function fitCanvas(cv, w, h) {
+    const d = Math.min(3, window.devicePixelRatio || 1);
+    cv.width = Math.round(w * d); cv.height = Math.round(h * d);
+    cv.style.width = w + 'px'; cv.style.height = h + 'px';
+    const ctx = cv.getContext('2d');
+    ctx.setTransform(d, 0, 0, d, 0, 0);
+    return ctx;
+  }
+  function roundRect(ctx, x, y, w, h, r) {
+    r = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  // 防止頁面捲動 / 縮放
+  document.addEventListener('gesturestart', e => e.preventDefault());
+  document.addEventListener('dblclick', e => e.preventDefault());
+
+  return { E, clamp, lerp, mix, lighten, darken, hex2rgb, rgb2hex, ICON, starRow, logoSVG, Music, SONGS, FX, floatText, callout, PRAISE, shake, bump, progress, title, levelSelect, result, fitCanvas, roundRect, ensureDefs };
+})();
+
+</script>
+<script>
+'use strict';
+(function () {
+  const $ = id => document.getElementById(id);
+  const cv = $('cv');
+  let ctx = null, W = 0, H = 0, bgC = null;
+  const DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]]; // 上右下左
+
+  const LEVELS = [
+    { name: '小花園', goal: 8, time: 90, speed: 3.6 },
+    { name: '蘋果樹下', goal: 10, time: 90, speed: 3.8, apples: true },
+    { name: '小石頭', goal: 10, time: 90, speed: 3.8, apples: true, rocks: 4 },
+    { name: '調皮瓢蟲', goal: 12, time: 100, speed: 4, apples: true, bugs: 1 },
+    { name: '魔法星星', goal: 12, time: 100, speed: 4, apples: true, stars: true, rocks: 3 },
+    { name: '熱鬧花園', goal: 14, time: 110, speed: 4.2, apples: true, rocks: 5, bugs: 2 },
+    { name: '大挑戰', goal: 16, time: 120, speed: 4.3, apples: true, stars: true, rocks: 6, bugs: 2 },
+    { name: '變成蝴蝶', goal: 18, time: 130, speed: 4.4, apples: true, stars: true, rocks: 5, bugs: 3 }
+  ];
+  const SKINS = [
+    { name: '綠綠', need: 0, a: '#8bd346', b: '#6cc33a', head: '#a5e660', ol: '#2f6e1c' },
+    { name: '粉粉', need: 5, a: '#ff9ccf', b: '#ff7ab8', head: '#ffb8dc', ol: '#a8346c' },
+    { name: '蜜蜂', need: 10, a: '#ffd23f', b: '#4a3d55', head: '#ffdc5c', ol: '#6b4a10' },
+    { name: '彩虹', need: 16, rainbow: true, a: '#ff8a9a', b: '#8fd0ff', head: '#fff07a', ol: '#7a4a8a' },
+    { name: '星空', need: 22, a: '#7d8cff', b: '#5a66e0', head: '#9aa6ff', ol: '#2a2f80', spark: true }
+  ];
+  const prog = Kit.progress('caterpillar', LEVELS.length);
+  let skinIdx = KG.store.get('caterpillar:skin', 0);
+  if (!SKINS[skinIdx] || SKINS[skinIdx].need > prog.total) skinIdx = 0;
+
+  /* ---------- 版面 ---------- */
+  let F = { x: 0, y: 0, cols: 12, rows: 16, c: 30 };
+  function areaRect() {
+    const land = W > H * 1.1;
+    if (land) return { x: 14, y: 74, w: W - 14 - 244, h: H - 74 - 14 };
+    return { x: 12, y: 74, w: W - 24, h: H - 74 - 236 };
+  }
+  function chooseGrid() {
+    const a = areaRect();
+    const c = Math.max(24, Math.min(60, Math.floor(Math.min(a.w, a.h) / 10.5)));
+    F.cols = Math.max(8, Math.floor(a.w / c));
+    F.rows = Math.max(8, Math.floor(a.h / c));
+  }
+  function layout() {
+    W = innerWidth; H = innerHeight;
+    ctx = Kit.fitCanvas(cv, W, H);
+    const a = areaRect();
+    F.c = Math.floor(Math.min(a.w / F.cols, a.h / F.rows));
+    F.x = Math.round(a.x + (a.w - F.c * F.cols) / 2);
+    F.y = Math.round(a.y + (a.h - F.c * F.rows) / 2);
+    renderBG();
+  }
+
+  /* ---------- 背景 + 草地 ---------- */
+  let deco = [];
+  function makeDeco() {
+    deco = [];
+    const n = Math.floor(F.cols * F.rows * 0.09);
+    for (let i = 0; i < n; i++) deco.push({ x: KG.randInt(0, F.cols - 1), y: KG.randInt(0, F.rows - 1), k: KG.randInt(0, 3), c: KG.pick(['#ff8fc0', '#ffffff', '#ffd34d', '#b49cff', '#ff7a7a']), r: Math.random() });
+  }
+  function daisy(g, x, y, r, col) {
+    g.fillStyle = col;
+    for (let i = 0; i < 5; i++) { const a = i / 5 * Math.PI * 2; g.beginPath(); g.arc(x + Math.cos(a) * r * 0.55, y + Math.sin(a) * r * 0.55, r * 0.42, 0, Math.PI * 2); g.fill(); }
+    g.fillStyle = '#ffcf3a'; g.beginPath(); g.arc(x, y, r * 0.32, 0, Math.PI * 2); g.fill();
+  }
+  function renderBG() {
+    bgC = document.createElement('canvas');
+    const g = Kit.fitCanvas(bgC, W, H);
+    // 天空
+    let gr = g.createLinearGradient(0, 0, 0, H);
+    gr.addColorStop(0, '#8fd8ff'); gr.addColorStop(0.5, '#d4f3ff'); gr.addColorStop(1, '#bfeaa0');
+    g.fillStyle = gr; g.fillRect(0, 0, W, H);
+    // 遠山 + 樹叢
+    g.fillStyle = '#b6e89a';
+    g.beginPath(); g.moveTo(0, H * 0.35);
+    for (let x = 0; x <= W; x += 30) g.lineTo(x, H * 0.33 - Math.sin(x * 0.006) * 40 - Math.sin(x * 0.017) * 14);
+    g.lineTo(W, H); g.lineTo(0, H); g.fill();
+    g.fillStyle = '#8fd270';
+    for (let x = -20; x < W + 40; x += 46) { g.beginPath(); g.arc(x, H * 0.42 + Math.sin(x) * 8, 34, 0, Math.PI * 2); g.fill(); }
+    g.fillStyle = '#7cc45d'; g.fillRect(0, H * 0.42, W, H);
+    // 雲
+    g.fillStyle = 'rgba(255,255,255,.9)';
+    [[0.15, 0.08, 1], [0.6, 0.05, 0.8], [0.88, 0.14, 0.7]].forEach(([x, y, s]) => {
+      const cx = W * x, cy = 40 + H * y;
+      g.beginPath(); g.ellipse(cx, cy, 50 * s, 18 * s, 0, 0, Math.PI * 2); g.arc(cx - 18 * s, cy - 10 * s, 20 * s, 0, Math.PI * 2); g.arc(cx + 12 * s, cy - 16 * s, 26 * s, 0, Math.PI * 2); g.fill();
+    });
+    // 樹籬框
+    const fx = F.x, fy = F.y, fw = F.cols * F.c, fh = F.rows * F.c, pad = Math.max(10, F.c * 0.35);
+    g.fillStyle = 'rgba(30,70,20,.25)';
+    Kit.roundRect(g, fx - pad, fy - pad + 8, fw + pad * 2, fh + pad * 2, pad * 1.6); g.fill();
+    g.fillStyle = '#3f9e38';
+    Kit.roundRect(g, fx - pad, fy - pad, fw + pad * 2, fh + pad * 2, pad * 1.6); g.fill();
+    g.fillStyle = '#56b84a';
+    const per = 2 * (fw + fh), step = pad * 1.1;
+    for (let d = 0; d < per; d += step) {
+      let x, y;
+      if (d < fw) { x = fx + d; y = fy - pad * 0.55; }
+      else if (d < fw + fh) { x = fx + fw + pad * 0.55; y = fy + d - fw; }
+      else if (d < 2 * fw + fh) { x = fx + fw - (d - fw - fh); y = fy + fh + pad * 0.55; }
+      else { x = fx - pad * 0.55; y = fy + fh - (d - 2 * fw - fh); }
+      g.beginPath(); g.arc(x, y, pad * 0.62, 0, Math.PI * 2); g.fill();
+    }
+    g.fillStyle = '#ff8fc0';
+    for (let d = step * 2; d < per; d += step * 5) {
+      let x, y;
+      if (d < fw) { x = fx + d; y = fy - pad * 0.6; } else if (d < fw + fh) { x = fx + fw + pad * 0.6; y = fy + d - fw; }
+      else if (d < 2 * fw + fh) { x = fx + fw - (d - fw - fh); y = fy + fh + pad * 0.6; } else { x = fx - pad * 0.6; y = fy + fh - (d - 2 * fw - fh); }
+      daisy(g, x, y, pad * 0.45, d % 3 < 1.5 ? '#ffffff' : '#ff9fc8');
+    }
+    // 草地棋盤
+    for (let y = 0; y < F.rows; y++) for (let x = 0; x < F.cols; x++) {
+      g.fillStyle = (x + y) % 2 ? '#9fe07e' : '#aee98c';
+      g.fillRect(fx + x * F.c, fy + y * F.c, F.c + 0.5, F.c + 0.5);
+    }
+    // 小草 + 花
+    g.strokeStyle = 'rgba(60,140,50,.45)'; g.lineWidth = Math.max(1.5, F.c * 0.05); g.lineCap = 'round';
+    for (let i = 0; i < F.cols * F.rows * 0.35; i++) {
+      const x = fx + ((i * 37.7) % fw), y = fy + ((i * 91.3) % fh);
+      g.beginPath(); g.moveTo(x, y); g.lineTo(x - 2, y - F.c * 0.18); g.moveTo(x + 3, y); g.lineTo(x + 4, y - F.c * 0.22); g.stroke();
+    }
+    deco.forEach(d => {
+      const x = fx + (d.x + 0.3 + d.r * 0.4) * F.c, y = fy + (d.y + 0.3 + (1 - d.r) * 0.4) * F.c;
+      if (d.k === 0) daisy(g, x, y, F.c * 0.2, d.c);
+      else if (d.k === 1) { // 鬱金香
+        g.strokeStyle = '#3f9e38'; g.lineWidth = F.c * 0.05; g.beginPath(); g.moveTo(x, y + F.c * 0.2); g.lineTo(x, y); g.stroke();
+        g.fillStyle = d.c === '#ffffff' ? '#ff7a7a' : d.c; g.beginPath(); g.moveTo(x - F.c * 0.1, y - F.c * 0.12); g.lineTo(x - F.c * 0.1, y + F.c * 0.02); g.quadraticCurveTo(x, y + F.c * 0.08, x + F.c * 0.1, y + F.c * 0.02); g.lineTo(x + F.c * 0.1, y - F.c * 0.12); g.lineTo(x + F.c * 0.04, y - F.c * 0.05); g.lineTo(x, y - F.c * 0.14); g.lineTo(x - F.c * 0.04, y - F.c * 0.05); g.closePath(); g.fill();
+      } else if (d.k === 2) { // 三葉草
+        g.fillStyle = '#5fbf4a';
+        for (let k = 0; k < 3; k++) { const a = k / 3 * Math.PI * 2 - Math.PI / 2; g.beginPath(); g.arc(x + Math.cos(a) * F.c * 0.07, y + Math.sin(a) * F.c * 0.07, F.c * 0.07, 0, Math.PI * 2); g.fill(); }
+      } else { g.fillStyle = 'rgba(255,255,255,.6)'; g.beginPath(); g.arc(x, y, F.c * 0.05, 0, Math.PI * 2); g.arc(x + F.c * 0.12, y + F.c * 0.06, F.c * 0.04, 0, Math.PI * 2); g.fill(); }
+    });
+    // 光線 + 暗角
+    g.save(); g.globalAlpha = 0.12; g.fillStyle = '#fffbe0';
+    g.beginPath(); g.moveTo(W * 0.1, 0); g.lineTo(W * 0.3, 0); g.lineTo(W * 0.55, H); g.lineTo(W * 0.25, H); g.fill(); g.restore();
+    gr = g.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.45, W / 2, H / 2, Math.max(W, H) * 0.8);
+    gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(1, 'rgba(20,60,30,.22)');
+    g.fillStyle = gr; g.fillRect(0, 0, W, H);
+  }
+
+  /* ---------- 毛毛蟲 ---------- */
+  function segColor(sk, i) {
+    if (sk.rainbow) return ['#ff8a9a', '#ffc46a', '#fff07a', '#9be59a', '#8fd0ff', '#c7a6ff'][i % 6];
+    return i % 2 ? sk.b : sk.a;
+  }
+  function drawCaterpillar(g, pts, r, sk, o) {
+    o = o || {};
+    const t = o.t || 0;
+    const n = pts.length;
+    // 從尾巴畫到頭
+    for (let i = n - 1; i >= 1; i--) {
+      const p = pts[i];
+      const rr = r * (i === n - 1 ? 0.78 : 0.95 - Math.max(0, i - n + 4) * 0.04);
+      const col = segColor(sk, i);
+      // 腳
+      g.fillStyle = sk.ol;
+      const step = Math.sin(t * 12 + i * 1.3) * r * 0.15;
+      g.beginPath(); g.ellipse(p.x - r * 0.35 + step, p.y + rr * 0.85, r * 0.14, r * 0.1, 0, 0, Math.PI * 2); g.fill();
+      g.beginPath(); g.ellipse(p.x + r * 0.35 - step, p.y + rr * 0.85, r * 0.14, r * 0.1, 0, 0, Math.PI * 2); g.fill();
+      const gr = g.createRadialGradient(p.x - rr * 0.35, p.y - rr * 0.4, rr * 0.1, p.x, p.y, rr * 1.1);
+      gr.addColorStop(0, Kit.lighten(col, 0.45)); gr.addColorStop(0.6, col); gr.addColorStop(1, Kit.darken(col, 0.18));
+      g.fillStyle = gr;
+      g.beginPath(); g.arc(p.x, p.y, rr, 0, Math.PI * 2); g.fill();
+      g.lineWidth = Math.max(2, r * 0.1); g.strokeStyle = sk.ol; g.stroke();
+      g.fillStyle = 'rgba(255,255,255,.5)';
+      g.beginPath(); g.ellipse(p.x - rr * 0.35, p.y - rr * 0.42, rr * 0.28, rr * 0.16, -0.5, 0, Math.PI * 2); g.fill();
+      if (sk.spark && i % 2 === 0) { g.fillStyle = '#fff6a8'; g.save(); g.translate(p.x + rr * 0.2, p.y + rr * 0.1); Kit.FX.starPath(g, rr * 0.28); g.fill(); g.restore(); }
+      else if (!sk.rainbow && i % 3 === 0) { g.fillStyle = 'rgba(255,240,150,.8)'; g.beginPath(); g.arc(p.x + rr * 0.25, p.y + rr * 0.15, rr * 0.16, 0, Math.PI * 2); g.fill(); }
+    }
+    // 頭
+    const h = pts[0], hr = r * 1.15;
+    const dir = o.dir || [1, 0];
+    // 觸角
+    const perp = [-dir[1], dir[0]];
+    g.strokeStyle = sk.ol; g.lineWidth = Math.max(2, r * 0.1); g.lineCap = 'round';
+    [-1, 1].forEach(k => {
+      const wob = Math.sin(t * 6 + k) * hr * 0.12;
+      const tx = h.x + k * hr * 0.78 + wob, ty = h.y - hr * 1.6;
+      g.beginPath(); g.moveTo(h.x + k * hr * 0.3, h.y - hr * 0.7); g.quadraticCurveTo(h.x + k * hr * 0.4, h.y - hr * 1.4, tx, ty); g.stroke();
+      g.fillStyle = sk.rainbow ? '#ff8fc0' : '#ff7ab8';
+      g.beginPath(); g.arc(tx, ty, hr * 0.2, 0, Math.PI * 2); g.fill(); g.stroke();
+      g.fillStyle = 'rgba(255,255,255,.7)'; g.beginPath(); g.arc(tx - hr * 0.06, ty - hr * 0.06, hr * 0.07, 0, Math.PI * 2); g.fill();
+    });
+    const hg = g.createRadialGradient(h.x - hr * 0.35, h.y - hr * 0.4, hr * 0.1, h.x, h.y, hr * 1.1);
+    hg.addColorStop(0, Kit.lighten(sk.head, 0.5)); hg.addColorStop(0.6, sk.head); hg.addColorStop(1, Kit.darken(sk.head, 0.15));
+    g.fillStyle = hg;
+    g.beginPath(); g.arc(h.x, h.y, hr, 0, Math.PI * 2); g.fill();
+    g.lineWidth = Math.max(2, r * 0.11); g.strokeStyle = sk.ol; g.stroke();
+    g.fillStyle = 'rgba(255,255,255,.45)';
+    g.beginPath(); g.ellipse(h.x - hr * 0.35, h.y - hr * 0.45, hr * 0.3, hr * 0.15, -0.5, 0, Math.PI * 2); g.fill();
+    // 臉
+    const lx = dir[0] * hr * 0.15, ly = dir[1] * hr * 0.15;
+    const face = o.face || 'normal';
+    const ex = hr * 0.36, ey = h.y - hr * 0.08 + ly;
+    if (face === 'happy') {
+      g.strokeStyle = '#2e1f3a'; g.lineWidth = hr * 0.11;
+      [-1, 1].forEach(k => { g.beginPath(); g.arc(h.x + k * ex + lx, ey + hr * 0.05, hr * 0.15, Math.PI * 1.1, Math.PI * 1.9); g.stroke(); });
+    } else if (face === 'dizzy') {
+      g.strokeStyle = '#2e1f3a'; g.lineWidth = hr * 0.08;
+      [-1, 1].forEach(k => { const cx = h.x + k * ex; g.beginPath(); g.moveTo(cx - hr * 0.12, ey - hr * 0.12); g.lineTo(cx + hr * 0.12, ey + hr * 0.12); g.moveTo(cx + hr * 0.12, ey - hr * 0.12); g.lineTo(cx - hr * 0.12, ey + hr * 0.12); g.stroke(); });
+    } else {
+      const bl = o.blink ? 0.2 : 1;
+      [-1, 1].forEach(k => {
+        g.fillStyle = '#fff'; g.beginPath(); g.ellipse(h.x + k * ex, ey, hr * 0.24, hr * 0.28 * Math.max(bl, 0.35), 0, 0, Math.PI * 2); g.fill();
+        g.lineWidth = hr * 0.06; g.strokeStyle = sk.ol; g.stroke();
+        if (bl > 0.5) {
+          g.fillStyle = '#2e1f3a'; g.beginPath(); g.arc(h.x + k * ex + lx * 0.9, ey + ly * 0.9, hr * 0.14, 0, Math.PI * 2); g.fill();
+          g.fillStyle = '#fff'; g.beginPath(); g.arc(h.x + k * ex + lx * 0.9 + hr * 0.05, ey + ly * 0.9 - hr * 0.06, hr * 0.055, 0, Math.PI * 2); g.fill();
+        }
+      });
+    }
+    g.fillStyle = 'rgba(255,100,150,.5)';
+    [-1, 1].forEach(k => { g.beginPath(); g.ellipse(h.x + k * hr * 0.6, h.y + hr * 0.3, hr * 0.17, hr * 0.1, 0, 0, Math.PI * 2); g.fill(); });
+    g.strokeStyle = '#3a2030'; g.lineWidth = hr * 0.08;
+    const my = h.y + hr * 0.38 + ly * 0.5;
+    if (o.mouth > 0.1) {
+      g.fillStyle = '#c8325a';
+      g.beginPath(); g.ellipse(h.x + lx * 0.5, my, hr * 0.2, hr * 0.18 * o.mouth, 0, 0, Math.PI * 2); g.fill(); g.stroke();
+    } else if (face === 'sad' || face === 'dizzy') {
+      g.beginPath(); g.arc(h.x, my + hr * 0.12, hr * 0.14, Math.PI * 1.15, Math.PI * 1.85); g.stroke();
+    } else {
+      g.beginPath(); g.arc(h.x + lx * 0.5, my - hr * 0.08, hr * 0.15, 0.3, Math.PI - 0.3); g.stroke();
+    }
+  }
+
+  /* ---------- 食物與東西 ---------- */
+  function drawLeaf(g, x, y, s, rot) {
+    g.save(); g.translate(x, y); g.rotate(rot);
+    const gr = g.createLinearGradient(-s * 0.4, 0, s * 0.4, 0);
+    gr.addColorStop(0, '#7fdc4a'); gr.addColorStop(1, '#3fa52c');
+    g.fillStyle = gr; g.strokeStyle = '#25701a'; g.lineWidth = Math.max(1.5, s * 0.06);
+    g.beginPath(); g.moveTo(0, s * 0.48); g.bezierCurveTo(-s * 0.55, s * 0.2, -s * 0.4, -s * 0.35, 0, -s * 0.5); g.bezierCurveTo(s * 0.4, -s * 0.35, s * 0.55, s * 0.2, 0, s * 0.48); g.fill(); g.stroke();
+    g.beginPath(); g.moveTo(0, s * 0.45); g.lineTo(0, -s * 0.4); g.moveTo(0, s * 0.1); g.lineTo(-s * 0.18, -s * 0.06); g.moveTo(0, -s * 0.08); g.lineTo(s * 0.17, -s * 0.22); g.stroke();
+    g.fillStyle = 'rgba(255,255,255,.45)'; g.beginPath(); g.ellipse(-s * 0.18, -s * 0.15, s * 0.06, s * 0.14, 0.4, 0, Math.PI * 2); g.fill();
+    g.restore();
+  }
+  function drawApple(g, x, y, s) {
+    g.save(); g.translate(x, y);
+    const gr = g.createRadialGradient(-s * 0.15, -s * 0.15, s * 0.05, 0, 0, s * 0.5);
+    gr.addColorStop(0, '#ffa3a3'); gr.addColorStop(0.5, '#ff4d5e'); gr.addColorStop(1, '#c81e3a');
+    g.fillStyle = gr; g.strokeStyle = '#8e1a2e'; g.lineWidth = Math.max(1.5, s * 0.06);
+    g.beginPath(); g.moveTo(0, -s * 0.25); g.bezierCurveTo(-s * 0.15, -s * 0.38, -s * 0.48, -s * 0.32, -s * 0.46, s * 0.02);
+    g.bezierCurveTo(-s * 0.44, s * 0.36, -s * 0.12, s * 0.5, 0, s * 0.42); g.bezierCurveTo(s * 0.12, s * 0.5, s * 0.44, s * 0.36, s * 0.46, s * 0.02);
+    g.bezierCurveTo(s * 0.48, -s * 0.32, s * 0.15, -s * 0.38, 0, -s * 0.25); g.fill(); g.stroke();
+    g.strokeStyle = '#7a4a22'; g.lineWidth = s * 0.07; g.beginPath(); g.moveTo(0, -s * 0.25); g.lineTo(s * 0.04, -s * 0.45); g.stroke();
+    g.fillStyle = '#5fcf5a'; g.beginPath(); g.ellipse(s * 0.16, -s * 0.4, s * 0.14, s * 0.07, -0.5, 0, Math.PI * 2); g.fill();
+    g.fillStyle = 'rgba(255,255,255,.7)'; g.beginPath(); g.ellipse(-s * 0.22, -s * 0.08, s * 0.06, s * 0.12, 0.3, 0, Math.PI * 2); g.fill();
+    g.restore();
+  }
+  function drawGoldStar(g, x, y, s, t) {
+    g.save(); g.translate(x, y); g.rotate(Math.sin(t * 3) * 0.2);
+    g.shadowColor = '#fff3a0'; g.shadowBlur = s * 0.5;
+    const gr = g.createLinearGradient(0, -s * 0.5, 0, s * 0.5);
+    gr.addColorStop(0, '#fff38a'); gr.addColorStop(1, '#ffae1a');
+    g.fillStyle = gr; Kit.FX.starPath(g, s * 0.5); g.fill();
+    g.shadowBlur = 0; g.strokeStyle = '#c46f00'; g.lineWidth = Math.max(1.5, s * 0.06); g.lineJoin = 'round'; g.stroke();
+    g.fillStyle = '#7a4a00';
+    g.beginPath(); g.arc(-s * 0.1, -s * 0.02, s * 0.04, 0, Math.PI * 2); g.arc(s * 0.1, -s * 0.02, s * 0.04, 0, Math.PI * 2); g.fill();
+    g.restore();
+  }
+  function drawRock(g, x, y, s) {
+    g.save(); g.translate(x, y);
+    g.fillStyle = 'rgba(30,60,20,.25)'; g.beginPath(); g.ellipse(0, s * 0.32, s * 0.45, s * 0.12, 0, 0, Math.PI * 2); g.fill();
+    const gr = g.createRadialGradient(-s * 0.15, -s * 0.2, s * 0.05, 0, 0, s * 0.55);
+    gr.addColorStop(0, '#e3e0ea'); gr.addColorStop(0.6, '#a9a4b8'); gr.addColorStop(1, '#7d778f');
+    g.fillStyle = gr; g.strokeStyle = '#5a5470'; g.lineWidth = Math.max(1.5, s * 0.06);
+    g.beginPath(); g.moveTo(-s * 0.44, s * 0.3); g.quadraticCurveTo(-s * 0.5, -s * 0.2, -s * 0.15, -s * 0.36); g.quadraticCurveTo(s * 0.25, -s * 0.46, s * 0.42, -s * 0.05); g.quadraticCurveTo(s * 0.52, s * 0.3, s * 0.3, s * 0.34); g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = '#7fcf5a'; g.beginPath(); g.ellipse(-s * 0.1, -s * 0.32, s * 0.16, s * 0.06, -0.2, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#4a4458'; g.beginPath(); g.arc(-s * 0.12, s * 0.02, s * 0.035, 0, Math.PI * 2); g.arc(s * 0.12, s * 0.02, s * 0.035, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = '#4a4458'; g.lineWidth = s * 0.04; g.beginPath(); g.arc(0, s * 0.08, s * 0.06, 0.3, Math.PI - 0.3); g.stroke();
+    g.restore();
+  }
+  function drawBug(g, x, y, s, t, dir) {
+    g.save(); g.translate(x, y); g.rotate(Math.atan2(dir[1], dir[0]) + Math.PI / 2);
+    g.fillStyle = 'rgba(30,60,20,.25)'; g.beginPath(); g.ellipse(0, s * 0.1, s * 0.4, s * 0.36, 0, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = '#2a1a1a'; g.lineWidth = s * 0.05;
+    for (let k = -1; k <= 1; k++) { const w = Math.sin(t * 20 + k) * s * 0.05; g.beginPath(); g.moveTo(-s * 0.3, k * s * 0.15); g.lineTo(-s * 0.45, k * s * 0.18 + w); g.moveTo(s * 0.3, k * s * 0.15); g.lineTo(s * 0.45, k * s * 0.18 - w); g.stroke(); }
+    g.fillStyle = '#2a1a2a'; g.beginPath(); g.arc(0, -s * 0.3, s * 0.18, 0, Math.PI * 2); g.fill();
+    const gr = g.createRadialGradient(-s * 0.1, -s * 0.1, s * 0.05, 0, 0, s * 0.4);
+    gr.addColorStop(0, '#ff8a8a'); gr.addColorStop(1, '#e02a3a');
+    g.fillStyle = gr; g.beginPath(); g.arc(0, s * 0.04, s * 0.34, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.beginPath(); g.moveTo(0, -s * 0.28); g.lineTo(0, s * 0.38); g.stroke();
+    g.fillStyle = '#2a1a1a';
+    [[-0.16, -0.05], [0.16, -0.05], [-0.14, 0.18], [0.14, 0.18]].forEach(([a, b]) => { g.beginPath(); g.arc(a * s, b * s, s * 0.06, 0, Math.PI * 2); g.fill(); });
+    g.fillStyle = '#fff'; g.beginPath(); g.arc(-s * 0.07, -s * 0.36, s * 0.05, 0, Math.PI * 2); g.arc(s * 0.07, -s * 0.36, s * 0.05, 0, Math.PI * 2); g.fill();
+    g.fillStyle = 'rgba(255,255,255,.5)'; g.beginPath(); g.ellipse(-s * 0.12, -s * 0.08, s * 0.06, s * 0.1, 0.4, 0, Math.PI * 2); g.fill();
+    g.restore();
+  }
+
+  /* ---------- 遊戲狀態 ---------- */
+  let L = LEVELS[0], lvIdx = 0;
+  let snake = [], prev = [], dir = 1, queue = [], grow = 0;
+  let foods = [], rocks = [], bugs = [];
+  let stepT = 0, speed = 3.6, timeLeft = 90, score = 0, playing = false, paused = false;
+  let invuln = 0, dizzy = 0, happyT = 0, boost = 0, countdown = 0;
+  let t = 0, last = performance.now();
+  const trail = [];
+
+  const key = (x, y) => x + ',' + y;
+  function occupied(x, y, skipFood) {
+    if (snake.some(p => p.x === x && p.y === y)) return true;
+    if (rocks.some(p => p.x === x && p.y === y)) return true;
+    if (bugs.some(p => p.x === x && p.y === y)) return true;
+    if (!skipFood && foods.some(p => p.x === x && p.y === y)) return true;
+    return false;
+  }
+  function freeCell(minDistHead) {
+    for (let k = 0; k < 300; k++) {
+      const x = KG.randInt(0, F.cols - 1), y = KG.randInt(0, F.rows - 1);
+      if (occupied(x, y)) continue;
+      if (minDistHead && snake[0] && Math.abs(x - snake[0].x) + Math.abs(y - snake[0].y) < minDistHead) continue;
+      return { x, y };
+    }
+    return null;
+  }
+  function spawnFood() {
+    const c = freeCell(2);
+    if (!c) return;
+    let type = 'leaf';
+    const r = Math.random();
+    if (L.stars && r < 0.1 && !foods.some(f => f.type === 'star')) type = 'star';
+    else if (L.apples && r < 0.38) type = 'apple';
+    foods.push({ x: c.x, y: c.y, type, born: t, rot: KG.rand(-0.5, 0.5) });
+  }
+
+  function startLevel(i) {
+    lvIdx = i; L = LEVELS[i];
+    chooseGrid();
+    makeDeco();
+    layout();
+    const cx = Math.floor(F.cols / 2) - 1, cy = Math.floor(F.rows / 2);
+    snake = [{ x: cx, y: cy }, { x: cx - 1, y: cy }, { x: cx - 2, y: cy }];
+    prev = snake.map(p => ({ ...p }));
+    dir = 1; queue = []; grow = 0; foods = []; rocks = []; bugs = [];
+    for (let k = 0; k < (L.rocks || 0); k++) {
+      const c = freeCell(4);
+      if (c && c.y !== cy) rocks.push(c);
+    }
+    for (let k = 0; k < (L.bugs || 0); k++) { const c = freeCell(5); if (c) bugs.push({ x: c.x, y: c.y, px: c.x, py: c.y, d: [1, 0], tm: KG.rand(0.5, 1.2), mt: 1 }); }
+    for (let k = 0; k < 3; k++) spawnFood();
+    speed = L.speed; timeLeft = L.time; score = 0; stepT = 0;
+    invuln = 0; dizzy = 0; happyT = 0; boost = 0;
+    trail.length = 0;
+    $('hud').style.display = ''; $('pad').style.display = 'grid';
+    updateHUD();
+    playing = true; paused = false;
+    countdown = 1.6;
+    Kit.callout('第 ' + (i + 1) + ' 關', '#ffd34d', '#2f6e1c');
+    KG.say(`${L.name}！吃到 ${L.goal} 節長喔！`);
+    if (!Kit.Music.playing) Kit.Music.start(Kit.SONGS.march);
+  }
+  function updateHUD() {
+    $('lenBar').style.width = Math.min(100, (snake.length - 3) / (L.goal - 3) * 100) + '%';
+    $('timeTxt').textContent = Math.ceil(timeLeft);
+  }
+
+  function setDir(d) {
+    if (!playing) return;
+    const lastD = queue.length ? queue[queue.length - 1] : dir;
+    if (d === lastD || (d + 2) % 4 === lastD) return;
+    if (queue.length < 2) queue.push(d);
+    KG.note(700 + d * 60, 0.04, 'triangle', 0.06);
+  }
+
+  function hurt(n, msg) {
+    if (invuln > 0) return;
+    const before = snake.length;
+    const keep = Math.max(3, snake.length - n);
+    snake.length = keep; prev.length = keep;
+    invuln = 1.6; dizzy = 0.9;
+    KG.sound('boing');
+    const hp = cellPx(snake[0]);
+    Kit.floatText(hp.x, hp.y - F.c, msg || '哎呀！', '#ffffff', '#c8325a');
+    Kit.FX.burst(hp.x, hp.y, { n: 10, types: ['star', 'spark'], colors: ['#ffd34d', '#fff'], speed: 200 });
+    if (before > keep) KG.say('哎呀，小心喔！');
+    updateHUD();
+  }
+
+  function step() {
+    if (queue.length) dir = queue.shift();
+    const h = snake[0];
+    let d = DIRS[dir];
+    let nx = (h.x + d[0] + F.cols) % F.cols, ny = (h.y + d[1] + F.rows) % F.rows;
+    // 撞到石頭：轉彎
+    if (rocks.some(r => r.x === nx && r.y === ny)) {
+      hurt(1, '咚！');
+      const opts = [(dir + 1) % 4, (dir + 3) % 4].filter(k => {
+        const dd = DIRS[k], x = (h.x + dd[0] + F.cols) % F.cols, y = (h.y + dd[1] + F.rows) % F.rows;
+        return !rocks.some(r => r.x === x && r.y === y);
+      });
+      if (!opts.length) return;
+      dir = KG.pick(opts); d = DIRS[dir];
+      nx = (h.x + d[0] + F.cols) % F.cols; ny = (h.y + d[1] + F.rows) % F.rows;
+      Kit.shake(cv, 6, 250);
+    }
+    const old = snake.map(p => ({ ...p }));
+    snake.unshift({ x: nx, y: ny });
+    if (grow > 0) { grow--; old.push({ ...old[old.length - 1] }); } else snake.pop();
+    prev = old;
+    if (boost > 0) trail.push({ x: h.x, y: h.y, life: 1 });
+    // 撞到自己：變短一點，不會輸
+    if (snake.slice(1).some(p => p.x === nx && p.y === ny) && invuln <= 0) hurt(2, '哎呀！');
+    // 瓢蟲
+    const bug = bugs.find(b => b.x === nx && b.y === ny);
+    if (bug) { hurt(1, '被瓢蟲嚇到！'); const c = freeCell(4); if (c) { Kit.FX.burst(cellPx(bug).x, cellPx(bug).y, { n: 8, types: ['circle'], colors: ['#ffffff'], speed: 120 }); bug.x = bug.px = c.x; bug.y = bug.py = c.y; } }
+    // 吃東西
+    const fi = foods.findIndex(f => f.x === nx && f.y === ny);
+    if (fi >= 0) eat(foods.splice(fi, 1)[0]);
+  }
+
+  function eat(f) {
+    const p = cellPx(f);
+    let pts = 1;
+    if (f.type === 'leaf') { grow += 1; KG.note(660, 0.08, 'triangle', 0.15); KG.note(880, 0.1, 'triangle', 0.12, 0.06); Kit.FX.burst(p.x, p.y, { n: 8, types: ['circle', 'spark'], colors: ['#7fdc4a', '#c7f59a', '#ffffff'], speed: 160 }); }
+    else if (f.type === 'apple') { grow += 2; pts = 2; KG.sound('coin'); Kit.FX.burst(p.x, p.y, { n: 12, types: ['circle', 'heart'], colors: ['#ff4d5e', '#ffa3a3', '#ffffff'], speed: 200 }); }
+    else { grow += 1; pts = 5; boost = 4; KG.sound('sparkle'); Kit.callout('閃亮亮加速！', '#ffd34d', '#2f6e1c'); Kit.FX.burst(p.x, p.y, { n: 22, types: ['star', 'spark'], colors: ['#ffd34d', '#fff38a', '#ffffff'], speed: 300 }); }
+    score += pts;
+    happyT = 0.5;
+    Kit.floatText(p.x, p.y - F.c * 0.4, '+' + pts, f.type === 'apple' ? '#ff6b7a' : f.type === 'star' ? '#ffd34d' : '#a5e660', '#2f6e1c');
+    spawnFood();
+    setTimeout(updateHUD, 0);
+    const len = snake.length + grow;
+    if (len >= L.goal) { setTimeout(() => endLevel(true), 450); playing = false; }
+    else if ((len - 3) % 4 === 0) { Kit.callout(KG.pick(['好棒！', '越來越長了！', '好好吃！', '太厲害了！']), '#ffd34d', '#2f6e1c'); }
+  }
+
+  function cellPx(c) { return { x: F.x + (c.x + 0.5) * F.c, y: F.y + (c.y + 0.5) * F.c }; }
+
+  function endLevel(won) {
+    playing = false;
+    $('pad').style.display = 'none';
+    Kit.Music.stop();
+    // 讓長度更新到最後
+    while (grow > 0) { snake.push({ ...snake[snake.length - 1] }); grow--; }
+    const len = snake.length;
+    let stars;
+    if (won) stars = timeLeft >= L.time * 0.33 ? 3 : 2;
+    else stars = len - 3 >= (L.goal - 3) * 0.5 ? 1 : 1;
+    if (won) { score += Math.ceil(timeLeft / 5); }
+    const best = KG.best('caterpillar-' + lvIdx, score);
+    const before = prog.total;
+    prog.set(lvIdx, stars);
+    const ns = SKINS.find(s => s.need > before && s.need <= prog.total);
+    happyT = 3;
+    Kit.callout(won ? '好長喔！' : '時間到！', '#ffd34d', '#2f6e1c');
+    KG.say(won ? '哇！毛毛蟲吃得好飽！' : '時間到了！好棒喔！');
+    const last = lvIdx === LEVELS.length - 1 && won;
+    setTimeout(() => {
+      Kit.result({
+        stars,
+        title: last ? '變成蝴蝶了！' : null,
+        message: `長到 ${len} 節，得到 ${score} 分！<br>最高分：${best} 分`,
+        hero: last ? butterflySVG() : '<canvas id="rhero" width="240" height="240" style="width:100%;height:100%"></canvas>',
+        unlock: ns ? `解鎖新造型：${ns.name}毛毛蟲！` : null,
+        unlockIcon: ns ? '<canvas id="uhero" width="120" height="120" style="width:100%;height:100%"></canvas>' : null,
+        onNext: lvIdx < LEVELS.length - 1 ? () => startLevel(lvIdx + 1) : null,
+        onReplay: () => startLevel(lvIdx),
+        onMenu: showLevels
+      });
+      const rh = $('rhero');
+      if (rh) heroPose(rh.getContext('2d'), 240, SKINS[skinIdx], 0, 'happy');
+      const uh = $('uhero');
+      if (uh && ns) heroPose(uh.getContext('2d'), 120, ns, 0, 'happy');
+    }, 1100);
+  }
+  function butterflySVG() {
+    return `<svg viewBox="0 0 200 200"><g stroke="#5a2d6e" stroke-width="5" stroke-linejoin="round">
+      <path d="M98 96 C70 30 14 40 26 92 C34 120 80 118 98 106 Z" fill="#ff9ccf"/><path d="M102 96 C130 30 186 40 174 92 C166 120 120 118 102 106 Z" fill="#8fd0ff"/>
+      <path d="M98 110 C60 112 40 150 62 166 C82 178 98 150 99 124 Z" fill="#ffd34d"/><path d="M102 110 C140 112 160 150 138 166 C118 178 102 150 101 124 Z" fill="#a5e660"/>
+      <circle cx="58" cy="78" r="12" fill="#fff" opacity=".8"/><circle cx="142" cy="78" r="12" fill="#fff" opacity=".8"/>
+      <ellipse cx="100" cy="112" rx="10" ry="38" fill="#8bd346"/><circle cx="100" cy="70" r="16" fill="#a5e660"/>
+      <path d="M94 56 Q84 34 72 30 M106 56 Q116 34 128 30" fill="none"/></g>
+      <circle cx="94" cy="68" r="3" fill="#2e1f3a"/><circle cx="106" cy="68" r="3" fill="#2e1f3a"/><path d="M94 76 Q100 81 106 76" stroke="#2e1f3a" stroke-width="3" fill="none" stroke-linecap="round"/>
+      <circle cx="72" cy="30" r="6" fill="#ff7ab8"/><circle cx="128" cy="30" r="6" fill="#ff7ab8"/></svg>`;
+  }
+  function heroPose(g, size, sk, tt, face) {
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.clearRect(0, 0, size, size);
+    const r = size * 0.09, pts = [];
+    for (let i = 0; i < 6; i++) pts.push({ x: size * 0.8 - i * r * 1.45, y: size * 0.55 + Math.sin(i * 0.9 + tt * 4) * r * 0.7 });
+    drawCaterpillar(g, pts, r, sk, { t: tt, dir: [1, 0], face, blink: (tt % 3.4) > 3.25 });
+  }
+
+  /* ---------- 迴圈 ---------- */
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now; t += dt;
+    if (playing && !document.hidden) update(dt);
+    draw();
+    requestAnimationFrame(frame);
+  }
+  function update(dt) {
+    if (countdown > 0) { countdown -= dt; if (countdown <= 0) { Kit.callout('出發！', '#a5e660', '#2f6e1c'); KG.sound('jump'); } return; }
+    invuln = Math.max(0, invuln - dt);
+    dizzy = Math.max(0, dizzy - dt);
+    happyT = Math.max(0, happyT - dt);
+    boost = Math.max(0, boost - dt);
+    const sp = speed * (boost > 0 ? 1.6 : 1) * (1 + (snake.length - 3) * 0.012);
+    stepT += dt * sp;
+    while (stepT >= 1) { stepT -= 1; step(); if (!playing) break; }
+    const before = Math.ceil(timeLeft);
+    timeLeft -= dt;
+    if (Math.ceil(timeLeft) !== before) {
+      $('timeTxt').textContent = Math.max(0, Math.ceil(timeLeft));
+      if (timeLeft <= 10 && timeLeft > 0) { KG.sound('tick'); Kit.bump($('chipTime')); }
+    }
+    if (timeLeft <= 0 && playing) endLevel(false);
+    // 瓢蟲慢慢走
+    bugs.forEach(b => {
+      b.mt = Math.min(1, b.mt + dt * 2.5);
+      b.tm -= dt;
+      if (b.tm <= 0) {
+        b.tm = KG.rand(0.6, 1.3);
+        const opts = KG.shuffle([0, 1, 2, 3]).map(k => DIRS[k]).filter(d => {
+          const x = b.x + d[0], y = b.y + d[1];
+          return x >= 0 && y >= 0 && x < F.cols && y < F.rows && !rocks.some(r => r.x === x && r.y === y) && !foods.some(f => f.x === x && f.y === y) && !bugs.some(o => o !== b && o.x === x && o.y === y);
+        });
+        if (opts.length) {
+          const d = opts[0];
+          b.px = b.x; b.py = b.y; b.x += d[0]; b.y += d[1]; b.d = d; b.mt = 0;
+          if (snake[0].x === b.x && snake[0].y === b.y) { hurt(1, '被瓢蟲嚇到！'); }
+        }
+      }
+    });
+    for (let i = trail.length - 1; i >= 0; i--) { trail[i].life -= dt * 1.5; if (trail[i].life <= 0) trail.splice(i, 1); }
+  }
+  function lerpCell(a, b, k) {
+    if (Math.abs(a.x - b.x) > 1 || Math.abs(a.y - b.y) > 1) return cellPx(b); // 穿牆時不要內插
+    const pa = cellPx(a), pb = cellPx(b);
+    return { x: Kit.lerp(pa.x, pb.x, k), y: Kit.lerp(pa.y, pb.y, k) };
+  }
+  function draw() {
+    if (!ctx) return;
+    ctx.clearRect(0, 0, W, H);
+    ctx.drawImage(bgC, 0, 0, W, H);
+    if (!snake.length) return;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(F.x, F.y, F.cols * F.c, F.rows * F.c); ctx.clip();
+    // 彩虹尾巴
+    trail.forEach((p, i) => {
+      const c = cellPx(p);
+      ctx.globalAlpha = p.life * 0.6;
+      ctx.fillStyle = ['#ff8a9a', '#ffc46a', '#fff07a', '#9be59a', '#8fd0ff', '#c7a6ff'][i % 6];
+      ctx.beginPath(); ctx.arc(c.x, c.y, F.c * 0.3 * p.life, 0, Math.PI * 2); ctx.fill();
+    });
+    ctx.globalAlpha = 1;
+    rocks.forEach(r => { const p = cellPx(r); drawRock(ctx, p.x, p.y, F.c * 0.95); });
+    foods.forEach(f => {
+      const p = cellPx(f);
+      const pop = Math.min(1, (t - f.born) * 4);
+      const s = F.c * 0.82 * Kit.E.outBack(pop);
+      const bob = Math.sin(t * 3 + f.x) * F.c * 0.05;
+      ctx.fillStyle = 'rgba(30,70,20,.22)';
+      ctx.beginPath(); ctx.ellipse(p.x, p.y + F.c * 0.32, F.c * 0.28, F.c * 0.08, 0, 0, Math.PI * 2); ctx.fill();
+      if (f.type === 'leaf') drawLeaf(ctx, p.x, p.y + bob, s, f.rot + Math.sin(t * 2 + f.y) * 0.1);
+      else if (f.type === 'apple') drawApple(ctx, p.x, p.y + bob, s);
+      else drawGoldStar(ctx, p.x, p.y + bob, s * 1.1, t);
+    });
+    bugs.forEach(b => {
+      const k = Kit.E.inOut(b.mt);
+      const p = lerpCell({ x: b.px, y: b.py }, b, k);
+      drawBug(ctx, p.x, p.y, F.c * 0.8, t, b.d);
+    });
+    // 毛毛蟲
+    const k = countdown > 0 ? 1 : Math.min(1, stepT);
+    const pts = snake.map((p, i) => {
+      const q = lerpCell(prev[i] || p, p, k);
+      const nxt = snake[i - 1] || null;
+      if (i > 0 && nxt) {
+        const dx = cellPx(nxt).x - cellPx(p).x, dy = cellPx(nxt).y - cellPx(p).y, d = Math.hypot(dx, dy) || 1;
+        const w = Math.sin(t * 9 - i * 0.9) * F.c * 0.06;
+        q.x += -dy / d * w; q.y += dx / d * w;
+      }
+      return q;
+    });
+    const head = snake[0];
+    const ahead = foods.some(f => Math.abs(f.x - (head.x + DIRS[dir][0])) + Math.abs(f.y - (head.y + DIRS[dir][1])) <= 1);
+    if (!(invuln > 0 && Math.floor(t * 12) % 2 === 0)) {
+      drawCaterpillar(ctx, pts, F.c * 0.44, SKINS[skinIdx], {
+        t, dir: DIRS[dir], face: dizzy > 0 ? 'dizzy' : happyT > 0 ? 'happy' : 'normal', mouth: ahead && dizzy <= 0 ? 0.8 + Math.sin(t * 20) * 0.2 : 0, blink: (t % 3.6) > 3.45
+      });
+    }
+    ctx.restore();
+    // 倒數 + 暫停提示
+    if (countdown > 0 && playing) {
+      ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.fillRect(F.x, F.y, F.cols * F.c, F.rows * F.c);
+    }
+  }
+  requestAnimationFrame(frame);
+
+  /* ---------- 輸入 ---------- */
+  window.addEventListener('keydown', e => {
+    const m = { ArrowUp: 0, ArrowRight: 1, ArrowDown: 2, ArrowLeft: 3, w: 0, d: 1, s: 2, a: 3, W: 0, D: 1, S: 2, A: 3 }[e.key];
+    if (m != null) { e.preventDefault(); setDir(m); }
+  });
+  let sw = null;
+  cv.addEventListener('pointerdown', e => { e.preventDefault(); sw = { x: e.clientX, y: e.clientY, id: e.pointerId }; });
+  cv.addEventListener('pointermove', e => {
+    if (!sw || e.pointerId !== sw.id) return;
+    const dx = e.clientX - sw.x, dy = e.clientY - sw.y;
+    if (Math.hypot(dx, dy) < 24) return;
+    setDir(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 1 : 3) : (dy > 0 ? 2 : 0));
+    sw.x = e.clientX; sw.y = e.clientY;
+  });
+  const swEnd = () => { sw = null; };
+  cv.addEventListener('pointerup', swEnd);
+  cv.addEventListener('pointercancel', swEnd);
+  $('pad').querySelectorAll('button').forEach(b => {
+    b.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      setDir(+b.dataset.d);
+      b.classList.add('on');
+      setTimeout(() => b.classList.remove('on'), 120);
+    });
+  });
+
+  /* ---------- 關卡選擇 ---------- */
+  function showLevels() {
+    playing = false;
+    $('hud').style.display = 'none'; $('pad').style.display = 'none';
+    if (!Kit.Music.playing) Kit.Music.start(Kit.SONGS.march);
+    Kit.levelSelect({
+      title: '花園關卡', count: LEVELS.length, progress: prog, names: LEVELS.map(l => l.name),
+      bg: 'linear-gradient(180deg, rgba(190,236,255,.95), rgba(214,245,190,.96))',
+      onPick: startLevel,
+      extra: box => {
+        box.innerHTML = '<div class="kit-shelf-title">毛毛蟲造型（集星星解鎖）</div><div class="kit-shelf"></div>';
+        const shelf = box.querySelector('.kit-shelf');
+        SKINS.forEach((s, i) => {
+          const un = prog.total >= s.need;
+          const b = document.createElement('div');
+          b.className = 'kit-item' + (un ? '' : ' locked') + (i === skinIdx ? ' sel' : '');
+          b.innerHTML = '<canvas class="pv" width="132" height="132"></canvas>' + (un ? `<span>${s.name}</span>` : `<span class="need">${Kit.ICON.star(true)}${s.need}</span>`);
+          heroPose(b.querySelector('canvas').getContext('2d'), 132, s, 0.3, 'normal');
+          b.addEventListener('click', () => {
+            if (!un) { KG.sound('wrong'); Kit.shake(b, 5); return; }
+            skinIdx = i; KG.store.set('caterpillar:skin', i);
+            shelf.querySelectorAll('.kit-item').forEach((x, j) => x.classList.toggle('sel', j === i));
+            KG.sound('sparkle'); KG.say(s.name);
+          });
+          shelf.appendChild(b);
+        });
+      }
+    });
+  }
+
+  if (/test/.test(location.search)) window.__cp = () => ({ snake, foods, dir, F });
+  window.addEventListener('resize', layout);
+  chooseGrid(); makeDeco(); layout();
+  // 標題畫面
+  const heroCv = document.createElement('canvas');
+  heroCv.width = 600; heroCv.height = 600;
+  let heroAlive = true, ht = 0;
+  function heroLoop() {
+    if (!heroAlive) return;
+    ht += 1 / 60;
+    const g = heroCv.getContext('2d');
+    heroPose(g, 600, SKINS[skinIdx], ht, (ht % 4) > 3.2 ? 'happy' : 'normal');
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    drawLeaf(g, 520, 250 + Math.sin(ht * 3) * 10, 90, 0.4);
+    drawApple(g, 470, 140 + Math.sin(ht * 3 + 1) * 10, 70);
+    requestAnimationFrame(heroLoop);
+  }
+  Kit.title({
+    logo: '貪吃毛毛蟲', colors: ['#8bd346', '#ff7ab8', '#ffc22e', '#4fb3ff', '#a77bff'], stroke: '#2f5e1c',
+    bg: 'radial-gradient(circle at 50% 45%, rgba(255,255,255,.65), rgba(255,255,255,0) 55%), linear-gradient(180deg, #a9e4ff 0%, #dff7c8 65%, #b9e89a 100%)',
+    sub: '滑動或按方向鍵，帶毛毛蟲吃葉子長長長！',
+    buttons: [{ text: '開始', onClick: () => { heroAlive = false; KG.say('貪吃毛毛蟲！'); showLevels(); } }],
+    onMount: ov => { ov.querySelector('.kit-hero').appendChild(heroCv); heroLoop(); }
+  });
+})();
+</script>
+</body>
+</html>

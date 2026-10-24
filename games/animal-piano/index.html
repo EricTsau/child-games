@@ -1,0 +1,1231 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>動物鋼琴</title>
+<link rel="stylesheet" href="../../assets/common.css">
+<style>
+  html, body { height: 100%; overflow: hidden; background: #efe3ff; overscroll-behavior: none; }
+  #game {
+    position: fixed; inset: 0; display: block;
+    width: 100vw; height: 100vh; height: 100dvh;
+    touch-action: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" aria-label="動物鋼琴"></canvas>
+<script src="../../assets/common.js"></script>
+<script>
+'use strict';
+const SLUG = 'animal-piano';
+/* =====================================================================
+ * 小引擎（每個遊戲內嵌一份）：畫布、補間動畫、粒子、按鈕、音樂、
+ * 標題字、關卡選擇、結算畫面。遊戲本體只要實作 Game.* 即可。
+ * ===================================================================== */
+const cv = document.getElementById('game');
+const ctx = cv.getContext('2d');
+const FONT = '"Baloo 2","PingFang TC","Noto Sans TC","Microsoft JhengHei","Heiti TC",system-ui,sans-serif';
+let W = 0, H = 0, dpr = 1, U = 1, time = 0;
+
+const Game = {
+  onResize() {}, onDown() {}, onMove() {}, onUp() {}, onKey() {},
+  update() {}, draw() {}
+};
+
+/* ---------- 數學與緩動 ---------- */
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const TAU = Math.PI * 2;
+const Ease = {
+  linear: t => t,
+  outCubic: t => 1 - Math.pow(1 - t, 3),
+  inCubic: t => t * t * t,
+  inOutSine: t => -(Math.cos(Math.PI * t) - 1) / 2,
+  outBack: t => { const c = 1.70158, c3 = c + 1; return 1 + c3 * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); },
+  outElastic: t => (t === 0 || t === 1) ? t : Math.pow(2, -10 * t) * Math.sin((t * 10 - 0.75) * (TAU / 3)) + 1,
+  outBounce: t => {
+    const n = 7.5625, d = 2.75;
+    if (t < 1 / d) return n * t * t;
+    if (t < 2 / d) return n * (t -= 1.5 / d) * t + 0.75;
+    if (t < 2.5 / d) return n * (t -= 2.25 / d) * t + 0.9375;
+    return n * (t -= 2.625 / d) * t + 0.984375;
+  }
+};
+
+/* ---------- 補間動畫 ---------- */
+let tweens = [];
+function tween(obj, to, dur, ease, delay, done) {
+  const tw = { obj, to, from: null, dur: dur || 0.3, ease: typeof ease === 'function' ? ease : (Ease[ease] || Ease.outCubic), t: -(delay || 0), done };
+  tweens.push(tw);
+  return tw;
+}
+function killTweens(obj) { tweens = tweens.filter(t => t.obj !== obj); }
+function updateTweens(dt) {
+  const list = tweens.slice();
+  for (const tw of list) {
+    tw.t += dt;
+    if (tw.t < 0) continue;
+    if (!tw.from) { tw.from = {}; for (const k in tw.to) tw.from[k] = tw.obj[k]; }
+    const p = Math.min(1, tw.t / tw.dur), e = tw.ease(p);
+    for (const k in tw.to) tw.obj[k] = tw.from[k] + (tw.to[k] - tw.from[k]) * e;
+    if (p >= 1) {
+      const i = tweens.indexOf(tw);
+      if (i >= 0) tweens.splice(i, 1);
+      if (tw.done) tw.done();
+    }
+  }
+}
+
+/* ---------- 畫面震動、停格 ---------- */
+let shakeT = 0, shakeAmt = 0, stopT = 0;
+function shake(amt, dur) { shakeAmt = Math.max(shakeAmt * (shakeT > 0 ? 1 : 0), amt); shakeT = Math.max(shakeT, dur || 0.3); }
+function hitStop(t) { stopT = Math.max(stopT, t); }
+function shakeOffset() {
+  if (shakeT <= 0) return [0, 0];
+  const k = shakeAmt * Math.min(1, shakeT * 4);
+  return [(Math.random() * 2 - 1) * k, (Math.random() * 2 - 1) * k];
+}
+
+/* ---------- 繪圖小工具 ---------- */
+/** 加一個完整圓到目前路徑（先 moveTo，避免多個圓之間連線） */
+function circ(x, y, r) { ctx.moveTo(x + r, y); ctx.arc(x, y, r, 0, TAU); }
+function rr(x, y, w, h, r) {
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+function starPath(x, y, R, r, rot) {
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const a = (rot || 0) + i * Math.PI / 5 - Math.PI / 2, rad = i % 2 ? r : R;
+    ctx.lineTo(x + Math.cos(a) * rad, y + Math.sin(a) * rad);
+  }
+  ctx.closePath();
+}
+function heartPath(x, y, s) {
+  ctx.beginPath();
+  ctx.moveTo(x, y + s * 0.35);
+  ctx.bezierCurveTo(x - s * 1.1, y - s * 0.35, x - s * 0.55, y - s * 1.05, x, y - s * 0.45);
+  ctx.bezierCurveTo(x + s * 0.55, y - s * 1.05, x + s * 1.1, y - s * 0.35, x, y + s * 0.35);
+  ctx.closePath();
+}
+function shade(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  const f = v => clamp(v + amt, 0, 255);
+  return 'rgb(' + f(n >> 16) + ',' + f((n >> 8) & 255) + ',' + f(n & 255) + ')';
+}
+function rgba(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return 'rgba(' + (n >> 16) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+}
+/** 亮晶晶的星星（on=false 時是灰色空星） */
+function glossyStar(x, y, R, on, rot) {
+  ctx.save();
+  ctx.lineJoin = 'round';
+  if (on) {
+    ctx.fillStyle = 'rgba(160,90,0,0.25)'; starPath(x, y + R * 0.12, R, R * 0.5, rot); ctx.fill();
+    const g = ctx.createRadialGradient(x - R * 0.3, y - R * 0.4, R * 0.1, x, y, R * 1.1);
+    g.addColorStop(0, '#fffbd0'); g.addColorStop(0.45, '#ffd93d'); g.addColorStop(1, '#f39a0c');
+    ctx.fillStyle = g; ctx.strokeStyle = '#c9700a'; ctx.lineWidth = Math.max(1.5, R * 0.12);
+    starPath(x, y, R, R * 0.5, rot); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.75)';
+    ctx.beginPath(); ctx.ellipse(x - R * 0.25, y - R * 0.3, R * 0.22, R * 0.12, -0.6, 0, TAU); ctx.fill();
+  } else {
+    ctx.fillStyle = 'rgba(90,70,110,0.22)'; ctx.strokeStyle = 'rgba(90,70,110,0.35)'; ctx.lineWidth = Math.max(1.5, R * 0.1);
+    starPath(x, y, R, R * 0.5, rot); ctx.fill(); ctx.stroke();
+  }
+  ctx.restore();
+}
+function glossyHeart(x, y, s, on) {
+  ctx.save();
+  if (on) {
+    const g = ctx.createRadialGradient(x - s * 0.3, y - s * 0.5, s * 0.1, x, y - s * 0.2, s * 1.1);
+    g.addColorStop(0, '#ffd0dc'); g.addColorStop(0.5, '#ff5a86'); g.addColorStop(1, '#d6245a');
+    ctx.fillStyle = g; ctx.strokeStyle = '#a3163f';
+  } else { ctx.fillStyle = 'rgba(90,70,110,0.2)'; ctx.strokeStyle = 'rgba(90,70,110,0.35)'; }
+  ctx.lineWidth = Math.max(1.5, s * 0.12); ctx.lineJoin = 'round';
+  heartPath(x, y, s); ctx.fill(); ctx.stroke();
+  if (on) { ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.beginPath(); ctx.ellipse(x - s * 0.4, y - s * 0.45, s * 0.18, s * 0.1, -0.7, 0, TAU); ctx.fill(); }
+  ctx.restore();
+}
+/** 有外框與陰影的字 */
+function txt(s, x, y, size, fill, o) {
+  o = o || {};
+  ctx.save();
+  ctx.font = (o.weight || '900') + ' ' + size + 'px ' + FONT;
+  ctx.textAlign = o.align || 'center';
+  ctx.textBaseline = o.base || 'middle';
+  ctx.lineJoin = 'round';
+  if (o.shadow !== false) {
+    ctx.fillStyle = o.shadow || 'rgba(60,30,70,0.28)';
+    if (o.stroke) { ctx.strokeStyle = ctx.fillStyle; ctx.lineWidth = o.sw || size * 0.22; ctx.strokeText(s, x, y + size * 0.09); }
+    ctx.fillText(s, x, y + size * 0.09);
+  }
+  if (o.stroke) { ctx.strokeStyle = o.stroke; ctx.lineWidth = o.sw || size * 0.22; ctx.strokeText(s, x, y); }
+  ctx.fillStyle = fill; ctx.fillText(s, x, y);
+  ctx.restore();
+}
+/** 遊戲標題字：每個字會彈跳，漸層＋白框＋深色外框 */
+function logo(s, cx, cy, size, colors, outline) {
+  ctx.save();
+  ctx.font = '900 ' + size + 'px ' + FONT;
+  ctx.textBaseline = 'middle'; ctx.textAlign = 'center'; ctx.lineJoin = 'round';
+  const chars = [...s];
+  const widths = chars.map(c => ctx.measureText(c).width * 1.02);
+  const total = widths.reduce((a, b) => a + b, 0);
+  let x = cx - total / 2;
+  chars.forEach((c, i) => {
+    const w = widths[i];
+    const bob = Math.sin(time * 3 + i * 0.7) * size * 0.06;
+    const rot = Math.sin(time * 2.2 + i) * 0.06;
+    ctx.save();
+    ctx.translate(x + w / 2, cy + bob); ctx.rotate(rot);
+    ctx.fillStyle = 'rgba(60,30,70,0.3)';
+    ctx.strokeStyle = 'rgba(60,30,70,0.3)'; ctx.lineWidth = size * 0.36;
+    ctx.strokeText(c, 0, size * 0.1);
+    ctx.strokeStyle = outline || '#5a2d5c'; ctx.lineWidth = size * 0.34; ctx.strokeText(c, 0, 0);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = size * 0.17; ctx.strokeText(c, 0, 0);
+    const col = colors[i % colors.length];
+    const g = ctx.createLinearGradient(0, -size / 2, 0, size / 2);
+    g.addColorStop(0, shade(col, 70)); g.addColorStop(0.5, col); g.addColorStop(1, shade(col, -35));
+    ctx.fillStyle = g; ctx.fillText(c, 0, 0);
+    ctx.globalAlpha = 0.55; ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.ellipse(-w * 0.18, -size * 0.25, size * 0.1, size * 0.05, -0.5, 0, TAU); ctx.fill();
+    ctx.restore();
+    x += w;
+  });
+  ctx.restore();
+}
+/** 標題字的高度：矮螢幕（橫向手機）時往上移 */
+function titleY(k) { return H < 560 ? 50 : Math.max(110, H * (k || 0.2)); }
+/** 暗角 */
+function vignette(a) {
+  const g = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35, W / 2, H / 2, Math.max(W, H) * 0.75);
+  g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(40,20,60,' + (a == null ? 0.25 : a) + ')');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+}
+/** 進度條 */
+function progressBar(x, y, w, h, p, col) {
+  rr(x, y + 3, w, h, h / 2); ctx.fillStyle = 'rgba(60,30,70,0.25)'; ctx.fill();
+  rr(x, y, w, h, h / 2); ctx.fillStyle = '#fff'; ctx.fill();
+  ctx.strokeStyle = shade(col, -60); ctx.lineWidth = 2.5; ctx.stroke();
+  const pw = Math.max(h, (w - 6) * clamp(p, 0, 1));
+  if (p > 0) {
+    rr(x + 3, y + 3, pw, h - 6, (h - 6) / 2);
+    const g = ctx.createLinearGradient(0, y, 0, y + h);
+    g.addColorStop(0, shade(col, 60)); g.addColorStop(1, col);
+    ctx.fillStyle = g; ctx.fill();
+    rr(x + 3 + h * 0.3, y + 4.5, Math.max(0, pw - h * 0.6), (h - 6) * 0.3, 3); ctx.fillStyle = 'rgba(255,255,255,0.6)'; ctx.fill();
+  }
+}
+/** 糖果風的小牌子（HUD 用） */
+function hudPanel(x, y, w, h, col) {
+  rr(x, y + 4, w, h, h / 2); ctx.fillStyle = 'rgba(60,30,70,0.22)'; ctx.fill();
+  rr(x, y, w, h, h / 2);
+  const g = ctx.createLinearGradient(0, y, 0, y + h);
+  g.addColorStop(0, '#ffffff'); g.addColorStop(1, shade(col, 80));
+  ctx.fillStyle = g; ctx.fill();
+  ctx.strokeStyle = col; ctx.lineWidth = 3; ctx.stroke();
+}
+
+/* ---------- 粒子 ---------- */
+class FX {
+  constructor() { this.list = []; }
+  burst(x, y, o) {
+    o = o || {};
+    const n = o.n || 14, cols = o.colors || ['#ffe066', '#ff8fb1', '#7bd88f', '#6cc4ff', '#ffffff'];
+    for (let i = 0; i < n; i++) {
+      const a = o.dir != null ? o.dir + (Math.random() - 0.5) * (o.spread || 1.2) : Math.random() * TAU;
+      const sp = (o.speed || 220) * (0.4 + Math.random() * 0.8);
+      this.list.push({
+        x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - (o.up || 0),
+        life: (o.life || 0.8) * (0.7 + Math.random() * 0.5), max: o.life || 0.8,
+        size: (o.size || 7) * (0.6 + Math.random() * 0.7), color: cols[i % cols.length],
+        shape: o.shape || 'star', rot: Math.random() * TAU, vr: (Math.random() - 0.5) * 8,
+        g: o.g == null ? 500 : o.g, drag: o.drag == null ? 0.97 : o.drag
+      });
+    }
+  }
+  text(x, y, s, o) {
+    o = o || {};
+    this.list.push({ shape: 'text', x, y, vx: 0, vy: o.vy || -80, s, color: o.color || '#fff', size: o.size || 26,
+      stroke: o.stroke || '#5a2d5c', life: o.life || 1, max: o.life || 1, g: 0, drag: 1, rot: 0, vr: 0, pop: 0 });
+  }
+  ring(x, y, color, r, life) {
+    this.list.push({ shape: 'ring', x, y, vx: 0, vy: 0, color: color || '#fff', size: r || 40, life: life || 0.5, max: life || 0.5, g: 0, drag: 1, rot: 0, vr: 0 });
+  }
+  update(dt) {
+    for (const p of this.list) {
+      p.life -= dt;
+      p.vy += p.g * dt;
+      const d = Math.pow(p.drag, dt * 60);
+      p.vx *= d; p.vy *= d;
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      p.rot += p.vr * dt;
+      if (p.pop != null) p.pop += dt;
+    }
+    this.list = this.list.filter(p => p.life > 0);
+  }
+  draw() {
+    for (const p of this.list) {
+      const a = clamp(p.life / p.max, 0, 1);
+      ctx.save();
+      ctx.globalAlpha = p.shape === 'text' ? Math.min(1, a * 2) : Math.min(1, a * 1.6);
+      ctx.translate(p.x, p.y); ctx.rotate(p.rot);
+      const s = p.size;
+      if (p.shape === 'star') { ctx.fillStyle = p.color; starPath(0, 0, s, s * 0.45, 0); ctx.fill(); }
+      else if (p.shape === 'sparkle') {
+        ctx.fillStyle = p.color; ctx.beginPath();
+        ctx.moveTo(0, -s); ctx.quadraticCurveTo(0, 0, s, 0); ctx.quadraticCurveTo(0, 0, 0, s); ctx.quadraticCurveTo(0, 0, -s, 0); ctx.quadraticCurveTo(0, 0, 0, -s); ctx.fill();
+      }
+      else if (p.shape === 'heart') { ctx.fillStyle = p.color; heartPath(0, 0, s); ctx.fill(); }
+      else if (p.shape === 'circle') { ctx.fillStyle = p.color; ctx.beginPath(); circ(0, 0, s * a + 1); ctx.fill(); }
+      else if (p.shape === 'bubble') { ctx.strokeStyle = p.color; ctx.lineWidth = 2; ctx.beginPath(); circ(0, 0, s); ctx.stroke(); ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.beginPath(); circ(-s * 0.35, -s * 0.35, s * 0.25); ctx.fill(); }
+      else if (p.shape === 'confetti') { ctx.fillStyle = p.color; ctx.fillRect(-s / 2, -s / 3, s, s * 0.66); }
+      else if (p.shape === 'drop') { ctx.rotate(-p.rot + Math.atan2(p.vy, p.vx) - Math.PI / 2); ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(0, 0, s * 0.6, 0, Math.PI); ctx.lineTo(0, -s * 1.4); ctx.closePath(); ctx.fill(); }
+      else if (p.shape === 'ring') { const k = 1 - a; ctx.strokeStyle = p.color; ctx.lineWidth = 6 * a + 1; ctx.beginPath(); circ(0, 0, s * (0.3 + k)); ctx.stroke(); }
+      else if (p.shape === 'text') {
+        const sc = p.pop < 0.25 ? Ease.outBack(p.pop / 0.25) : 1;
+        ctx.scale(sc, sc);
+        txt(p.s, 0, 0, p.size, p.color, { stroke: p.stroke, sw: p.size * 0.28 });
+      }
+      ctx.restore();
+    }
+  }
+}
+
+/* ---------- 按鈕（每一格畫面重新登記） ---------- */
+let btnReg = [], pressed = null;
+const BTN = {
+  green: ['#a6f59c', '#3fbf5c', '#24873e'], pink: ['#ffb3cc', '#f45f93', '#b8366a'], blue: ['#a8e0ff', '#3c9ff0', '#22659e'],
+  yellow: ['#fff09a', '#f8b921', '#b57c0b'], purple: ['#dcc6ff', '#9b6ff2', '#5f3fae'], orange: ['#ffd0a0', '#ff8a3d', '#c1561a'],
+  white: ['#ffffff', '#f3e9f7', '#b9a2c8']
+};
+function drawIcon(name, x, y, s, col) {
+  ctx.save(); ctx.translate(x, y);
+  ctx.fillStyle = col || '#fff'; ctx.strokeStyle = col || '#fff';
+  ctx.lineWidth = s * 0.22; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  if (name === 'play') { ctx.beginPath(); ctx.moveTo(-s * 0.35, -s * 0.5); ctx.lineTo(s * 0.5, 0); ctx.lineTo(-s * 0.35, s * 0.5); ctx.closePath(); ctx.fill(); ctx.stroke(); }
+  else if (name === 'next') { for (const dx of [-0.3, 0.25]) { ctx.beginPath(); ctx.moveTo(s * (dx - 0.2), -s * 0.4); ctx.lineTo(s * (dx + 0.25), 0); ctx.lineTo(s * (dx - 0.2), s * 0.4); ctx.stroke(); } }
+  else if (name === 'replay') {
+    ctx.beginPath(); ctx.arc(0, 0, s * 0.42, -Math.PI * 0.3, Math.PI * 1.35); ctx.stroke();
+    const a = -Math.PI * 0.3, ex = Math.cos(a) * s * 0.42, ey = Math.sin(a) * s * 0.42;
+    ctx.beginPath(); ctx.moveTo(ex + s * 0.2, ey - s * 0.05); ctx.lineTo(ex - s * 0.02, ey + s * 0.25); ctx.lineTo(ex - s * 0.25, ey - s * 0.12); ctx.closePath(); ctx.fill();
+  }
+  else if (name === 'menu') { for (let i = -1; i <= 1; i += 2) for (let j = -1; j <= 1; j += 2) { rr(i * s * 0.25 - s * 0.17, j * s * 0.25 - s * 0.17, s * 0.34, s * 0.34, s * 0.08); ctx.fill(); } }
+  else if (name === 'lock') {
+    ctx.lineWidth = s * 0.16; ctx.beginPath(); ctx.arc(0, -s * 0.12, s * 0.26, Math.PI, 0); ctx.stroke();
+    rr(-s * 0.38, -s * 0.12, s * 0.76, s * 0.6, s * 0.12); ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.beginPath(); circ(0, s * 0.15, s * 0.08); ctx.fill();
+  }
+  else if (name === 'music') { ctx.beginPath(); ctx.ellipse(-s * 0.18, s * 0.3, s * 0.18, s * 0.13, -0.4, 0, TAU); ctx.fill(); ctx.lineWidth = s * 0.12; ctx.beginPath(); ctx.moveTo(-s * 0.02, s * 0.3); ctx.lineTo(-s * 0.02, -s * 0.45); ctx.quadraticCurveTo(s * 0.25, -s * 0.3, s * 0.35, -s * 0.1); ctx.stroke(); }
+  ctx.restore();
+}
+/** 立體糖果按鈕。opts: {label, icon, color, onClick, size, pulse, disabled} */
+function button(id, x, y, w, h, opts) {
+  btnReg.push({ id, x, y, w, h, onClick: opts.onClick, disabled: opts.disabled });
+  const pal = BTN[opts.color || 'green'];
+  const isDown = pressed && pressed.id === id;
+  let s = isDown ? 0.92 : 1;
+  if (opts.pulse && !isDown) s *= 1 + Math.sin(time * 5) * 0.035;
+  const lip = Math.max(4, h * 0.1);
+  ctx.save();
+  ctx.translate(x + w / 2, y + h / 2); ctx.scale(s, s);
+  if (opts.disabled) ctx.globalAlpha = 0.55;
+  const r = opts.radius == null ? h / 2 : opts.radius;
+  const yo = isDown ? lip * 0.6 : 0;
+  rr(-w / 2, -h / 2 + lip + 3, w, h, r); ctx.fillStyle = 'rgba(60,30,70,0.22)'; ctx.fill();
+  rr(-w / 2, -h / 2 + lip, w, h, r); ctx.fillStyle = pal[2]; ctx.fill();
+  rr(-w / 2, -h / 2 + yo, w, h, r);
+  const g = ctx.createLinearGradient(0, -h / 2, 0, h / 2);
+  g.addColorStop(0, pal[0]); g.addColorStop(0.55, pal[1]); g.addColorStop(1, shade(pal[1], -15));
+  ctx.fillStyle = g; ctx.fill();
+  ctx.strokeStyle = pal[2]; ctx.lineWidth = Math.max(2, h * 0.05); ctx.stroke();
+  rr(-w / 2 + h * 0.22, -h / 2 + yo + h * 0.09, w - h * 0.44, h * 0.3, h * 0.15);
+  ctx.fillStyle = 'rgba(255,255,255,0.45)'; ctx.fill();
+  const fs = opts.size || h * 0.42;
+  const tc = opts.color === 'white' ? '#6a4a7a' : '#fff';
+  if (opts.icon && opts.label) {
+    const tw = (ctx.font = '900 ' + fs + 'px ' + FONT, ctx.measureText(opts.label).width);
+    const tot = fs * 1.1 + tw;
+    drawIcon(opts.icon, -tot / 2 + fs * 0.45, yo, fs * 0.9, tc);
+    txt(opts.label, -tot / 2 + fs * 1.1 + tw / 2, yo + 1, fs, tc, { stroke: pal[2], sw: fs * 0.2, shadow: false });
+  } else if (opts.icon) drawIcon(opts.icon, 0, yo, fs * 1.1, tc);
+  else if (opts.label != null) txt(opts.label, 0, yo + 1, fs, tc, { stroke: pal[2], sw: fs * 0.2, shadow: false });
+  ctx.restore();
+}
+function hitBtn(x, y) {
+  for (let i = btnReg.length - 1; i >= 0; i--) {
+    const b = btnReg[i];
+    if (!b.disabled && x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h + 6) return b;
+  }
+  return null;
+}
+
+/* ---------- 指標與鍵盤 ---------- */
+cv.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  const b = hitBtn(e.clientX, e.clientY);
+  if (b) { pressed = { id: b.id, pid: e.pointerId }; KG.note(880, 0.06, 'sine', 0.15); return; }
+  Game.onDown(e.clientX, e.clientY, e);
+});
+cv.addEventListener('pointermove', (e) => { Game.onMove(e.clientX, e.clientY, e); });
+function endPointer(e, cancel) {
+  if (pressed && pressed.pid === e.pointerId) {
+    const b = hitBtn(e.clientX, e.clientY), id = pressed.id;
+    pressed = null;
+    if (!cancel && b && b.id === id && b.onClick) { KG.sound('pop'); b.onClick(); }
+    return;
+  }
+  Game.onUp(e.clientX, e.clientY, e);
+}
+cv.addEventListener('pointerup', (e) => endPointer(e, false));
+cv.addEventListener('pointercancel', (e) => endPointer(e, true));
+cv.addEventListener('contextmenu', (e) => e.preventDefault());
+window.addEventListener('keydown', (e) => Game.onKey(e, true));
+window.addEventListener('keyup', (e) => Game.onKey(e, false));
+
+/* ---------- 背景音樂（用 KG.note 合成） ---------- */
+// 瀏覽器規定：使用者互動後才能播放聲音
+let userActed = false;
+window.addEventListener('pointerdown', () => { userActed = true; }, { capture: true });
+window.addEventListener('keydown', () => { userActed = true; }, { capture: true });
+const NOTE_IDX = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+function nf(name) {
+  const m = /^([A-G])(#|b)?(\d)$/.exec(name);
+  if (!m) return 0;
+  let n = NOTE_IDX[m[1]] + (m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0) + (parseInt(m[3], 10) + 1) * 12;
+  return 440 * Math.pow(2, (n - 69) / 12);
+}
+const Music = {
+  on: false, song: null, step: 0, next: 0,
+  /** song: {bpm, mel:'C5 E5 - G5 ...'（八分音符，- 表示延長，. 表示休止）, bass:'C3 . G2 .'} */
+  start(song) {
+    this.song = { bpm: song.bpm, mel: song.mel.trim().split(/\s+/), bass: (song.bass || '').trim().split(/\s+/), vol: song.vol || 1, wave: song.wave || 'triangle' };
+    this.on = true; this.step = 0; this.next = 0.15;
+  },
+  stop() { this.on = false; },
+  update(dt) {
+    if (!this.on || !this.song || !userActed) return;
+    this.next -= dt;
+    if (this.next < -0.3) this.next = 0;
+    const s = this.song, beat = 60 / s.bpm / 2;
+    while (this.next <= 0) {
+      if (!KG.isMuted() && !document.hidden) {
+        const i = this.step % s.mel.length, tok = s.mel[i];
+        if (tok !== '-' && tok !== '.') {
+          let len = 1;
+          while (s.mel[(i + len) % s.mel.length] === '-' && len < 8) len++;
+          const f = nf(tok);
+          KG.note(f, beat * len * 0.95, s.wave, 0.05 * s.vol);
+          KG.note(f * 2, beat * len * 0.5, 'sine', 0.015 * s.vol);
+        }
+        if (s.bass.length > 1) {
+          const bi = this.step % s.bass.length, bt = s.bass[bi];
+          if (bt !== '-' && bt !== '.') KG.note(nf(bt), beat * 1.8, 'sine', 0.07 * s.vol);
+        }
+      }
+      this.step++;
+      this.next += beat;
+    }
+  }
+};
+document.addEventListener('visibilitychange', () => { if (document.hidden) Music.next = 0.2; });
+
+/* ---------- 存檔 ---------- */
+const Save = {
+  get(k, d) { return KG.store.get(SLUG + ':' + k, d); },
+  set(k, v) { KG.store.set(SLUG + ':' + k, v); },
+  stars() { return Save.get('stars', []); },
+  setStars(i, n) { const a = Save.stars(); if (!(a[i] >= n)) { a[i] = n; Save.set('stars', a); } return a; },
+  total() { return Save.stars().reduce((s, v) => s + (v || 0), 0); }
+};
+
+/* ---------- 共用畫面：關卡選擇 ---------- */
+/**
+ * opts: { levels:[{name}], title, color, onPick(i), skins:[{name, need, draw(x,y,s)}], skin, onSkin(i), top }
+ */
+function levelSelect(opts) {
+  const stars = Save.stars(), total = Save.total();
+  const top = Math.max(76, H * 0.08);
+  txt(opts.title || '選擇關卡', W / 2, top, 30 * U, '#fff', { stroke: opts.color, sw: 9 * U });
+  // 星星總數
+  const tw = 120 * U, th = 40 * U;
+  hudPanel(W / 2 - tw / 2, top + 26 * U, tw, th, opts.color);
+  glossyStar(W / 2 - tw / 2 + 24 * U, top + 26 * U + th / 2, 14 * U, true);
+  txt(total + ' / ' + opts.levels.length * 3, W / 2 + 12 * U, top + 26 * U + th / 2 + 1, 20 * U, '#5a2d5c', { shadow: false });
+
+  const n = opts.levels.length;
+  const hasSkins = opts.skins && opts.skins.length;
+  const areaTop = top + 82 * U, areaBot = H - (hasSkins ? 170 * U : 30 * U);
+  const cols = W > H * 1.1 ? Math.min(n, 5) : Math.min(n, 3);
+  const rows = Math.ceil(n / cols);
+  const gap = 14 * U;
+  let cw = Math.min(150 * U, (W - 32 - gap * (cols - 1)) / cols);
+  let ch = cw * 1.12;
+  if (rows * ch + (rows - 1) * gap > areaBot - areaTop) { ch = (areaBot - areaTop - (rows - 1) * gap) / rows; cw = Math.min(cw, ch / 1.05); }
+  const gx = (W - (cols * cw + (cols - 1) * gap)) / 2;
+  const gy = areaTop + Math.max(0, (areaBot - areaTop - (rows * ch + (rows - 1) * gap)) / 2);
+  for (let i = 0; i < n; i++) {
+    const c = i % cols, r = Math.floor(i / cols);
+    const x = gx + c * (cw + gap), y = gy + r * (ch + gap);
+    const locked = i > 0 && !(stars[i - 1] > 0) && !opts.allOpen;
+    const st = stars[i] || 0;
+    const appear = clamp((time - (opts.enterT || 0)) * 4 - i * 0.25, 0, 1);
+    const sc = Ease.outBack(appear);
+    if (sc <= 0) continue;
+    ctx.save();
+    ctx.translate(x + cw / 2, y + ch / 2); ctx.scale(sc, sc); ctx.translate(-(x + cw / 2), -(y + ch / 2));
+    button('lv' + i, x, y, cw, ch, {
+      color: locked ? 'white' : (opts.cardColors ? opts.cardColors[i % opts.cardColors.length] : 'pink'),
+      radius: 22 * U, label: '', disabled: locked,
+      onClick: () => opts.onPick(i)
+    });
+    if (locked) drawIcon('lock', x + cw / 2, y + ch * 0.42, cw * 0.36, '#b9a2c8');
+    else {
+      txt(String(i + 1), x + cw / 2, y + ch * 0.36, ch * 0.34, '#fff', { stroke: 'rgba(80,40,90,0.55)', sw: ch * 0.07 });
+      if (opts.levels[i].name) txt(opts.levels[i].name, x + cw / 2, y + ch * 0.62, Math.min(16 * U, cw * 0.14), '#fff', { stroke: 'rgba(80,40,90,0.5)', sw: 4 * U, shadow: false });
+      for (let k = 0; k < 3; k++) glossyStar(x + cw / 2 + (k - 1) * cw * 0.26, y + ch * 0.83 - (k === 1 ? 4 * U : 0), cw * 0.1, k < st);
+    }
+    ctx.restore();
+  }
+  // 造型（用星星解鎖）
+  if (hasSkins) {
+    const k = opts.skins.length;
+    const sz = Math.min(76 * U, (W - 40 - (k - 1) * 10 * U) / k);
+    const y0 = H - 150 * U;
+    txt('造型（集星星解鎖）', W / 2, y0, 17 * U, '#fff', { stroke: opts.color, sw: 6 * U });
+    const sx0 = W / 2 - (k * sz + (k - 1) * 10 * U) / 2;
+    opts.skins.forEach((sk, i) => {
+      const x = sx0 + i * (sz + 10 * U), y = y0 + 20 * U;
+      const locked = total < sk.need;
+      const sel = opts.skin === i;
+      button('sk' + i, x, y, sz, sz, { color: sel ? 'yellow' : 'white', radius: 18 * U, label: '', onClick: () => {
+        if (locked) { KG.sound('wrong'); KG.toast('還需要 ' + (sk.need - total) + ' 顆星星喔！'); return; }
+        opts.onSkin(i);
+      } });
+      ctx.save();
+      if (locked) ctx.globalAlpha = 0.35;
+      sk.draw(x + sz / 2, y + sz * 0.48, sz * 0.36);
+      ctx.restore();
+      if (locked) {
+        drawIcon('lock', x + sz / 2, y + sz * 0.45, sz * 0.32, '#9d84ad');
+        glossyStar(x + sz * 0.38, y + sz * 0.82, sz * 0.09, true);
+        txt(String(sk.need), x + sz * 0.6, y + sz * 0.83, sz * 0.18, '#7a5a8a', { shadow: false });
+      }
+    });
+  }
+}
+
+/* ---------- 共用畫面：結算 ---------- */
+const Result = {
+  on: false, t: 0, o: null, shown: 0, panel: { s: 0 },
+  /** o: { stars, title, lines:[], unlock, onNext, onRetry, onMenu, color } */
+  show(o) {
+    this.on = true; this.t = 0; this.o = o; this.shown = 0; this.panel.s = 0;
+    killTweens(this.panel);
+    tween(this.panel, { s: 1 }, 0.5, 'outBack');
+    if (o.stars > 0) { KG.sound('win'); KG.confetti(); } else KG.sound('lose');
+  },
+  hide() { this.on = false; },
+  update(dt, fx) {
+    if (!this.on) return;
+    this.t += dt;
+    const o = this.o;
+    while (this.shown < 3 && this.t > 0.6 + this.shown * 0.38) {
+      if (this.shown < o.stars) {
+        KG.note(660 * Math.pow(1.26, this.shown), 0.25, 'triangle', 0.22);
+        KG.note(1320 * Math.pow(1.26, this.shown), 0.3, 'sine', 0.08);
+        const p = this.starPos(this.shown);
+        fx.burst(p[0], p[1], { n: 16, colors: ['#ffe066', '#fff', '#ffb02e'], speed: 260, g: 300, size: 7 * U });
+      }
+      this.shown++;
+    }
+  },
+  geom() {
+    const pw = Math.min(W - 32, 420 * U), ph = Math.min(H - 120, 440 * U);
+    return { x: (W - pw) / 2, y: (H - ph) / 2 + 20 * U, w: pw, h: ph };
+  },
+  starPos(i) {
+    const g = this.geom();
+    return [W / 2 + (i - 1) * g.w * 0.24, g.y + g.h * 0.27 - (i === 1 ? 14 * U : 0)];
+  },
+  draw() {
+    if (!this.on) return;
+    const o = this.o, g = this.geom(), col = o.color || '#f45f93';
+    ctx.fillStyle = 'rgba(50,25,70,' + (0.45 * Math.min(1, this.t * 3)) + ')';
+    ctx.fillRect(0, 0, W, H);
+    const s = this.panel.s;
+    ctx.save();
+    ctx.translate(W / 2, g.y + g.h / 2); ctx.scale(s, s); ctx.translate(-W / 2, -(g.y + g.h / 2));
+    // 背後旋轉光芒
+    ctx.save(); ctx.translate(W / 2, g.y + g.h * 0.27); ctx.rotate(time * 0.4);
+    ctx.fillStyle = 'rgba(255,240,170,0.18)';
+    for (let i = 0; i < 12; i++) { ctx.rotate(TAU / 12); ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-30 * U, g.w * 0.75); ctx.lineTo(30 * U, g.w * 0.75); ctx.fill(); }
+    ctx.restore();
+    // 面板
+    rr(g.x, g.y + 10, g.w, g.h, 34 * U); ctx.fillStyle = 'rgba(60,30,70,0.3)'; ctx.fill();
+    rr(g.x, g.y, g.w, g.h, 34 * U);
+    const pg = ctx.createLinearGradient(0, g.y, 0, g.y + g.h);
+    pg.addColorStop(0, '#fffdf6'); pg.addColorStop(1, '#ffeef5');
+    ctx.fillStyle = pg; ctx.fill();
+    ctx.lineWidth = 7 * U; ctx.strokeStyle = col; ctx.stroke();
+    rr(g.x + 10 * U, g.y + 10 * U, g.w - 20 * U, g.h - 20 * U, 26 * U); ctx.lineWidth = 2.5 * U; ctx.setLineDash([8 * U, 8 * U]); ctx.strokeStyle = rgba('#ffffff', 0); ctx.strokeStyle = shade(col, 60); ctx.stroke(); ctx.setLineDash([]);
+    // 緞帶標題
+    const bw = g.w * 0.92, bh = 58 * U, by = g.y - bh * 0.45;
+    ctx.fillStyle = shade(col, -50);
+    ctx.beginPath(); ctx.moveTo(W / 2 - bw / 2 - 22 * U, by + 14 * U); ctx.lineTo(W / 2 - bw / 2 + 10 * U, by + 14 * U); ctx.lineTo(W / 2 - bw / 2 + 10 * U, by + bh + 12 * U); ctx.lineTo(W / 2 - bw / 2 - 22 * U, by + bh + 12 * U); ctx.lineTo(W / 2 - bw / 2 - 8 * U, by + bh / 2 + 13 * U); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(W / 2 + bw / 2 + 22 * U, by + 14 * U); ctx.lineTo(W / 2 + bw / 2 - 10 * U, by + 14 * U); ctx.lineTo(W / 2 + bw / 2 - 10 * U, by + bh + 12 * U); ctx.lineTo(W / 2 + bw / 2 + 22 * U, by + bh + 12 * U); ctx.lineTo(W / 2 + bw / 2 + 8 * U, by + bh / 2 + 13 * U); ctx.closePath(); ctx.fill();
+    rr(W / 2 - bw / 2, by, bw, bh, 14 * U);
+    const rg = ctx.createLinearGradient(0, by, 0, by + bh);
+    rg.addColorStop(0, shade(col, 50)); rg.addColorStop(1, col);
+    ctx.fillStyle = rg; ctx.fill(); ctx.strokeStyle = shade(col, -50); ctx.lineWidth = 3 * U; ctx.stroke();
+    const tsz = Math.min(28 * U, bw / Math.max(4, [...o.title].length) * 0.95);
+    txt(o.title, W / 2, by + bh / 2 + 1, tsz, '#fff', { stroke: shade(col, -60), sw: 7 * U });
+    // 星星
+    for (let i = 0; i < 3; i++) {
+      const p = this.starPos(i);
+      const on = i < this.shown && i < o.stars;
+      let k = 1;
+      if (on) { const tt = this.t - (0.6 + i * 0.38); k = tt < 0.4 ? Ease.outElastic(clamp(tt / 0.4, 0, 1)) * 1.0 : 1 + Math.sin(time * 3 + i) * 0.03; }
+      glossyStar(p[0], p[1], (i === 1 ? 46 : 38) * U * (on ? k : 1), on, on ? Math.sin(time * 2 + i) * 0.08 : 0);
+    }
+    // 文字
+    let ty = g.y + g.h * 0.47;
+    (o.lines || []).forEach(l => { txt(l, W / 2, ty, 20 * U, '#5a2d5c', { shadow: false }); ty += 30 * U; });
+    if (o.unlock) {
+      const pulse = 1 + Math.sin(time * 6) * 0.04;
+      ctx.save(); ctx.translate(W / 2, ty + 6 * U); ctx.scale(pulse, pulse);
+      txt(o.unlock, 0, 0, 19 * U, '#ff6b9a', { stroke: '#fff', sw: 5 * U, shadow: false });
+      ctx.restore();
+    }
+    // 按鈕
+    const bh2 = 58 * U, by2 = g.y + g.h - bh2 - 26 * U;
+    const btns = [];
+    if (o.onMenu) btns.push({ id: 'rmenu', icon: 'menu', color: 'blue', cb: o.onMenu });
+    if (o.onRetry) btns.push({ id: 'rretry', icon: 'replay', color: 'yellow', cb: o.onRetry });
+    if (o.onNext) btns.push({ id: 'rnext', icon: 'play', color: 'green', cb: o.onNext, wide: true });
+    const unit = 72 * U, wideW = 120 * U, gapb = 12 * U;
+    const totw = btns.reduce((s2, b) => s2 + (b.wide ? wideW : unit), 0) + gapb * (btns.length - 1);
+    let bx = W / 2 - totw / 2;
+    const ready = this.t > 0.5;
+    btns.forEach(b => {
+      const bw2 = b.wide ? wideW : unit;
+      button(b.id, bx, by2, bw2, bh2, { icon: b.icon, color: b.color, pulse: b.wide, disabled: !ready, onClick: () => { this.hide(); b.cb(); } });
+      bx += bw2 + gapb;
+    });
+    ctx.restore();
+  }
+};
+
+/* ---------- 主迴圈 ---------- */
+function resizeCanvas() {
+  dpr = Math.min(window.devicePixelRatio || 1, 3);
+  W = cv.clientWidth || innerWidth; H = cv.clientHeight || innerHeight;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  U = clamp(Math.min(W / 400, H / 680), 0.72, 1.4);
+  Game.onResize();
+}
+window.addEventListener('resize', resizeCanvas);
+let lastFrame = performance.now();
+function frame(now) {
+  const rdt = Math.min(0.05, Math.max(0, (now - lastFrame) / 1000));
+  lastFrame = now;
+  time += rdt;
+  if (shakeT > 0) shakeT -= rdt;
+  let dt = rdt;
+  if (stopT > 0) { stopT -= rdt; dt = 0; }
+  updateTweens(rdt);
+  Music.update(rdt);
+  Game.update(dt, rdt);
+  btnReg = [];
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  Game.draw();
+  requestAnimationFrame(frame);
+}
+function bootGame() {
+  resizeCanvas();
+  requestAnimationFrame((t) => { lastFrame = t; frame(t); });
+}
+/* =====================================================================
+ * 動物鋼琴：每個琴鍵上都住著一隻小動物，按下去牠就會唱歌！
+ * 「學一首歌」會亮出下一個要按的鍵，跟著彈完整首歌。
+ * ===================================================================== */
+
+const WHITE = [
+  { n: 'C4', name: 'Do', a: 'cat', col: '#ff8a8a' }, { n: 'D4', name: 'Re', a: 'dog', col: '#ffb36b' },
+  { n: 'E4', name: 'Mi', a: 'bunny', col: '#ffd84a' }, { n: 'F4', name: 'Fa', a: 'frog', col: '#8fe07a' },
+  { n: 'G4', name: 'Sol', a: 'bear', col: '#6cc4ff' }, { n: 'A4', name: 'La', a: 'pig', col: '#8f9cff' },
+  { n: 'B4', name: 'Si', a: 'chick', col: '#c58cff' }, { n: 'C5', name: 'Do', a: 'panda', col: '#ff8fc8' }
+];
+const BLACK = [{ n: 'C#4', after: 0 }, { n: 'D#4', after: 1 }, { n: 'F#4', after: 3 }, { n: 'G#4', after: 4 }, { n: 'A#4', after: 5 }];
+// 鍵的編號：0–7 白鍵、8–12 黑鍵
+const NOTE_KEY = {};
+WHITE.forEach((k, i) => { NOTE_KEY[k.n] = i; });
+BLACK.forEach((k, i) => { NOTE_KEY[k.n] = 8 + i; });
+
+const SONGS = [
+  { name: '小星星', notes: 'C4 C4 G4 G4 A4 A4 G4 F4 F4 E4 E4 D4 D4 C4 G4 G4 F4 F4 E4 E4 D4 G4 G4 F4 F4 E4 E4 D4 C4 C4 G4 G4 A4 A4 G4 F4 F4 E4 E4 D4 D4 C4',
+    lyric: '一閃一閃亮晶晶滿天都是小星星掛在天上放光明好像許多小眼睛一閃一閃亮晶晶滿天都是小星星', line: 7 },
+  { name: '小蜜蜂', notes: 'G4 E4 E4 F4 D4 D4 C4 D4 E4 F4 G4 G4 G4 G4 E4 E4 F4 D4 D4 C4 E4 G4 G4 E4 D4 D4 D4 D4 D4 E4 F4 E4 E4 E4 E4 E4 F4 G4 G4 E4 E4 F4 D4 D4 C4 E4 G4 G4 C4',
+    lyric: '嗡嗡嗡嗡嗡嗡大家一起勤做工來匆匆去匆匆做工興味濃天暖花好不做工將來哪裡好過冬嗡嗡嗡嗡嗡嗡別學懶惰蟲', lines: [3, 3, 7, 3, 3, 5, 7, 7, 3, 3, 5] },
+  { name: '生日快樂', notes: 'C4 C4 D4 C4 F4 E4 C4 C4 D4 C4 G4 F4 C4 C4 C5 A4 F4 E4 D4 A#4 A#4 A4 F4 G4 F4',
+    lyric: '祝你生日快樂祝你生日快樂祝你生日快快樂祝你生日快樂', lines: [6, 6, 7, 6] },
+  { name: '倫敦鐵橋', notes: 'G4 A4 G4 F4 E4 F4 G4 D4 E4 F4 E4 F4 G4 G4 A4 G4 F4 E4 F4 G4 D4 G4 E4 C4',
+    lyric: '倫敦鐵橋垮下來垮下來垮下來倫敦鐵橋垮下來就要垮了', lines: [7, 3, 3, 7, 4] }
+];
+// 樂器（用星星解鎖）
+const INSTR = [
+  { name: '鋼琴', need: 0 }, { name: '音樂盒', need: 3 }, { name: '木琴', need: 5 }, { name: '喵喵琴', need: 8 }, { name: '星星琴', need: 11 }
+];
+const ANIMAL_COL = {
+  cat: ['#ffd9a8', '#ffb35c', '#d9822a'], dog: ['#f5e2c8', '#d9b48a', '#a87a4e'], bunny: ['#ffffff', '#f6eef6', '#d9c4d9'],
+  frog: ['#c4f59a', '#6fd06a', '#3f9a4a'], bear: ['#e0b88a', '#b8875a', '#7e5532'], pig: ['#ffe0ea', '#ffb3c8', '#e27a9a'],
+  chick: ['#fff7b0', '#ffd83a', '#e09a00'], panda: ['#ffffff', '#f2f2f2', '#c8c8d0']
+};
+
+let scene = 'title', mode = 'free', instr = clamp(Save.get('skin', 0), 0, INSTR.length - 1);
+let songIdx = 0, song = null, pos = 0, misses = 0, sub = 'play', demoT = -1, demoI = 0;
+const keys = [];            // 每個鍵的位置與動畫狀態
+for (let i = 0; i < 13; i++) keys.push({ x: 0, y: 0, w: 0, h: 0, down: 0, glow: 0, bounce: 0, sing: 0, pids: 0 });
+const active = {};          // pointerId -> key index
+let pianoX = 0, pianoY = 0, pianoW = 0, pianoH = 0, wkW = 0, animalS = 30;
+const fx = new FX(), ui = new FX();
+let notes = [];             // 飄浮的音符
+let lyricPop = { s: 1 };
+
+/* ---------- 版面 ---------- */
+Game.onResize = () => {
+  const portrait = H > W;
+  pianoW = Math.min(W - 24, 1000);
+  wkW = pianoW / 8;
+  pianoH = Math.min(portrait ? H * 0.42 : H * (H < 560 ? 0.42 : 0.5), wkW * 5.2);
+  pianoX = (W - pianoW) / 2;
+  pianoY = H - pianoH - Math.max(14, H * 0.03);
+  animalS = Math.min(wkW * 0.95, 90, H * 0.13);
+  WHITE.forEach((k, i) => Object.assign(keys[i], { x: pianoX + i * wkW, y: pianoY, w: wkW, h: pianoH }));
+  BLACK.forEach((b, i) => {
+    const bw = wkW * 0.6;
+    Object.assign(keys[8 + i], { x: pianoX + (b.after + 1) * wkW - bw / 2, y: pianoY, w: bw, h: pianoH * 0.6 });
+  });
+};
+function keyNote(i) { return i < 8 ? WHITE[i].n : BLACK[i - 8].n; }
+
+/* ---------- 聲音：依樂器合成 ---------- */
+function playKey(i, quiet) {
+  const f = nf(keyNote(i));
+  const v = quiet ? 0.6 : 1;
+  if (instr === 0) {         // 鋼琴：sine + triangle 疊加，有泛音
+    KG.note(f, 1.3, 'sine', 0.22 * v);
+    KG.note(f, 0.7, 'triangle', 0.09 * v);
+    KG.note(f * 2, 0.4, 'sine', 0.04 * v);
+  } else if (instr === 1) {  // 音樂盒：高八度、清脆
+    KG.note(f * 2, 1.1, 'sine', 0.2 * v);
+    KG.note(f * 4, 0.3, 'sine', 0.05 * v);
+  } else if (instr === 2) {  // 木琴：短而亮
+    KG.note(f * 2, 0.35, 'triangle', 0.26 * v);
+    KG.note(f * 8, 0.06, 'sine', 0.05 * v);
+  } else if (instr === 3) {  // 喵喵琴：滑音
+    KG.note(f * 1.5, 0.35, 'triangle', 0.16 * v, 0, f);
+    KG.note(f * 0.75 * 2, 0.4, 'sine', 0.12 * v, 0.02, f * 1.2);
+  } else {                   // 星星琴：鈴聲加閃亮
+    KG.note(f * 2, 1.4, 'sine', 0.18 * v);
+    KG.note(f * 3, 0.8, 'sine', 0.06 * v);
+    KG.note(f * 5, 0.25, 'sine', 0.03 * v);
+  }
+}
+
+function pressKey(i, fromUser) {
+  const k = keys[i];
+  k.pids++;
+  k.down = 1; k.glow = 1; k.sing = 0.6;
+  k.bounce = 1;
+  playKey(i);
+  const col = i < 8 ? WHITE[i].col : '#b48cff';
+  const ax = i < 8 ? k.x + k.w / 2 : k.x + k.w / 2, ay = pianoY - animalS * 0.55;
+  notes.push({ x: ax + (Math.random() - 0.5) * 20, y: ay - animalS * 0.4, vx: (Math.random() - 0.5) * 40, vy: -90 - Math.random() * 50, life: 1.6, col, kind: Math.random() < 0.5 ? 1 : 2, rot: (Math.random() - 0.5) * 0.6 });
+  fx.burst(k.x + k.w / 2, k.y + k.h * 0.75, { n: 6, shape: 'sparkle', colors: ['#fff', col], speed: 120, g: -40, size: 6, life: 0.6 });
+  if (fromUser && mode === 'song' && sub === 'play' && demoT < 0) checkSong(i);
+}
+function releaseKey(i) { const k = keys[i]; k.pids = Math.max(0, k.pids - 1); }
+
+/* ---------- 學一首歌 ---------- */
+function songNotes() { return song.notes.trim().split(/\s+/).map(n => NOTE_KEY[n]); }
+function startSong(i) {
+  songIdx = i; song = SONGS[i]; song.keys = songNotes();
+  mode = 'song'; scene = 'play'; sub = 'play'; pos = 0; misses = 0; demoT = -1;
+  Music.stop();
+  lyricPop.s = 1;
+}
+function startFree() { mode = 'free'; scene = 'play'; sub = 'play'; demoT = -1; Music.stop(); }
+function checkSong(i) {
+  const want = song.keys[pos];
+  if (i === want) {
+    pos++;
+    lyricPop.s = 1.5; killTweens(lyricPop); tween(lyricPop, { s: 1 }, 0.35, 'outBack');
+    fx.burst(keys[i].x + keys[i].w / 2, pianoY - animalS, { n: 8, shape: 'star', colors: ['#ffe066', '#fff', '#ff8fb1'], speed: 160, g: 100, size: 6 });
+    if (pos > 0 && pos % 7 === 0 && pos < song.keys.length) ui.text(W / 2, H * 0.3, KG.pick(['好棒！', '太厲害了！', '彈得真好！']), { color: '#fff07a', size: 36 * U, stroke: '#9b6ff2', vy: -40 });
+    if (pos >= song.keys.length) finishSong();
+  } else {
+    misses++;
+    const k = keys[want];
+    k.glow = 1.5;
+    ui.text(k.x + k.w / 2, pianoY - animalS * 1.6, '在這裡！', { color: '#fff', size: 20 * U, stroke: '#f45f93', vy: -30, life: 0.8 });
+  }
+}
+function finishSong() {
+  sub = 'done';
+  const st = misses <= 2 ? 3 : misses <= 6 ? 2 : 1;
+  const before = Save.total();
+  Save.setStars(songIdx, st);
+  const after = Save.total();
+  const newI = INSTR.find(s => s.need > before && s.need <= after);
+  // 動物大合唱
+  keys.forEach((k, i) => { if (i < 8) setTimeout(() => { k.bounce = 1; k.sing = 0.8; }, i * 70); });
+  setTimeout(() => {
+    if (scene !== 'play' || mode !== 'song') return;
+    Result.show({
+      stars: st, title: st === 3 ? '完美！好好聽！' : '彈完了！好棒！', color: '#9b6ff2',
+      lines: ['彈完「' + song.name + '」', misses ? '按錯 ' + misses + ' 次，沒關係！' : '一次都沒按錯！'],
+      unlock: newI ? '解鎖新樂器：' + newI.name + '！' : '',
+      onNext: songIdx < SONGS.length - 1 ? () => startSong(songIdx + 1) : null,
+      onRetry: () => startSong(songIdx), onMenu: goMap
+    });
+  }, 900);
+}
+function startDemo() {
+  if (mode !== 'song' || sub !== 'play') return;
+  demoT = 0.3; demoI = pos;
+}
+function goTitle() { scene = 'title'; Result.hide(); demoT = -1; Music.start(TITLE_SONG); }
+function goMap() { scene = 'map'; Result.hide(); demoT = -1; Music.start(TITLE_SONG); }
+const TITLE_SONG = { bpm: 108, mel: 'C5 E5 G5 E5 F5 D5 B4 G4 C5 E5 G5 C6 B5 G5 C5 - A4 C5 E5 C5 D5 F5 A5 F5 G5 E5 C5 E5 D5 - . .', bass: 'C3 . . . G2 . . . A2 . . . E2 . . . F2 . . . D2 . . . G2 . . . G2 . . .', vol: 0.8 };
+
+/* ---------- 輸入（多點觸控） ---------- */
+function keyAt(x, y) {
+  for (let i = 8; i < 13; i++) { const k = keys[i]; if (x >= k.x && x <= k.x + k.w && y >= k.y && y <= k.y + k.h) return i; }
+  for (let i = 0; i < 8; i++) { const k = keys[i]; if (x >= k.x && x <= k.x + k.w && y >= k.y - animalS * 1.1 && y <= k.y + k.h) return i; }
+  return -1;
+}
+Game.onDown = (x, y, e) => {
+  if (scene !== 'play' || Result.on) return;
+  const i = keyAt(x, y);
+  if (i >= 0) { active[e.pointerId] = i; pressKey(i, true); try { cv.setPointerCapture(e.pointerId); } catch (_) { /* 忽略 */ } }
+};
+Game.onMove = (x, y, e) => {
+  if (!(e.pointerId in active) || scene !== 'play') return;
+  const i = keyAt(x, y), old = active[e.pointerId];
+  if (i !== old) {
+    if (old >= 0) releaseKey(old);
+    active[e.pointerId] = i;
+    if (i >= 0) pressKey(i, true);
+  }
+};
+Game.onUp = (x, y, e) => {
+  if (e.pointerId in active) { if (active[e.pointerId] >= 0) releaseKey(active[e.pointerId]); delete active[e.pointerId]; }
+};
+const KEYMAP = { KeyA: 0, KeyS: 1, KeyD: 2, KeyF: 3, KeyG: 4, KeyH: 5, KeyJ: 6, KeyK: 7, KeyW: 8, KeyE: 9, KeyT: 10, KeyY: 11, KeyU: 12,
+  Digit1: 0, Digit2: 1, Digit3: 2, Digit4: 3, Digit5: 4, Digit6: 5, Digit7: 6, Digit8: 7 };
+Game.onKey = (e, down) => {
+  if (scene === 'title' && down && (e.code === 'Space' || e.code === 'Enter')) { e.preventDefault(); startFree(); return; }
+  if (scene !== 'play' || !(e.code in KEYMAP)) return;
+  e.preventDefault();
+  const i = KEYMAP[e.code];
+  if (down && !e.repeat) pressKey(i, true);
+  else if (!down) releaseKey(i);
+};
+
+/* ---------- 更新 ---------- */
+Game.update = (dt, rdt) => {
+  fx.update(rdt); ui.update(rdt); Result.update(rdt, ui);
+  keys.forEach(k => {
+    if (k.pids === 0) k.down = Math.max(0, k.down - rdt * 8);
+    k.glow = Math.max(0, k.glow - rdt * 1.5);
+    k.bounce = Math.max(0, k.bounce - rdt * 2.2);
+    k.sing = Math.max(0, k.sing - rdt);
+  });
+  notes.forEach(n => { n.life -= rdt; n.x += n.vx * rdt + Math.sin(time * 4 + n.y * 0.05) * 20 * rdt; n.y += n.vy * rdt; });
+  notes = notes.filter(n => n.life > 0);
+  // 示範彈奏
+  if (demoT >= 0) {
+    demoT -= rdt;
+    if (demoT <= 0) {
+      if (demoI >= song.keys.length || demoI >= pos + 14) { demoT = -1; return; }
+      const i = song.keys[demoI];
+      pressKey(i, false); keys[i].pids = 0;
+      demoI++;
+      demoT = 0.5;
+    }
+  }
+};
+
+/* ---------- 繪圖：動物 ---------- */
+function drawAnimal(kind, x, y, s, o) {
+  const c = ANIMAL_COL[kind], ol = shade(c[2], -50);
+  const sing = o.sing || 0, blink = o.blink;
+  ctx.save(); ctx.translate(x, y);
+  ctx.lineWidth = Math.max(1.5, s * 0.045); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  // 耳朵
+  ctx.fillStyle = c[1]; ctx.strokeStyle = ol;
+  const inner = kind === 'panda' ? '#2a2a33' : '#ffb3c8';
+  if (kind === 'cat' || kind === 'pig') {
+    [-1, 1].forEach(sg => {
+      ctx.beginPath(); ctx.moveTo(sg * s * 0.38, -s * 0.22); ctx.lineTo(sg * s * 0.42, -s * (kind === 'cat' ? 0.62 : 0.5)); ctx.lineTo(sg * s * 0.1, -s * 0.38); ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = inner; ctx.beginPath(); ctx.moveTo(sg * s * 0.34, -s * 0.3); ctx.lineTo(sg * s * 0.37, -s * 0.5); ctx.lineTo(sg * s * 0.2, -s * 0.38); ctx.closePath(); ctx.fill(); ctx.fillStyle = c[1];
+    });
+  } else if (kind === 'bunny') {
+    [-1, 1].forEach(sg => {
+      ctx.save(); ctx.translate(sg * s * 0.18, -s * 0.4); ctx.rotate(sg * (0.15 + Math.sin(time * 3 + sg) * 0.05));
+      ctx.beginPath(); ctx.ellipse(0, -s * 0.28, s * 0.12, s * 0.32, 0, 0, TAU); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = inner; ctx.beginPath(); ctx.ellipse(0, -s * 0.26, s * 0.06, s * 0.22, 0, 0, TAU); ctx.fill(); ctx.fillStyle = c[1];
+      ctx.restore();
+    });
+  } else if (kind === 'dog') {
+    [-1, 1].forEach(sg => { ctx.fillStyle = c[2]; ctx.beginPath(); ctx.ellipse(sg * s * 0.42, -s * 0.05, s * 0.14, s * 0.28, sg * 0.35, 0, TAU); ctx.fill(); ctx.stroke(); });
+  } else if (kind === 'bear' || kind === 'panda') {
+    [-1, 1].forEach(sg => {
+      ctx.fillStyle = kind === 'panda' ? '#2a2a33' : c[1];
+      ctx.beginPath(); circ(sg * s * 0.33, -s * 0.36, s * 0.14); ctx.fill(); ctx.stroke();
+      if (kind === 'bear') { ctx.fillStyle = '#f0c8a0'; ctx.beginPath(); circ(sg * s * 0.33, -s * 0.36, s * 0.07); ctx.fill(); }
+    });
+  } else if (kind === 'frog') {
+    [-1, 1].forEach(sg => { ctx.fillStyle = c[1]; ctx.beginPath(); circ(sg * s * 0.22, -s * 0.36, s * 0.16); ctx.fill(); ctx.stroke(); });
+  } else if (kind === 'chick') {
+    ctx.strokeStyle = c[2]; ctx.lineWidth = s * 0.06;
+    ctx.beginPath(); ctx.moveTo(0, -s * 0.4); ctx.quadraticCurveTo(-s * 0.05, -s * 0.6, s * 0.08, -s * 0.58); ctx.stroke();
+    ctx.lineWidth = Math.max(1.5, s * 0.045); ctx.strokeStyle = ol;
+  }
+  // 頭
+  const g = ctx.createRadialGradient(-s * 0.12, -s * 0.15, s * 0.05, 0, 0, s * 0.5);
+  g.addColorStop(0, c[0]); g.addColorStop(0.6, c[1]); g.addColorStop(1, c[2]);
+  ctx.fillStyle = g; ctx.strokeStyle = ol;
+  ctx.beginPath(); ctx.ellipse(0, 0, s * 0.44, s * 0.4, 0, 0, TAU); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = s * 0.04;
+  ctx.beginPath(); ctx.ellipse(0, 0, s * 0.36, s * 0.32, 0, Math.PI * 1.1, Math.PI * 1.45); ctx.stroke();
+  ctx.strokeStyle = ol; ctx.lineWidth = Math.max(1.5, s * 0.045);
+  // 臉部特徵
+  if (kind === 'panda') { ctx.fillStyle = '#2a2a33'; [-1, 1].forEach(sg => { ctx.beginPath(); ctx.ellipse(sg * s * 0.16, -s * 0.03, s * 0.1, s * 0.13, sg * -0.5, 0, TAU); ctx.fill(); }); }
+  if (kind === 'dog' || kind === 'bear') { ctx.fillStyle = kind === 'dog' ? '#fff3e0' : '#f0d0a8'; ctx.beginPath(); ctx.ellipse(0, s * 0.14, s * 0.18, s * 0.13, 0, 0, TAU); ctx.fill(); }
+  // 眼睛
+  const ey = kind === 'frog' ? -s * 0.36 : -s * 0.04, ex = kind === 'frog' ? s * 0.22 : s * 0.15;
+  [-1, 1].forEach(sg => {
+    const X = sg * ex;
+    if (sing > 0.25 || o.happy) {
+      ctx.strokeStyle = kind === 'panda' ? '#fff' : '#2a1d1d'; ctx.lineWidth = s * 0.05;
+      ctx.beginPath(); ctx.arc(X, ey + s * 0.02, s * 0.06, Math.PI + 0.3, -0.3); ctx.stroke(); ctx.strokeStyle = ol;
+    } else if (blink) {
+      ctx.strokeStyle = kind === 'panda' ? '#fff' : '#2a1d1d'; ctx.lineWidth = s * 0.045;
+      ctx.beginPath(); ctx.arc(X, ey - s * 0.01, s * 0.06, 0.2, Math.PI - 0.2); ctx.stroke(); ctx.strokeStyle = ol;
+    } else {
+      if (kind === 'frog') { ctx.fillStyle = '#fff'; ctx.beginPath(); circ(X, ey, s * 0.1); ctx.fill(); }
+      ctx.fillStyle = kind === 'panda' ? '#fff' : '#2a1d1d'; ctx.beginPath(); ctx.ellipse(X, ey, s * 0.06, s * 0.075, 0, 0, TAU); ctx.fill();
+      if (kind === 'panda') { ctx.fillStyle = '#2a1d1d'; ctx.beginPath(); circ(X, ey + s * 0.01, s * 0.04); ctx.fill(); }
+      ctx.fillStyle = '#fff'; ctx.beginPath(); circ(X + s * 0.02, ey - s * 0.03, s * 0.022); ctx.fill();
+    }
+  });
+  // 鼻子／嘴
+  const my = s * 0.14;
+  if (kind === 'pig') {
+    ctx.fillStyle = '#ff9ab8'; ctx.beginPath(); ctx.ellipse(0, s * 0.1, s * 0.13, s * 0.09, 0, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#c0567f'; ctx.beginPath(); circ(-s * 0.045, s * 0.1, s * 0.025); circ(s * 0.045, s * 0.1, s * 0.025); ctx.fill();
+  } else if (kind === 'chick') {
+    ctx.fillStyle = '#ff9a2e'; ctx.beginPath(); ctx.moveTo(-s * 0.08, s * 0.06); ctx.lineTo(s * 0.08, s * 0.06); ctx.lineTo(0, s * 0.15 + sing * s * 0.1); ctx.closePath(); ctx.fill();
+  } else if (kind !== 'frog') {
+    ctx.fillStyle = kind === 'cat' || kind === 'bunny' ? '#ff7aa2' : '#3a2a2a';
+    ctx.beginPath(); ctx.ellipse(0, s * 0.07, s * 0.05, s * 0.035, 0, 0, TAU); ctx.fill();
+  }
+  if (sing > 0) {
+    // 唱歌：張大嘴
+    ctx.fillStyle = '#c23d5e'; ctx.beginPath(); ctx.ellipse(0, my + s * 0.06, s * 0.08, s * 0.05 + sing * s * 0.08, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#ff8fa8'; ctx.beginPath(); ctx.ellipse(0, my + s * 0.1 + sing * s * 0.04, s * 0.05, s * 0.03, 0, 0, TAU); ctx.fill();
+  } else if (kind !== 'chick') {
+    ctx.strokeStyle = ol; ctx.lineWidth = Math.max(1.5, s * 0.035);
+    ctx.beginPath(); ctx.arc(-s * 0.05, my, s * 0.05, 0.2, Math.PI - 0.4); ctx.moveTo(s * 0.1, my); ctx.arc(s * 0.05, my, s * 0.05, 0.4, Math.PI - 0.2); ctx.stroke();
+  }
+  if (kind === 'cat') {
+    ctx.strokeStyle = rgba('#5a3a2a', 0.6); ctx.lineWidth = s * 0.02;
+    [-1, 1].forEach(sg => { ctx.beginPath(); ctx.moveTo(sg * s * 0.2, s * 0.08); ctx.lineTo(sg * s * 0.42, s * 0.04); ctx.moveTo(sg * s * 0.2, s * 0.12); ctx.lineTo(sg * s * 0.42, s * 0.14); ctx.stroke(); });
+  }
+  // 腮紅
+  ctx.fillStyle = 'rgba(255,100,140,0.45)';
+  ctx.beginPath(); ctx.ellipse(-s * 0.27, s * 0.1, s * 0.07, s * 0.045, 0, 0, TAU); ctx.ellipse(s * 0.27, s * 0.1, s * 0.07, s * 0.045, 0, 0, TAU); ctx.fill();
+  ctx.restore();
+}
+function drawNoteGlyph(x, y, s, col, kind, rot) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(rot || 0);
+  ctx.fillStyle = col; ctx.strokeStyle = shade(col, -60); ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.ellipse(-s * 0.2, s * 0.35, s * 0.24, s * 0.18, -0.4, 0, TAU); ctx.fill(); ctx.stroke();
+  if (kind === 2) { ctx.beginPath(); ctx.ellipse(s * 0.45, s * 0.25, s * 0.24, s * 0.18, -0.4, 0, TAU); ctx.fill(); ctx.stroke(); }
+  ctx.lineWidth = s * 0.1; ctx.strokeStyle = col;
+  ctx.beginPath(); ctx.moveTo(s * 0.02, s * 0.32); ctx.lineTo(s * 0.02, -s * 0.5);
+  if (kind === 2) { ctx.lineTo(s * 0.67, -s * 0.6); ctx.lineTo(s * 0.67, s * 0.22); } else ctx.quadraticCurveTo(s * 0.35, -s * 0.35, s * 0.4, -s * 0.05);
+  ctx.stroke();
+  ctx.restore();
+}
+function drawInstrIcon(i, x, y, s) {
+  ctx.save(); ctx.translate(x, y);
+  ctx.lineWidth = Math.max(1.5, s * 0.06); ctx.lineJoin = 'round';
+  if (i === 0) {
+    rr(-s * 0.5, -s * 0.3, s, s * 0.6, s * 0.1); ctx.fillStyle = '#fff'; ctx.fill(); ctx.strokeStyle = '#5a3a6a'; ctx.stroke();
+    ctx.fillStyle = '#3a2a4a'; for (let k = 0; k < 3; k++) ctx.fillRect(-s * 0.32 + k * s * 0.3, -s * 0.3, s * 0.12, s * 0.34);
+  } else if (i === 1) {
+    rr(-s * 0.45, -s * 0.2, s * 0.9, s * 0.5, s * 0.08); ctx.fillStyle = '#ff9fc3'; ctx.fill(); ctx.strokeStyle = '#b8366a'; ctx.stroke();
+    ctx.fillStyle = '#ffd84a'; ctx.beginPath(); ctx.ellipse(0, -s * 0.2, s * 0.45, s * 0.12, 0, Math.PI, TAU); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(s * 0.45, 0); ctx.lineTo(s * 0.6, 0); ctx.lineTo(s * 0.6, -s * 0.15); ctx.stroke();
+  } else if (i === 2) {
+    ['#ff6b6b', '#ffa94d', '#ffd84a', '#7bd88f', '#5cc4ff'].forEach((c, k) => { rr(-s * 0.5 + k * s * 0.21, -s * 0.35 + k * s * 0.04, s * 0.17, s * 0.7 - k * s * 0.08, s * 0.05); ctx.fillStyle = c; ctx.fill(); ctx.strokeStyle = shade(c, -60); ctx.stroke(); });
+  } else if (i === 3) drawAnimal('cat', 0, s * 0.08, s * 0.95, { happy: true });
+  else glossyStar(0, 0, s * 0.5, true, Math.sin(time * 2) * 0.2);
+  ctx.restore();
+}
+
+/* ---------- 繪圖：舞台背景 ---------- */
+function drawStage() {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#b9a2ff'); g.addColorStop(0.5, '#f3c6ff'); g.addColorStop(1, '#ffd6e8');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  // 聚光燈
+  ctx.save();
+  for (let i = 0; i < 3; i++) {
+    const sx = W * (0.2 + i * 0.3) + Math.sin(time * 0.5 + i * 2) * W * 0.06;
+    const lg = ctx.createLinearGradient(sx, 0, sx, H);
+    lg.addColorStop(0, 'rgba(255,255,230,0.35)'); lg.addColorStop(1, 'rgba(255,255,230,0)');
+    ctx.fillStyle = lg;
+    ctx.beginPath(); ctx.moveTo(sx - 20, 0); ctx.lineTo(sx + 20, 0); ctx.lineTo(sx + W * 0.16, H); ctx.lineTo(sx - W * 0.16, H); ctx.fill();
+  }
+  ctx.restore();
+  // 星星點點
+  for (let i = 0; i < 26; i++) {
+    const x = (i * 131.7) % W, y = (i * 77.3) % (H * 0.55);
+    ctx.globalAlpha = 0.4 + 0.4 * Math.sin(time * 2 + i);
+    glossyStar(x, y, 3 + (i % 3) * 2, true, i);
+  }
+  ctx.globalAlpha = 1;
+  // 布幕
+  const cw = Math.min(W * 0.12, 120);
+  [-1, 1].forEach(sg => {
+    const x0 = sg < 0 ? 0 : W;
+    const cg = ctx.createLinearGradient(x0, 0, x0 - sg * cw, 0);
+    cg.addColorStop(0, '#c2185b'); cg.addColorStop(1, '#ff6b9a');
+    ctx.fillStyle = cg;
+    ctx.beginPath(); ctx.moveTo(x0, 0); ctx.lineTo(x0 - sg * cw * 1.4, 0);
+    ctx.quadraticCurveTo(x0 - sg * cw * 0.6, H * 0.3, x0 - sg * cw * (0.7 + Math.sin(time) * 0.05), H * 0.55);
+    ctx.quadraticCurveTo(x0 - sg * cw * 0.2, H * 0.7, x0, H * 0.75); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 4;
+    for (let k = 1; k < 4; k++) { ctx.beginPath(); ctx.moveTo(x0 - sg * cw * 0.35 * k, 0); ctx.quadraticCurveTo(x0 - sg * cw * 0.25 * k, H * 0.3, x0 - sg * cw * 0.2 * k, H * 0.55); ctx.stroke(); }
+  });
+  // 彩旗
+  ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(0, 6); ctx.quadraticCurveTo(W / 2, 60, W, 6); ctx.stroke();
+  const flags = ['#ff6b6b', '#ffd84a', '#7bd88f', '#5cc4ff', '#b48cff', '#ff8fc8'];
+  const nf2 = Math.floor(W / 46);
+  for (let i = 1; i < nf2; i++) {
+    const t = i / nf2, x = t * W;
+    const yy = (1 - t) * (1 - t) * 6 + 2 * (1 - t) * t * 60 + t * t * 6;
+    if (x < 70 || x > W - 70) continue;
+    ctx.fillStyle = flags[i % flags.length];
+    ctx.beginPath(); ctx.moveTo(x - 10, yy); ctx.lineTo(x + 10, yy); ctx.lineTo(x, yy + 20 + Math.sin(time * 3 + i) * 2); ctx.closePath(); ctx.fill();
+  }
+}
+function drawPiano() {
+  // 琴身
+  const fx0 = pianoX - 12, fy0 = pianoY - 18, fw = pianoW + 24, fh = pianoH + 30;
+  rr(fx0, fy0 + 8, fw, fh, 26); ctx.fillStyle = 'rgba(80,30,80,0.3)'; ctx.fill();
+  rr(fx0, fy0, fw, fh, 26);
+  const bg = ctx.createLinearGradient(0, fy0, 0, fy0 + fh);
+  bg.addColorStop(0, '#ff9fc3'); bg.addColorStop(1, '#c84a86');
+  ctx.fillStyle = bg; ctx.fill(); ctx.strokeStyle = '#8a2a5a'; ctx.lineWidth = 3; ctx.stroke();
+  rr(fx0 + 10, fy0 + 4, fw - 20, 8, 4); ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.fill();
+  // 白鍵
+  for (let i = 0; i < 8; i++) {
+    const k = keys[i], w0 = WHITE[i];
+    const dy = k.down * 6;
+    const x = k.x + 2, y = k.y + dy, w = k.w - 4, h = k.h - 4 - dy;
+    rr(x, y + 4, w, h, 12); ctx.fillStyle = shade(w0.col, -70); ctx.fill();
+    rr(x, y, w, h, 12);
+    const kg = ctx.createLinearGradient(0, y, 0, y + h);
+    kg.addColorStop(0, '#ffffff'); kg.addColorStop(0.55, shade(w0.col, 95)); kg.addColorStop(1, shade(w0.col, 40));
+    ctx.fillStyle = kg; ctx.fill();
+    ctx.strokeStyle = shade(w0.col, -40); ctx.lineWidth = 2.5; ctx.stroke();
+    // 彩色鍵帽
+    rr(x + 5, y + h - Math.min(56, h * 0.22), w - 10, Math.min(48, h * 0.2), 10);
+    const cg = ctx.createLinearGradient(0, y + h - 56, 0, y + h);
+    cg.addColorStop(0, shade(w0.col, 40)); cg.addColorStop(1, w0.col);
+    ctx.fillStyle = cg; ctx.fill();
+    txt(w0.name, x + w / 2, y + h - Math.min(56, h * 0.22) + Math.min(24, h * 0.1), Math.min(20, w * 0.36), '#fff', { stroke: shade(w0.col, -60), sw: 4, shadow: false });
+    if (k.glow > 0) {
+      ctx.save(); ctx.globalAlpha = Math.min(1, k.glow);
+      rr(x, y, w, h, 12); ctx.fillStyle = rgba('#ffffff', 0.35); ctx.fill();
+      ctx.restore();
+    }
+  }
+  // 歌曲模式：下一個鍵發光
+  if (mode === 'song' && sub === 'play' && song && demoT < 0) {
+    const t = song.keys[pos], k = keys[t];
+    if (k) {
+      const p = 0.6 + 0.4 * Math.sin(time * 8);
+      ctx.save();
+      ctx.shadowColor = '#fff59a'; ctx.shadowBlur = 24;
+      rr(k.x + 1, k.y + (t >= 8 ? 0 : 0), k.w - 2, k.h - 2, 12);
+      ctx.strokeStyle = 'rgba(255,230,80,' + p + ')'; ctx.lineWidth = 6; ctx.stroke();
+      ctx.restore();
+      // 跳動的箭頭
+      const ax = k.x + k.w / 2, ay = k.y + k.h * (t >= 8 ? 0.75 : 0.5) + Math.sin(time * 8) * 8;
+      ctx.save(); ctx.translate(ax, ay);
+      ctx.fillStyle = '#ffd84a'; ctx.strokeStyle = '#b57c0b'; ctx.lineWidth = 3; ctx.lineJoin = 'round';
+      const s = Math.min(k.w * 0.4, 22);
+      ctx.beginPath(); ctx.moveTo(0, s); ctx.lineTo(s, -s * 0.1); ctx.lineTo(s * 0.4, -s * 0.1); ctx.lineTo(s * 0.4, -s); ctx.lineTo(-s * 0.4, -s); ctx.lineTo(-s * 0.4, -s * 0.1); ctx.lineTo(-s, -s * 0.1); ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.restore();
+    }
+  }
+  // 黑鍵
+  for (let i = 8; i < 13; i++) {
+    const k = keys[i], dy = k.down * 5;
+    rr(k.x, k.y + 5, k.w, k.h, 10); ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fill();
+    rr(k.x, k.y + dy, k.w, k.h - dy, 10);
+    const bg2 = ctx.createLinearGradient(0, k.y, 0, k.y + k.h);
+    bg2.addColorStop(0, '#5a4a7a'); bg2.addColorStop(1, '#2a1f40');
+    ctx.fillStyle = bg2; ctx.fill();
+    ctx.strokeStyle = '#1a1030'; ctx.lineWidth = 2; ctx.stroke();
+    rr(k.x + k.w * 0.2, k.y + dy + 6, k.w * 0.6, k.h * 0.35, 6); ctx.fillStyle = 'rgba(255,255,255,0.22)'; ctx.fill();
+    glossyStar(k.x + k.w / 2, k.y + dy + k.h * 0.78, Math.min(k.w * 0.22, 10), k.glow > 0.2 || (mode === 'song' && song && song.keys[pos] === i && sub === 'play'), 0);
+    if (k.glow > 0) { ctx.save(); ctx.globalAlpha = Math.min(1, k.glow) * 0.5; rr(k.x, k.y + dy, k.w, k.h - dy, 10); ctx.fillStyle = '#b48cff'; ctx.fill(); ctx.restore(); }
+  }
+  // 動物坐在琴鍵上
+  for (let i = 0; i < 8; i++) {
+    const k = keys[i];
+    const hop = Math.sin(k.bounce * Math.PI) * animalS * 0.35;
+    const breath = Math.sin(time * 2.5 + i) * 2;
+    const sq = k.bounce > 0.85 ? 0.85 : 1;
+    const ax = k.x + k.w / 2, ay = pianoY - animalS * 0.42 - hop + breath;
+    ctx.fillStyle = 'rgba(80,30,80,0.22)';
+    ctx.beginPath(); ctx.ellipse(ax, pianoY - 14, animalS * 0.32 * (1 - hop / animalS * 0.5), 5, 0, 0, TAU); ctx.fill();
+    ctx.save(); ctx.translate(ax, ay); ctx.scale(2 - sq, sq);
+    const isTarget = mode === 'song' && song && song.keys[pos] === i && sub === 'play' && demoT < 0;
+    if (isTarget) ctx.rotate(Math.sin(time * 10) * 0.12);
+    drawAnimal(WHITE[i].a, 0, 0, animalS, { sing: k.sing, blink: ((time * 0.7 + i * 0.37) % 3) < 0.08, happy: sub === 'done' });
+    ctx.restore();
+  }
+}
+function drawSongPanel() {
+  if (mode !== 'song' || !song) return;
+  const chars = [...song.lyric];
+  // 找出目前這一句
+  const lens = song.lines || Array(Math.ceil(chars.length / song.line)).fill(song.line);
+  let start = 0, li = 0;
+  while (li < lens.length - 1 && start + lens[li] <= Math.min(pos, chars.length - 1)) { start += lens[li]; li++; }
+  const line = chars.slice(start, start + lens[li]);
+  const top = 12 + 82 * U, avail = pianoY - animalS * 1.1 - top - 10;
+  const pw = Math.min(W - 24, 560 * U), ph = Math.min(avail, 120 * U);
+  if (ph < 50) return;
+  const px = (W - pw) / 2, py = top + Math.max(0, (avail - ph) / 2);
+  rr(px, py + 6, pw, ph, 24 * U); ctx.fillStyle = 'rgba(80,30,90,0.2)'; ctx.fill();
+  rr(px, py, pw, ph, 24 * U); ctx.fillStyle = 'rgba(255,255,255,0.92)'; ctx.fill();
+  ctx.strokeStyle = '#b48cff'; ctx.lineWidth = 4; ctx.stroke();
+  // 五線譜裝飾
+  ctx.strokeStyle = 'rgba(180,140,255,0.25)'; ctx.lineWidth = 1.5;
+  for (let i = 0; i < 5; i++) { ctx.beginPath(); ctx.moveTo(px + 16, py + ph * 0.25 + i * ph * 0.12); ctx.lineTo(px + pw - 16, py + ph * 0.25 + i * ph * 0.12); ctx.stroke(); }
+  const cs = Math.min((pw - 30) / line.length, ph * 0.5, 54 * U);
+  line.forEach((ch, j) => {
+    const gi = start + j;
+    const x = W / 2 + (j - (line.length - 1) / 2) * cs, y = py + ph * 0.48;
+    const done = gi < pos, cur = gi === pos && sub === 'play';
+    let size = cs * 0.78;
+    ctx.save(); ctx.translate(x, y);
+    if (cur) { const s = lyricPop.s * (1 + Math.sin(time * 6) * 0.06); ctx.scale(s * 1.15, s * 1.15); }
+    const kcol = WHITE[song.keys[gi]] ? WHITE[song.keys[gi]].col : '#b48cff';
+    if (cur) { ctx.fillStyle = rgba('#fff59a', 0.9); ctx.beginPath(); circ(0, 0, size * 0.62); ctx.fill(); }
+    txt(ch, 0, 0, size, done ? kcol : cur ? '#5a2d5c' : '#c8b8d8', { stroke: done || cur ? '#fff' : null, sw: size * 0.18, shadow: done ? 'rgba(60,30,70,0.2)' : false });
+    ctx.restore();
+  });
+  progressBar(px + 20, py + ph - 24 * U, pw - 40, 14 * U, pos / song.keys.length, '#b48cff');
+}
+function drawHud() {
+  const pw = Math.min(W - 150, 260 * U), ph = 40 * U, px = (W - pw) / 2, py = 12;
+  hudPanel(px, py, pw, ph, '#9b6ff2');
+  drawInstrIcon(instr, px + 26 * U, py + ph / 2, 24 * U);
+  txt(mode === 'song' ? song.name : '自由彈奏', px + pw / 2 + 12 * U, py + ph / 2 + 1, 18 * U, '#5f3fae', { shadow: false });
+  // 返回選單、示範
+  const bs = 52;
+  button('menu', 10, 70, bs, bs, { icon: 'menu', color: 'blue', onClick: () => { mode === 'song' ? goMap() : goTitle(); } });
+  if (mode === 'song' && sub === 'play') button('demo', W - bs - 10, 70, bs, bs, { icon: 'music', color: 'yellow', onClick: startDemo });
+  else if (mode === 'free') button('instr', W - bs - 10, 70, bs, bs, { icon: 'music', color: 'yellow', onClick: nextInstr });
+}
+function nextInstr() {
+  const total = Save.total();
+  for (let k = 1; k <= INSTR.length; k++) {
+    const j = (instr + k) % INSTR.length;
+    if (INSTR[j].need <= total) { instr = j; break; }
+  }
+  Save.set('skin', instr);
+  ui.text(W / 2, H * 0.3, INSTR[instr].name, { color: '#fff', size: 32 * U, stroke: '#9b6ff2', vy: -30 });
+  playKey(4);
+}
+function drawNotes() {
+  notes.forEach(n => { ctx.globalAlpha = Math.min(1, n.life); drawNoteGlyph(n.x, n.y, 26, n.col, n.kind, n.rot + Math.sin(time * 5 + n.x) * 0.2); });
+  ctx.globalAlpha = 1;
+}
+
+/* ---------- 標題、選歌 ---------- */
+function drawTitle() {
+  drawStage();
+  drawPiano();
+  drawNotes();
+  vignette(0.2);
+  const ly = titleY(0.17);
+  logo('動物鋼琴', W / 2, ly, Math.min(78 * U, W * 0.17), ['#ff8a8a', '#ffd84a', '#6cc4ff', '#c58cff'], '#6c2a7a');
+  // 標題畫面：動物輪流唱
+  if (Math.floor(time * 2.5) !== drawTitle.last) {
+    drawTitle.last = Math.floor(time * 2.5);
+    const seq = [0, 2, 4, 2, 5, 4, 7, 4];
+    const i = seq[drawTitle.last % seq.length];
+    keys[i].bounce = 1; keys[i].sing = 0.5; keys[i].glow = 0.6;
+    notes.push({ x: keys[i].x + keys[i].w / 2, y: pianoY - animalS, vx: (Math.random() - 0.5) * 40, vy: -80, life: 1.5, col: WHITE[i].col, kind: 1 + (i % 2), rot: 0 });
+  }
+  const bw = Math.min(170 * U, (W - 48) / 2), bh = 68 * U;
+  const by = Math.min(ly + 110 * U, pianoY - animalS * 1.2 - bh - 10);
+  // 副標題只在按鈕下方有空間時顯示，避免被按鈕蓋住
+  if (H >= 560 && by > ly + 84 * U) txt('按琴鍵・動物們一起唱歌', W / 2, ly + 62 * U, 18 * U, '#fff', { stroke: '#9b6ff2', sw: 6 * U });
+  button('free', W / 2 - bw - 8, by, bw, bh, { label: '自由彈', icon: 'music', color: 'pink', pulse: true, onClick: startFree });
+  button('learn', W / 2 + 8, by, bw, bh, { label: '學唱歌', icon: 'play', color: 'green', pulse: true, onClick: goMap });
+}
+drawTitle.last = -1;
+function drawMap() {
+  drawStage();
+  ctx.fillStyle = 'rgba(255,255,255,0.15)'; ctx.fillRect(0, 0, W, H);
+  levelSelect({
+    levels: SONGS.map(s => ({ name: s.name })), title: '選一首歌', color: '#9b6ff2', allOpen: true,
+    cardColors: ['yellow', 'orange', 'pink', 'blue'],
+    onPick: (i) => startSong(i),
+    skins: INSTR.map((s, i) => ({ name: s.name, need: s.need, draw: (x, y, sz) => drawInstrIcon(i, x, y, sz * 1.1) })),
+    skin: instr, onSkin: (i) => { instr = i; Save.set('skin', i); playKey(4); ui.burst(W / 2, H - 100 * U, { n: 16, speed: 200, g: 200 }); }
+  });
+}
+
+Game.draw = () => {
+  if (scene === 'title') drawTitle();
+  else if (scene === 'map') drawMap();
+  else {
+    drawStage();
+    drawSongPanel();
+    drawPiano();
+    fx.draw();
+    drawNotes();
+    drawHud();
+  }
+  ui.draw();
+  Result.draw();
+};
+
+bootGame();
+goTitle();
+</script>
+</body>
+</html>

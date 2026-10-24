@@ -60,7 +60,10 @@ python3 -m http.server 8000
 index.html            遊戲首頁
 assets/common.css     共用樣式（按鈕、結算畫面、動畫）
 assets/common.js      共用功能（音效、語音、彩帶、最高分）
+assets/thumbs/        首頁用的遊戲截圖
 games/<遊戲>/index.html  每個遊戲一個檔案
 ```
 
-所有圖形都是用 Canvas、SVG、CSS 和 emoji 畫的，音效用 Web Audio 即時合成，沒有任何外部檔案。
+所有角色、道具和場景都是用 Canvas 和 SVG 手繪的向量圖，音效和背景音樂用 Web Audio 即時合成，沒有任何外部檔案。
+
+每個遊戲都有標題畫面、多個關卡、1～3 顆星評分（存在瀏覽器裡），收集星星可以解鎖新角色、造型或場景。

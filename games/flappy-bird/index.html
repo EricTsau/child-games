@@ -6,226 +6,93 @@
 <title>小鳥飛飛</title>
 <link rel="stylesheet" href="../../assets/common.css">
 <style>
-  html, body { height: 100%; overflow: hidden; background: #bfe8ff; }
+  html, body { height: 100%; overflow: hidden; background: #bfe8ff; overscroll-behavior: none; }
   #game {
     position: fixed; inset: 0; display: block;
     width: 100vw; height: 100vh; height: 100dvh;
-    touch-action: none; cursor: pointer;
+    touch-action: none;
   }
 </style>
 </head>
 <body>
-<canvas id="game" aria-label="小鳥飛飛遊戲畫面"></canvas>
-<div class="kg-hud">
-  <div class="kg-pill" id="hudPipes">🌳 0</div>
-  <div class="kg-pill" id="hudStars">⭐ 0</div>
-</div>
+<canvas id="game" aria-label="小鳥飛飛"></canvas>
 <script src="../../assets/common.js"></script>
 <script>
 'use strict';
-
-/* ========== 畫布與尺寸 ========== */
+const SLUG = 'flappy-bird';
+/* =====================================================================
+ * 小引擎（每個遊戲內嵌一份）：畫布、補間動畫、粒子、按鈕、音樂、
+ * 標題字、關卡選擇、結算畫面。遊戲本體只要實作 Game.* 即可。
+ * ===================================================================== */
 const cv = document.getElementById('game');
 const ctx = cv.getContext('2d');
-const FONT = '"PingFang TC","Noto Sans TC","Microsoft JhengHei",system-ui,sans-serif';
-let W = 0, H = 0, dpr = 1, S = 1, LW = 400, LH = 600;
-const GROUND = 84;           // 地面高度（邏輯單位）
-const PW = 74;               // 水管寬度
-const CAP_H = 28;
+const FONT = '"Baloo 2","PingFang TC","Noto Sans TC","Microsoft JhengHei","Heiti TC",system-ui,sans-serif';
+let W = 0, H = 0, dpr = 1, U = 1, time = 0;
 
-function resize() {
-  dpr = Math.min(window.devicePixelRatio || 1, 3);
-  W = cv.clientWidth; H = cv.clientHeight;
-  cv.width = Math.round(W * dpr);
-  cv.height = Math.round(H * dpr);
-  S = Math.min(H / 600, W / 400);   // 邏輯座標縮放：高度至少 600、寬度至少 400
-  LW = W / S; LH = H / S;
-  bird.x = Math.max(90, Math.min(LW * 0.28, 300));
+const Game = {
+  onResize() {}, onDown() {}, onMove() {}, onUp() {}, onKey() {},
+  update() {}, draw() {}
+};
+
+/* ---------- 數學與緩動 ---------- */
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const TAU = Math.PI * 2;
+const Ease = {
+  linear: t => t,
+  outCubic: t => 1 - Math.pow(1 - t, 3),
+  inCubic: t => t * t * t,
+  inOutSine: t => -(Math.cos(Math.PI * t) - 1) / 2,
+  outBack: t => { const c = 1.70158, c3 = c + 1; return 1 + c3 * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); },
+  outElastic: t => (t === 0 || t === 1) ? t : Math.pow(2, -10 * t) * Math.sin((t * 10 - 0.75) * (TAU / 3)) + 1,
+  outBounce: t => {
+    const n = 7.5625, d = 2.75;
+    if (t < 1 / d) return n * t * t;
+    if (t < 2 / d) return n * (t -= 1.5 / d) * t + 0.75;
+    if (t < 2.5 / d) return n * (t -= 2.25 / d) * t + 0.9375;
+    return n * (t -= 2.625 / d) * t + 0.984375;
+  }
+};
+
+/* ---------- 補間動畫 ---------- */
+let tweens = [];
+function tween(obj, to, dur, ease, delay, done) {
+  const tw = { obj, to, from: null, dur: dur || 0.3, ease: typeof ease === 'function' ? ease : (Ease[ease] || Ease.outCubic), t: -(delay || 0), done };
+  tweens.push(tw);
+  return tw;
 }
-window.addEventListener('resize', resize);
-
-/* ========== 遊戲狀態 ========== */
-const bird = { x: 100, y: 300, vy: 0, rot: 0, wing: 0, flapBoost: 0, blink: 0, blinkT: 2 };
-let state = 'intro';         // intro / ready / play / dying / over
-let pipes = [], stars = [], parts = [], clouds = [];
-let worldX = 0, speed = 110, gap = 205, passed = 0, starCount = 0, dyingT = 0, time = 0;
-let lastGapY = 300;
-
-const hudPipes = document.getElementById('hudPipes');
-const hudStars = document.getElementById('hudStars');
-
-function initClouds() {
-  clouds = [];
-  for (let i = 0; i < 7; i++) {
-    clouds.push({ x: Math.random() * (LW + 200) - 100, y: 40 + Math.random() * 220, s: 0.6 + Math.random() * 0.8, p: 0.12 + Math.random() * 0.15 });
+function killTweens(obj) { tweens = tweens.filter(t => t.obj !== obj); }
+function updateTweens(dt) {
+  const list = tweens.slice();
+  for (const tw of list) {
+    tw.t += dt;
+    if (tw.t < 0) continue;
+    if (!tw.from) { tw.from = {}; for (const k in tw.to) tw.from[k] = tw.obj[k]; }
+    const p = Math.min(1, tw.t / tw.dur), e = tw.ease(p);
+    for (const k in tw.to) tw.obj[k] = tw.from[k] + (tw.to[k] - tw.from[k]) * e;
+    if (p >= 1) {
+      const i = tweens.indexOf(tw);
+      if (i >= 0) tweens.splice(i, 1);
+      if (tw.done) tw.done();
+    }
   }
 }
 
-function reset() {
-  pipes = []; stars = []; parts = [];
-  speed = 110; gap = 205; passed = 0; starCount = 0; dyingT = 0;
-  bird.y = (LH - GROUND) * 0.45; bird.vy = 0; bird.rot = 0;
-  lastGapY = (LH - GROUND) / 2;
-  updateHud();
+/* ---------- 畫面震動、停格 ---------- */
+let shakeT = 0, shakeAmt = 0, stopT = 0;
+function shake(amt, dur) { shakeAmt = Math.max(shakeAmt * (shakeT > 0 ? 1 : 0), amt); shakeT = Math.max(shakeT, dur || 0.3); }
+function hitStop(t) { stopT = Math.max(stopT, t); }
+function shakeOffset() {
+  if (shakeT <= 0) return [0, 0];
+  const k = shakeAmt * Math.min(1, shakeT * 4);
+  return [(Math.random() * 2 - 1) * k, (Math.random() * 2 - 1) * k];
 }
 
-function updateHud() {
-  hudPipes.textContent = '🌳 ' + passed;
-  hudStars.textContent = '⭐ ' + starCount;
-}
-
-/* ========== 輸入 ========== */
-function flap() {
-  if (state === 'ready') { state = 'play'; spawnPipe(LW + 120); }
-  if (state !== 'play') return;
-  bird.vy = -330;
-  bird.flapBoost = 0.25;
-  KG.sound('jump');
-  // 飄出小羽毛
-  for (let i = 0; i < 3; i++) {
-    parts.push({ t: 'feather', x: bird.x - 12, y: bird.y + 6, vx: -40 - Math.random() * 60, vy: 20 + Math.random() * 40,
-      life: 0.9, max: 0.9, r: Math.random() * 6, vr: (Math.random() - 0.5) * 6 });
-  }
-}
-cv.addEventListener('pointerdown', (e) => { e.preventDefault(); flap(); });
-window.addEventListener('keydown', (e) => {
-  if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW' || e.code === 'Enter') {
-    if (document.querySelector('.kg-overlay')) return;   // 對話框開著時不處理
-    e.preventDefault();
-    if (!e.repeat) flap();
-  }
-});
-
-/* ========== 水管與星星 ========== */
-function spawnPipe(x) {
-  const top = 110, bottom = LH - GROUND - 110;
-  let gy = lastGapY + (Math.random() * 2 - 1) * 150;      // 變化不要太大，比較好飛
-  gy = Math.max(top, Math.min(bottom, gy));
-  const prev = pipes[pipes.length - 1];
-  pipes.push({ x, gy, gap, passed: false, flower: Math.floor(Math.random() * 3) });
-  // 兩根水管之間放一顆星星
-  if (prev && Math.random() < 0.8) {
-    stars.push({ x: (prev.x + x) / 2 + PW / 2, y: (prev.gy + gy) / 2, taken: false, ph: Math.random() * 6 });
-  }
-  lastGapY = gy;
-}
-const SPACING = 260;
-
-/* ========== 碰撞 ========== */
-function circleRect(cx, cy, r, rx, ry, rw, rh) {
-  const nx = Math.max(rx, Math.min(cx, rx + rw));
-  const ny = Math.max(ry, Math.min(cy, ry + rh));
-  return (cx - nx) ** 2 + (cy - ny) ** 2 < r * r;
-}
-function hitPipe(p) {
-  const r = 14;   // 判定比外觀小，比較寬容
-  const topH = p.gy - p.gap / 2, botY = p.gy + p.gap / 2;
-  return circleRect(bird.x, bird.y, r, p.x, -100, PW, topH + 100) ||
-         circleRect(bird.x, bird.y, r, p.x - 6, topH - CAP_H, PW + 12, CAP_H) ||
-         circleRect(bird.x, bird.y, r, p.x, botY, PW, LH) ||
-         circleRect(bird.x, bird.y, r, p.x - 6, botY, PW + 12, CAP_H);
-}
-
-function crash() {
-  if (state !== 'play') return;
-  state = 'dying'; dyingT = 0;
-  KG.sound('hit'); KG.vibrate(60);
-  bird.vy = -160;
-  for (let i = 0; i < 10; i++) {
-    const a = Math.random() * Math.PI * 2;
-    parts.push({ t: 'spark', x: bird.x, y: bird.y, vx: Math.cos(a) * 140, vy: Math.sin(a) * 140, life: 0.6, max: 0.6, c: '#fff3a0' });
-  }
-}
-
-function finish() {
-  state = 'over';
-  const score = passed + starCount;
-  const prevBest = KG.best('flappy-bird') || 0;
-  const best = KG.best('flappy-bird', score);
-  const st = score >= 20 ? 3 : score >= 8 ? 2 : 1;
-  KG.showWin({
-    icon: '🐤',
-    title: score > prevBest && score > 0 ? '新紀錄！好棒！' : '飛得真好！',
-    stars: st,
-    message: '穿過 ' + passed + ' 棵樹、撿到 ' + starCount + ' 顆星星，分數 ' + score + '　最高 ' + best,
-    onReplay: () => { reset(); state = 'ready'; }
-  });
-}
-
-/* ========== 更新 ========== */
-function update(dt) {
-  time += dt;
-  // 眨眼
-  bird.blinkT -= dt;
-  if (bird.blinkT <= 0) { bird.blink = 0.15; bird.blinkT = 2 + Math.random() * 3; }
-  if (bird.blink > 0) bird.blink -= dt;
-  bird.flapBoost = Math.max(0, bird.flapBoost - dt);
-  bird.wing += dt * (bird.flapBoost > 0 ? 34 : 14);
-
-  const moving = state === 'ready' || state === 'play' || state === 'intro';
-  if (moving) worldX += speed * dt;
-  clouds.forEach(c => { if (moving) c.x -= speed * c.p * dt + 6 * dt; if (c.x < -200) { c.x = LW + 100 + Math.random() * 200; c.y = 40 + Math.random() * 220; } });
-
-  if (state === 'intro' || state === 'ready') {
-    bird.y = (LH - GROUND) * 0.45 + Math.sin(time * 3) * 10;
-    bird.rot = Math.sin(time * 3) * 0.08;
-  } else if (state === 'play') {
-    bird.vy = Math.min(bird.vy + 1050 * dt, 420);
-    bird.y += bird.vy * dt;
-    if (bird.y < 20) { bird.y = 20; bird.vy = Math.max(bird.vy, 0); }
-    bird.rot = Math.max(-0.45, Math.min(1.1, bird.vy / 500));
-    // 慢慢變快一點點
-    speed = Math.min(165, 110 + passed * 2.2);
-    gap = Math.max(168, 205 - passed * 1.5);
-
-    pipes.forEach(p => {
-      p.x -= speed * dt;
-      if (!p.passed && p.x + PW < bird.x - 10) {
-        p.passed = true; passed++;
-        KG.sound('pop'); updateHud();
-        parts.push({ t: 'text', x: bird.x, y: bird.y - 30, vx: 0, vy: -50, life: 0.9, max: 0.9, s: '+1', c: '#fff' });
-        if (passed % 10 === 0) { KG.toast(KG.pick(['好棒！', '太厲害了！', '飛得好高！'])); KG.sound('sparkle'); }
-      }
-      if (hitPipe(p)) crash();
-    });
-    pipes = pipes.filter(p => p.x > -PW - 30);
-    const last = pipes[pipes.length - 1];
-    if (!last || last.x < LW - SPACING + 40) spawnPipe((last ? last.x : LW) + SPACING);
-
-    stars.forEach(s => {
-      s.x -= speed * dt;
-      if (!s.taken && Math.hypot(s.x - bird.x, s.y - bird.y) < 34) {
-        s.taken = true; starCount++; updateHud();
-        KG.sound('coin');
-        for (let i = 0; i < 12; i++) {
-          const a = i / 12 * Math.PI * 2;
-          parts.push({ t: 'spark', x: s.x, y: s.y, vx: Math.cos(a) * 120, vy: Math.sin(a) * 120, life: 0.7, max: 0.7, c: KG.pick(['#ffe066', '#fff', '#ffb3c8']) });
-        }
-        parts.push({ t: 'text', x: s.x, y: s.y - 20, vx: 0, vy: -60, life: 1, max: 1, s: '⭐+1', c: '#ffe066' });
-      }
-    });
-    stars = stars.filter(s => s.x > -40 && !s.taken);
-
-    if (bird.y > LH - GROUND - 16) { bird.y = LH - GROUND - 16; crash(); }
-  } else if (state === 'dying') {
-    dyingT += dt;
-    bird.vy = Math.min(bird.vy + 1300 * dt, 600);
-    bird.y += bird.vy * dt;
-    bird.rot = Math.min(1.5, bird.rot + dt * 5);
-    if (bird.y > LH - GROUND - 16) { bird.y = LH - GROUND - 16; bird.vy = 0; }
-    if (dyingT > 1.1) finish();
-  }
-
-  parts.forEach(p => {
-    p.life -= dt; p.x += p.vx * dt; p.y += p.vy * dt;
-    if (p.t === 'feather') { p.vy += 60 * dt; p.r += p.vr * dt; p.vx *= 0.98; }
-    if (p.t === 'spark') { p.vx *= 0.92; p.vy *= 0.92; }
-  });
-  parts = parts.filter(p => p.life > 0);
-}
-
-/* ========== 繪圖工具 ========== */
+/* ---------- 繪圖小工具 ---------- */
+/** 加一個完整圓到目前路徑（先 moveTo，避免多個圓之間連線） */
+function circ(x, y, r) { ctx.moveTo(x + r, y); ctx.arc(x, y, r, 0, TAU); }
 function rr(x, y, w, h, r) {
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
   ctx.beginPath();
   ctx.moveTo(x + r, y);
   ctx.arcTo(x + w, y, x + w, y + h, r);
@@ -237,307 +104,1322 @@ function rr(x, y, w, h, r) {
 function starPath(x, y, R, r, rot) {
   ctx.beginPath();
   for (let i = 0; i < 10; i++) {
-    const a = rot + i * Math.PI / 5 - Math.PI / 2;
-    const rad = i % 2 ? r : R;
+    const a = (rot || 0) + i * Math.PI / 5 - Math.PI / 2, rad = i % 2 ? r : R;
     ctx.lineTo(x + Math.cos(a) * rad, y + Math.sin(a) * rad);
   }
   ctx.closePath();
 }
-
-function drawCloud(x, y, s) {
-  ctx.save();
-  ctx.translate(x, y); ctx.scale(s, s);
-  ctx.fillStyle = 'rgba(120,170,210,0.18)';
-  ctx.beginPath(); ctx.ellipse(6, 30, 70, 14, 0, 0, Math.PI * 2); ctx.fill();
-  const g = ctx.createLinearGradient(0, -30, 0, 34);
-  g.addColorStop(0, '#ffffff'); g.addColorStop(1, '#e3f3ff');
-  ctx.fillStyle = g;
+function heartPath(x, y, s) {
   ctx.beginPath();
-  ctx.arc(-38, 12, 22, 0, Math.PI * 2);
-  ctx.arc(-12, -2, 30, 0, Math.PI * 2);
-  ctx.arc(22, 4, 26, 0, Math.PI * 2);
-  ctx.arc(48, 16, 18, 0, Math.PI * 2);
-  ctx.rect(-38, 12, 86, 22);
-  ctx.fill();
+  ctx.moveTo(x, y + s * 0.35);
+  ctx.bezierCurveTo(x - s * 1.1, y - s * 0.35, x - s * 0.55, y - s * 1.05, x, y - s * 0.45);
+  ctx.bezierCurveTo(x + s * 0.55, y - s * 1.05, x + s * 1.1, y - s * 0.35, x, y + s * 0.35);
+  ctx.closePath();
+}
+function shade(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  const f = v => clamp(v + amt, 0, 255);
+  return 'rgb(' + f(n >> 16) + ',' + f((n >> 8) & 255) + ',' + f(n & 255) + ')';
+}
+function rgba(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return 'rgba(' + (n >> 16) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+}
+/** 亮晶晶的星星（on=false 時是灰色空星） */
+function glossyStar(x, y, R, on, rot) {
+  ctx.save();
+  ctx.lineJoin = 'round';
+  if (on) {
+    ctx.fillStyle = 'rgba(160,90,0,0.25)'; starPath(x, y + R * 0.12, R, R * 0.5, rot); ctx.fill();
+    const g = ctx.createRadialGradient(x - R * 0.3, y - R * 0.4, R * 0.1, x, y, R * 1.1);
+    g.addColorStop(0, '#fffbd0'); g.addColorStop(0.45, '#ffd93d'); g.addColorStop(1, '#f39a0c');
+    ctx.fillStyle = g; ctx.strokeStyle = '#c9700a'; ctx.lineWidth = Math.max(1.5, R * 0.12);
+    starPath(x, y, R, R * 0.5, rot); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.75)';
+    ctx.beginPath(); ctx.ellipse(x - R * 0.25, y - R * 0.3, R * 0.22, R * 0.12, -0.6, 0, TAU); ctx.fill();
+  } else {
+    ctx.fillStyle = 'rgba(90,70,110,0.22)'; ctx.strokeStyle = 'rgba(90,70,110,0.35)'; ctx.lineWidth = Math.max(1.5, R * 0.1);
+    starPath(x, y, R, R * 0.5, rot); ctx.fill(); ctx.stroke();
+  }
   ctx.restore();
 }
+function glossyHeart(x, y, s, on) {
+  ctx.save();
+  if (on) {
+    const g = ctx.createRadialGradient(x - s * 0.3, y - s * 0.5, s * 0.1, x, y - s * 0.2, s * 1.1);
+    g.addColorStop(0, '#ffd0dc'); g.addColorStop(0.5, '#ff5a86'); g.addColorStop(1, '#d6245a');
+    ctx.fillStyle = g; ctx.strokeStyle = '#a3163f';
+  } else { ctx.fillStyle = 'rgba(90,70,110,0.2)'; ctx.strokeStyle = 'rgba(90,70,110,0.35)'; }
+  ctx.lineWidth = Math.max(1.5, s * 0.12); ctx.lineJoin = 'round';
+  heartPath(x, y, s); ctx.fill(); ctx.stroke();
+  if (on) { ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.beginPath(); ctx.ellipse(x - s * 0.4, y - s * 0.45, s * 0.18, s * 0.1, -0.7, 0, TAU); ctx.fill(); }
+  ctx.restore();
+}
+/** 有外框與陰影的字 */
+function txt(s, x, y, size, fill, o) {
+  o = o || {};
+  ctx.save();
+  ctx.font = (o.weight || '900') + ' ' + size + 'px ' + FONT;
+  ctx.textAlign = o.align || 'center';
+  ctx.textBaseline = o.base || 'middle';
+  ctx.lineJoin = 'round';
+  if (o.shadow !== false) {
+    ctx.fillStyle = o.shadow || 'rgba(60,30,70,0.28)';
+    if (o.stroke) { ctx.strokeStyle = ctx.fillStyle; ctx.lineWidth = o.sw || size * 0.22; ctx.strokeText(s, x, y + size * 0.09); }
+    ctx.fillText(s, x, y + size * 0.09);
+  }
+  if (o.stroke) { ctx.strokeStyle = o.stroke; ctx.lineWidth = o.sw || size * 0.22; ctx.strokeText(s, x, y); }
+  ctx.fillStyle = fill; ctx.fillText(s, x, y);
+  ctx.restore();
+}
+/** 遊戲標題字：每個字會彈跳，漸層＋白框＋深色外框 */
+function logo(s, cx, cy, size, colors, outline) {
+  ctx.save();
+  ctx.font = '900 ' + size + 'px ' + FONT;
+  ctx.textBaseline = 'middle'; ctx.textAlign = 'center'; ctx.lineJoin = 'round';
+  const chars = [...s];
+  const widths = chars.map(c => ctx.measureText(c).width * 1.02);
+  const total = widths.reduce((a, b) => a + b, 0);
+  let x = cx - total / 2;
+  chars.forEach((c, i) => {
+    const w = widths[i];
+    const bob = Math.sin(time * 3 + i * 0.7) * size * 0.06;
+    const rot = Math.sin(time * 2.2 + i) * 0.06;
+    ctx.save();
+    ctx.translate(x + w / 2, cy + bob); ctx.rotate(rot);
+    ctx.fillStyle = 'rgba(60,30,70,0.3)';
+    ctx.strokeStyle = 'rgba(60,30,70,0.3)'; ctx.lineWidth = size * 0.36;
+    ctx.strokeText(c, 0, size * 0.1);
+    ctx.strokeStyle = outline || '#5a2d5c'; ctx.lineWidth = size * 0.34; ctx.strokeText(c, 0, 0);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = size * 0.17; ctx.strokeText(c, 0, 0);
+    const col = colors[i % colors.length];
+    const g = ctx.createLinearGradient(0, -size / 2, 0, size / 2);
+    g.addColorStop(0, shade(col, 70)); g.addColorStop(0.5, col); g.addColorStop(1, shade(col, -35));
+    ctx.fillStyle = g; ctx.fillText(c, 0, 0);
+    ctx.globalAlpha = 0.55; ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.ellipse(-w * 0.18, -size * 0.25, size * 0.1, size * 0.05, -0.5, 0, TAU); ctx.fill();
+    ctx.restore();
+    x += w;
+  });
+  ctx.restore();
+}
+/** 標題字的高度：矮螢幕（橫向手機）時往上移 */
+function titleY(k) { return H < 560 ? 50 : Math.max(110, H * (k || 0.2)); }
+/** 暗角 */
+function vignette(a) {
+  const g = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35, W / 2, H / 2, Math.max(W, H) * 0.75);
+  g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(40,20,60,' + (a == null ? 0.25 : a) + ')');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+}
+/** 進度條 */
+function progressBar(x, y, w, h, p, col) {
+  rr(x, y + 3, w, h, h / 2); ctx.fillStyle = 'rgba(60,30,70,0.25)'; ctx.fill();
+  rr(x, y, w, h, h / 2); ctx.fillStyle = '#fff'; ctx.fill();
+  ctx.strokeStyle = shade(col, -60); ctx.lineWidth = 2.5; ctx.stroke();
+  const pw = Math.max(h, (w - 6) * clamp(p, 0, 1));
+  if (p > 0) {
+    rr(x + 3, y + 3, pw, h - 6, (h - 6) / 2);
+    const g = ctx.createLinearGradient(0, y, 0, y + h);
+    g.addColorStop(0, shade(col, 60)); g.addColorStop(1, col);
+    ctx.fillStyle = g; ctx.fill();
+    rr(x + 3 + h * 0.3, y + 4.5, Math.max(0, pw - h * 0.6), (h - 6) * 0.3, 3); ctx.fillStyle = 'rgba(255,255,255,0.6)'; ctx.fill();
+  }
+}
+/** 糖果風的小牌子（HUD 用） */
+function hudPanel(x, y, w, h, col) {
+  rr(x, y + 4, w, h, h / 2); ctx.fillStyle = 'rgba(60,30,70,0.22)'; ctx.fill();
+  rr(x, y, w, h, h / 2);
+  const g = ctx.createLinearGradient(0, y, 0, y + h);
+  g.addColorStop(0, '#ffffff'); g.addColorStop(1, shade(col, 80));
+  ctx.fillStyle = g; ctx.fill();
+  ctx.strokeStyle = col; ctx.lineWidth = 3; ctx.stroke();
+}
 
+/* ---------- 粒子 ---------- */
+class FX {
+  constructor() { this.list = []; }
+  burst(x, y, o) {
+    o = o || {};
+    const n = o.n || 14, cols = o.colors || ['#ffe066', '#ff8fb1', '#7bd88f', '#6cc4ff', '#ffffff'];
+    for (let i = 0; i < n; i++) {
+      const a = o.dir != null ? o.dir + (Math.random() - 0.5) * (o.spread || 1.2) : Math.random() * TAU;
+      const sp = (o.speed || 220) * (0.4 + Math.random() * 0.8);
+      this.list.push({
+        x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - (o.up || 0),
+        life: (o.life || 0.8) * (0.7 + Math.random() * 0.5), max: o.life || 0.8,
+        size: (o.size || 7) * (0.6 + Math.random() * 0.7), color: cols[i % cols.length],
+        shape: o.shape || 'star', rot: Math.random() * TAU, vr: (Math.random() - 0.5) * 8,
+        g: o.g == null ? 500 : o.g, drag: o.drag == null ? 0.97 : o.drag
+      });
+    }
+  }
+  text(x, y, s, o) {
+    o = o || {};
+    this.list.push({ shape: 'text', x, y, vx: 0, vy: o.vy || -80, s, color: o.color || '#fff', size: o.size || 26,
+      stroke: o.stroke || '#5a2d5c', life: o.life || 1, max: o.life || 1, g: 0, drag: 1, rot: 0, vr: 0, pop: 0 });
+  }
+  ring(x, y, color, r, life) {
+    this.list.push({ shape: 'ring', x, y, vx: 0, vy: 0, color: color || '#fff', size: r || 40, life: life || 0.5, max: life || 0.5, g: 0, drag: 1, rot: 0, vr: 0 });
+  }
+  update(dt) {
+    for (const p of this.list) {
+      p.life -= dt;
+      p.vy += p.g * dt;
+      const d = Math.pow(p.drag, dt * 60);
+      p.vx *= d; p.vy *= d;
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      p.rot += p.vr * dt;
+      if (p.pop != null) p.pop += dt;
+    }
+    this.list = this.list.filter(p => p.life > 0);
+  }
+  draw() {
+    for (const p of this.list) {
+      const a = clamp(p.life / p.max, 0, 1);
+      ctx.save();
+      ctx.globalAlpha = p.shape === 'text' ? Math.min(1, a * 2) : Math.min(1, a * 1.6);
+      ctx.translate(p.x, p.y); ctx.rotate(p.rot);
+      const s = p.size;
+      if (p.shape === 'star') { ctx.fillStyle = p.color; starPath(0, 0, s, s * 0.45, 0); ctx.fill(); }
+      else if (p.shape === 'sparkle') {
+        ctx.fillStyle = p.color; ctx.beginPath();
+        ctx.moveTo(0, -s); ctx.quadraticCurveTo(0, 0, s, 0); ctx.quadraticCurveTo(0, 0, 0, s); ctx.quadraticCurveTo(0, 0, -s, 0); ctx.quadraticCurveTo(0, 0, 0, -s); ctx.fill();
+      }
+      else if (p.shape === 'heart') { ctx.fillStyle = p.color; heartPath(0, 0, s); ctx.fill(); }
+      else if (p.shape === 'circle') { ctx.fillStyle = p.color; ctx.beginPath(); circ(0, 0, s * a + 1); ctx.fill(); }
+      else if (p.shape === 'bubble') { ctx.strokeStyle = p.color; ctx.lineWidth = 2; ctx.beginPath(); circ(0, 0, s); ctx.stroke(); ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.beginPath(); circ(-s * 0.35, -s * 0.35, s * 0.25); ctx.fill(); }
+      else if (p.shape === 'confetti') { ctx.fillStyle = p.color; ctx.fillRect(-s / 2, -s / 3, s, s * 0.66); }
+      else if (p.shape === 'drop') { ctx.rotate(-p.rot + Math.atan2(p.vy, p.vx) - Math.PI / 2); ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(0, 0, s * 0.6, 0, Math.PI); ctx.lineTo(0, -s * 1.4); ctx.closePath(); ctx.fill(); }
+      else if (p.shape === 'ring') { const k = 1 - a; ctx.strokeStyle = p.color; ctx.lineWidth = 6 * a + 1; ctx.beginPath(); circ(0, 0, s * (0.3 + k)); ctx.stroke(); }
+      else if (p.shape === 'text') {
+        const sc = p.pop < 0.25 ? Ease.outBack(p.pop / 0.25) : 1;
+        ctx.scale(sc, sc);
+        txt(p.s, 0, 0, p.size, p.color, { stroke: p.stroke, sw: p.size * 0.28 });
+      }
+      ctx.restore();
+    }
+  }
+}
+
+/* ---------- 按鈕（每一格畫面重新登記） ---------- */
+let btnReg = [], pressed = null;
+const BTN = {
+  green: ['#a6f59c', '#3fbf5c', '#24873e'], pink: ['#ffb3cc', '#f45f93', '#b8366a'], blue: ['#a8e0ff', '#3c9ff0', '#22659e'],
+  yellow: ['#fff09a', '#f8b921', '#b57c0b'], purple: ['#dcc6ff', '#9b6ff2', '#5f3fae'], orange: ['#ffd0a0', '#ff8a3d', '#c1561a'],
+  white: ['#ffffff', '#f3e9f7', '#b9a2c8']
+};
+function drawIcon(name, x, y, s, col) {
+  ctx.save(); ctx.translate(x, y);
+  ctx.fillStyle = col || '#fff'; ctx.strokeStyle = col || '#fff';
+  ctx.lineWidth = s * 0.22; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  if (name === 'play') { ctx.beginPath(); ctx.moveTo(-s * 0.35, -s * 0.5); ctx.lineTo(s * 0.5, 0); ctx.lineTo(-s * 0.35, s * 0.5); ctx.closePath(); ctx.fill(); ctx.stroke(); }
+  else if (name === 'next') { for (const dx of [-0.3, 0.25]) { ctx.beginPath(); ctx.moveTo(s * (dx - 0.2), -s * 0.4); ctx.lineTo(s * (dx + 0.25), 0); ctx.lineTo(s * (dx - 0.2), s * 0.4); ctx.stroke(); } }
+  else if (name === 'replay') {
+    ctx.beginPath(); ctx.arc(0, 0, s * 0.42, -Math.PI * 0.3, Math.PI * 1.35); ctx.stroke();
+    const a = -Math.PI * 0.3, ex = Math.cos(a) * s * 0.42, ey = Math.sin(a) * s * 0.42;
+    ctx.beginPath(); ctx.moveTo(ex + s * 0.2, ey - s * 0.05); ctx.lineTo(ex - s * 0.02, ey + s * 0.25); ctx.lineTo(ex - s * 0.25, ey - s * 0.12); ctx.closePath(); ctx.fill();
+  }
+  else if (name === 'menu') { for (let i = -1; i <= 1; i += 2) for (let j = -1; j <= 1; j += 2) { rr(i * s * 0.25 - s * 0.17, j * s * 0.25 - s * 0.17, s * 0.34, s * 0.34, s * 0.08); ctx.fill(); } }
+  else if (name === 'lock') {
+    ctx.lineWidth = s * 0.16; ctx.beginPath(); ctx.arc(0, -s * 0.12, s * 0.26, Math.PI, 0); ctx.stroke();
+    rr(-s * 0.38, -s * 0.12, s * 0.76, s * 0.6, s * 0.12); ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.beginPath(); circ(0, s * 0.15, s * 0.08); ctx.fill();
+  }
+  else if (name === 'music') { ctx.beginPath(); ctx.ellipse(-s * 0.18, s * 0.3, s * 0.18, s * 0.13, -0.4, 0, TAU); ctx.fill(); ctx.lineWidth = s * 0.12; ctx.beginPath(); ctx.moveTo(-s * 0.02, s * 0.3); ctx.lineTo(-s * 0.02, -s * 0.45); ctx.quadraticCurveTo(s * 0.25, -s * 0.3, s * 0.35, -s * 0.1); ctx.stroke(); }
+  ctx.restore();
+}
+/** 立體糖果按鈕。opts: {label, icon, color, onClick, size, pulse, disabled} */
+function button(id, x, y, w, h, opts) {
+  btnReg.push({ id, x, y, w, h, onClick: opts.onClick, disabled: opts.disabled });
+  const pal = BTN[opts.color || 'green'];
+  const isDown = pressed && pressed.id === id;
+  let s = isDown ? 0.92 : 1;
+  if (opts.pulse && !isDown) s *= 1 + Math.sin(time * 5) * 0.035;
+  const lip = Math.max(4, h * 0.1);
+  ctx.save();
+  ctx.translate(x + w / 2, y + h / 2); ctx.scale(s, s);
+  if (opts.disabled) ctx.globalAlpha = 0.55;
+  const r = opts.radius == null ? h / 2 : opts.radius;
+  const yo = isDown ? lip * 0.6 : 0;
+  rr(-w / 2, -h / 2 + lip + 3, w, h, r); ctx.fillStyle = 'rgba(60,30,70,0.22)'; ctx.fill();
+  rr(-w / 2, -h / 2 + lip, w, h, r); ctx.fillStyle = pal[2]; ctx.fill();
+  rr(-w / 2, -h / 2 + yo, w, h, r);
+  const g = ctx.createLinearGradient(0, -h / 2, 0, h / 2);
+  g.addColorStop(0, pal[0]); g.addColorStop(0.55, pal[1]); g.addColorStop(1, shade(pal[1], -15));
+  ctx.fillStyle = g; ctx.fill();
+  ctx.strokeStyle = pal[2]; ctx.lineWidth = Math.max(2, h * 0.05); ctx.stroke();
+  rr(-w / 2 + h * 0.22, -h / 2 + yo + h * 0.09, w - h * 0.44, h * 0.3, h * 0.15);
+  ctx.fillStyle = 'rgba(255,255,255,0.45)'; ctx.fill();
+  const fs = opts.size || h * 0.42;
+  const tc = opts.color === 'white' ? '#6a4a7a' : '#fff';
+  if (opts.icon && opts.label) {
+    const tw = (ctx.font = '900 ' + fs + 'px ' + FONT, ctx.measureText(opts.label).width);
+    const tot = fs * 1.1 + tw;
+    drawIcon(opts.icon, -tot / 2 + fs * 0.45, yo, fs * 0.9, tc);
+    txt(opts.label, -tot / 2 + fs * 1.1 + tw / 2, yo + 1, fs, tc, { stroke: pal[2], sw: fs * 0.2, shadow: false });
+  } else if (opts.icon) drawIcon(opts.icon, 0, yo, fs * 1.1, tc);
+  else if (opts.label != null) txt(opts.label, 0, yo + 1, fs, tc, { stroke: pal[2], sw: fs * 0.2, shadow: false });
+  ctx.restore();
+}
+function hitBtn(x, y) {
+  for (let i = btnReg.length - 1; i >= 0; i--) {
+    const b = btnReg[i];
+    if (!b.disabled && x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h + 6) return b;
+  }
+  return null;
+}
+
+/* ---------- 指標與鍵盤 ---------- */
+cv.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  const b = hitBtn(e.clientX, e.clientY);
+  if (b) { pressed = { id: b.id, pid: e.pointerId }; KG.note(880, 0.06, 'sine', 0.15); return; }
+  Game.onDown(e.clientX, e.clientY, e);
+});
+cv.addEventListener('pointermove', (e) => { Game.onMove(e.clientX, e.clientY, e); });
+function endPointer(e, cancel) {
+  if (pressed && pressed.pid === e.pointerId) {
+    const b = hitBtn(e.clientX, e.clientY), id = pressed.id;
+    pressed = null;
+    if (!cancel && b && b.id === id && b.onClick) { KG.sound('pop'); b.onClick(); }
+    return;
+  }
+  Game.onUp(e.clientX, e.clientY, e);
+}
+cv.addEventListener('pointerup', (e) => endPointer(e, false));
+cv.addEventListener('pointercancel', (e) => endPointer(e, true));
+cv.addEventListener('contextmenu', (e) => e.preventDefault());
+window.addEventListener('keydown', (e) => Game.onKey(e, true));
+window.addEventListener('keyup', (e) => Game.onKey(e, false));
+
+/* ---------- 背景音樂（用 KG.note 合成） ---------- */
+// 瀏覽器規定：使用者互動後才能播放聲音
+let userActed = false;
+window.addEventListener('pointerdown', () => { userActed = true; }, { capture: true });
+window.addEventListener('keydown', () => { userActed = true; }, { capture: true });
+const NOTE_IDX = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+function nf(name) {
+  const m = /^([A-G])(#|b)?(\d)$/.exec(name);
+  if (!m) return 0;
+  let n = NOTE_IDX[m[1]] + (m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0) + (parseInt(m[3], 10) + 1) * 12;
+  return 440 * Math.pow(2, (n - 69) / 12);
+}
+const Music = {
+  on: false, song: null, step: 0, next: 0,
+  /** song: {bpm, mel:'C5 E5 - G5 ...'（八分音符，- 表示延長，. 表示休止）, bass:'C3 . G2 .'} */
+  start(song) {
+    this.song = { bpm: song.bpm, mel: song.mel.trim().split(/\s+/), bass: (song.bass || '').trim().split(/\s+/), vol: song.vol || 1, wave: song.wave || 'triangle' };
+    this.on = true; this.step = 0; this.next = 0.15;
+  },
+  stop() { this.on = false; },
+  update(dt) {
+    if (!this.on || !this.song || !userActed) return;
+    this.next -= dt;
+    if (this.next < -0.3) this.next = 0;
+    const s = this.song, beat = 60 / s.bpm / 2;
+    while (this.next <= 0) {
+      if (!KG.isMuted() && !document.hidden) {
+        const i = this.step % s.mel.length, tok = s.mel[i];
+        if (tok !== '-' && tok !== '.') {
+          let len = 1;
+          while (s.mel[(i + len) % s.mel.length] === '-' && len < 8) len++;
+          const f = nf(tok);
+          KG.note(f, beat * len * 0.95, s.wave, 0.05 * s.vol);
+          KG.note(f * 2, beat * len * 0.5, 'sine', 0.015 * s.vol);
+        }
+        if (s.bass.length > 1) {
+          const bi = this.step % s.bass.length, bt = s.bass[bi];
+          if (bt !== '-' && bt !== '.') KG.note(nf(bt), beat * 1.8, 'sine', 0.07 * s.vol);
+        }
+      }
+      this.step++;
+      this.next += beat;
+    }
+  }
+};
+document.addEventListener('visibilitychange', () => { if (document.hidden) Music.next = 0.2; });
+
+/* ---------- 存檔 ---------- */
+const Save = {
+  get(k, d) { return KG.store.get(SLUG + ':' + k, d); },
+  set(k, v) { KG.store.set(SLUG + ':' + k, v); },
+  stars() { return Save.get('stars', []); },
+  setStars(i, n) { const a = Save.stars(); if (!(a[i] >= n)) { a[i] = n; Save.set('stars', a); } return a; },
+  total() { return Save.stars().reduce((s, v) => s + (v || 0), 0); }
+};
+
+/* ---------- 共用畫面：關卡選擇 ---------- */
+/**
+ * opts: { levels:[{name}], title, color, onPick(i), skins:[{name, need, draw(x,y,s)}], skin, onSkin(i), top }
+ */
+function levelSelect(opts) {
+  const stars = Save.stars(), total = Save.total();
+  const top = Math.max(76, H * 0.08);
+  txt(opts.title || '選擇關卡', W / 2, top, 30 * U, '#fff', { stroke: opts.color, sw: 9 * U });
+  // 星星總數
+  const tw = 120 * U, th = 40 * U;
+  hudPanel(W / 2 - tw / 2, top + 26 * U, tw, th, opts.color);
+  glossyStar(W / 2 - tw / 2 + 24 * U, top + 26 * U + th / 2, 14 * U, true);
+  txt(total + ' / ' + opts.levels.length * 3, W / 2 + 12 * U, top + 26 * U + th / 2 + 1, 20 * U, '#5a2d5c', { shadow: false });
+
+  const n = opts.levels.length;
+  const hasSkins = opts.skins && opts.skins.length;
+  const areaTop = top + 82 * U, areaBot = H - (hasSkins ? 170 * U : 30 * U);
+  const cols = W > H * 1.1 ? Math.min(n, 5) : Math.min(n, 3);
+  const rows = Math.ceil(n / cols);
+  const gap = 14 * U;
+  let cw = Math.min(150 * U, (W - 32 - gap * (cols - 1)) / cols);
+  let ch = cw * 1.12;
+  if (rows * ch + (rows - 1) * gap > areaBot - areaTop) { ch = (areaBot - areaTop - (rows - 1) * gap) / rows; cw = Math.min(cw, ch / 1.05); }
+  const gx = (W - (cols * cw + (cols - 1) * gap)) / 2;
+  const gy = areaTop + Math.max(0, (areaBot - areaTop - (rows * ch + (rows - 1) * gap)) / 2);
+  for (let i = 0; i < n; i++) {
+    const c = i % cols, r = Math.floor(i / cols);
+    const x = gx + c * (cw + gap), y = gy + r * (ch + gap);
+    const locked = i > 0 && !(stars[i - 1] > 0) && !opts.allOpen;
+    const st = stars[i] || 0;
+    const appear = clamp((time - (opts.enterT || 0)) * 4 - i * 0.25, 0, 1);
+    const sc = Ease.outBack(appear);
+    if (sc <= 0) continue;
+    ctx.save();
+    ctx.translate(x + cw / 2, y + ch / 2); ctx.scale(sc, sc); ctx.translate(-(x + cw / 2), -(y + ch / 2));
+    button('lv' + i, x, y, cw, ch, {
+      color: locked ? 'white' : (opts.cardColors ? opts.cardColors[i % opts.cardColors.length] : 'pink'),
+      radius: 22 * U, label: '', disabled: locked,
+      onClick: () => opts.onPick(i)
+    });
+    if (locked) drawIcon('lock', x + cw / 2, y + ch * 0.42, cw * 0.36, '#b9a2c8');
+    else {
+      txt(String(i + 1), x + cw / 2, y + ch * 0.36, ch * 0.34, '#fff', { stroke: 'rgba(80,40,90,0.55)', sw: ch * 0.07 });
+      if (opts.levels[i].name) txt(opts.levels[i].name, x + cw / 2, y + ch * 0.62, Math.min(16 * U, cw * 0.14), '#fff', { stroke: 'rgba(80,40,90,0.5)', sw: 4 * U, shadow: false });
+      for (let k = 0; k < 3; k++) glossyStar(x + cw / 2 + (k - 1) * cw * 0.26, y + ch * 0.83 - (k === 1 ? 4 * U : 0), cw * 0.1, k < st);
+    }
+    ctx.restore();
+  }
+  // 造型（用星星解鎖）
+  if (hasSkins) {
+    const k = opts.skins.length;
+    const sz = Math.min(76 * U, (W - 40 - (k - 1) * 10 * U) / k);
+    const y0 = H - 150 * U;
+    txt('造型（集星星解鎖）', W / 2, y0, 17 * U, '#fff', { stroke: opts.color, sw: 6 * U });
+    const sx0 = W / 2 - (k * sz + (k - 1) * 10 * U) / 2;
+    opts.skins.forEach((sk, i) => {
+      const x = sx0 + i * (sz + 10 * U), y = y0 + 20 * U;
+      const locked = total < sk.need;
+      const sel = opts.skin === i;
+      button('sk' + i, x, y, sz, sz, { color: sel ? 'yellow' : 'white', radius: 18 * U, label: '', onClick: () => {
+        if (locked) { KG.sound('wrong'); KG.toast('還需要 ' + (sk.need - total) + ' 顆星星喔！'); return; }
+        opts.onSkin(i);
+      } });
+      ctx.save();
+      if (locked) ctx.globalAlpha = 0.35;
+      sk.draw(x + sz / 2, y + sz * 0.48, sz * 0.36);
+      ctx.restore();
+      if (locked) {
+        drawIcon('lock', x + sz / 2, y + sz * 0.45, sz * 0.32, '#9d84ad');
+        glossyStar(x + sz * 0.38, y + sz * 0.82, sz * 0.09, true);
+        txt(String(sk.need), x + sz * 0.6, y + sz * 0.83, sz * 0.18, '#7a5a8a', { shadow: false });
+      }
+    });
+  }
+}
+
+/* ---------- 共用畫面：結算 ---------- */
+const Result = {
+  on: false, t: 0, o: null, shown: 0, panel: { s: 0 },
+  /** o: { stars, title, lines:[], unlock, onNext, onRetry, onMenu, color } */
+  show(o) {
+    this.on = true; this.t = 0; this.o = o; this.shown = 0; this.panel.s = 0;
+    killTweens(this.panel);
+    tween(this.panel, { s: 1 }, 0.5, 'outBack');
+    if (o.stars > 0) { KG.sound('win'); KG.confetti(); } else KG.sound('lose');
+  },
+  hide() { this.on = false; },
+  update(dt, fx) {
+    if (!this.on) return;
+    this.t += dt;
+    const o = this.o;
+    while (this.shown < 3 && this.t > 0.6 + this.shown * 0.38) {
+      if (this.shown < o.stars) {
+        KG.note(660 * Math.pow(1.26, this.shown), 0.25, 'triangle', 0.22);
+        KG.note(1320 * Math.pow(1.26, this.shown), 0.3, 'sine', 0.08);
+        const p = this.starPos(this.shown);
+        fx.burst(p[0], p[1], { n: 16, colors: ['#ffe066', '#fff', '#ffb02e'], speed: 260, g: 300, size: 7 * U });
+      }
+      this.shown++;
+    }
+  },
+  geom() {
+    const pw = Math.min(W - 32, 420 * U), ph = Math.min(H - 120, 440 * U);
+    return { x: (W - pw) / 2, y: (H - ph) / 2 + 20 * U, w: pw, h: ph };
+  },
+  starPos(i) {
+    const g = this.geom();
+    return [W / 2 + (i - 1) * g.w * 0.24, g.y + g.h * 0.27 - (i === 1 ? 14 * U : 0)];
+  },
+  draw() {
+    if (!this.on) return;
+    const o = this.o, g = this.geom(), col = o.color || '#f45f93';
+    ctx.fillStyle = 'rgba(50,25,70,' + (0.45 * Math.min(1, this.t * 3)) + ')';
+    ctx.fillRect(0, 0, W, H);
+    const s = this.panel.s;
+    ctx.save();
+    ctx.translate(W / 2, g.y + g.h / 2); ctx.scale(s, s); ctx.translate(-W / 2, -(g.y + g.h / 2));
+    // 背後旋轉光芒
+    ctx.save(); ctx.translate(W / 2, g.y + g.h * 0.27); ctx.rotate(time * 0.4);
+    ctx.fillStyle = 'rgba(255,240,170,0.18)';
+    for (let i = 0; i < 12; i++) { ctx.rotate(TAU / 12); ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-30 * U, g.w * 0.75); ctx.lineTo(30 * U, g.w * 0.75); ctx.fill(); }
+    ctx.restore();
+    // 面板
+    rr(g.x, g.y + 10, g.w, g.h, 34 * U); ctx.fillStyle = 'rgba(60,30,70,0.3)'; ctx.fill();
+    rr(g.x, g.y, g.w, g.h, 34 * U);
+    const pg = ctx.createLinearGradient(0, g.y, 0, g.y + g.h);
+    pg.addColorStop(0, '#fffdf6'); pg.addColorStop(1, '#ffeef5');
+    ctx.fillStyle = pg; ctx.fill();
+    ctx.lineWidth = 7 * U; ctx.strokeStyle = col; ctx.stroke();
+    rr(g.x + 10 * U, g.y + 10 * U, g.w - 20 * U, g.h - 20 * U, 26 * U); ctx.lineWidth = 2.5 * U; ctx.setLineDash([8 * U, 8 * U]); ctx.strokeStyle = rgba('#ffffff', 0); ctx.strokeStyle = shade(col, 60); ctx.stroke(); ctx.setLineDash([]);
+    // 緞帶標題
+    const bw = g.w * 0.92, bh = 58 * U, by = g.y - bh * 0.45;
+    ctx.fillStyle = shade(col, -50);
+    ctx.beginPath(); ctx.moveTo(W / 2 - bw / 2 - 22 * U, by + 14 * U); ctx.lineTo(W / 2 - bw / 2 + 10 * U, by + 14 * U); ctx.lineTo(W / 2 - bw / 2 + 10 * U, by + bh + 12 * U); ctx.lineTo(W / 2 - bw / 2 - 22 * U, by + bh + 12 * U); ctx.lineTo(W / 2 - bw / 2 - 8 * U, by + bh / 2 + 13 * U); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(W / 2 + bw / 2 + 22 * U, by + 14 * U); ctx.lineTo(W / 2 + bw / 2 - 10 * U, by + 14 * U); ctx.lineTo(W / 2 + bw / 2 - 10 * U, by + bh + 12 * U); ctx.lineTo(W / 2 + bw / 2 + 22 * U, by + bh + 12 * U); ctx.lineTo(W / 2 + bw / 2 + 8 * U, by + bh / 2 + 13 * U); ctx.closePath(); ctx.fill();
+    rr(W / 2 - bw / 2, by, bw, bh, 14 * U);
+    const rg = ctx.createLinearGradient(0, by, 0, by + bh);
+    rg.addColorStop(0, shade(col, 50)); rg.addColorStop(1, col);
+    ctx.fillStyle = rg; ctx.fill(); ctx.strokeStyle = shade(col, -50); ctx.lineWidth = 3 * U; ctx.stroke();
+    const tsz = Math.min(28 * U, bw / Math.max(4, [...o.title].length) * 0.95);
+    txt(o.title, W / 2, by + bh / 2 + 1, tsz, '#fff', { stroke: shade(col, -60), sw: 7 * U });
+    // 星星
+    for (let i = 0; i < 3; i++) {
+      const p = this.starPos(i);
+      const on = i < this.shown && i < o.stars;
+      let k = 1;
+      if (on) { const tt = this.t - (0.6 + i * 0.38); k = tt < 0.4 ? Ease.outElastic(clamp(tt / 0.4, 0, 1)) * 1.0 : 1 + Math.sin(time * 3 + i) * 0.03; }
+      glossyStar(p[0], p[1], (i === 1 ? 46 : 38) * U * (on ? k : 1), on, on ? Math.sin(time * 2 + i) * 0.08 : 0);
+    }
+    // 文字
+    let ty = g.y + g.h * 0.47;
+    (o.lines || []).forEach(l => { txt(l, W / 2, ty, 20 * U, '#5a2d5c', { shadow: false }); ty += 30 * U; });
+    if (o.unlock) {
+      const pulse = 1 + Math.sin(time * 6) * 0.04;
+      ctx.save(); ctx.translate(W / 2, ty + 6 * U); ctx.scale(pulse, pulse);
+      txt(o.unlock, 0, 0, 19 * U, '#ff6b9a', { stroke: '#fff', sw: 5 * U, shadow: false });
+      ctx.restore();
+    }
+    // 按鈕
+    const bh2 = 58 * U, by2 = g.y + g.h - bh2 - 26 * U;
+    const btns = [];
+    if (o.onMenu) btns.push({ id: 'rmenu', icon: 'menu', color: 'blue', cb: o.onMenu });
+    if (o.onRetry) btns.push({ id: 'rretry', icon: 'replay', color: 'yellow', cb: o.onRetry });
+    if (o.onNext) btns.push({ id: 'rnext', icon: 'play', color: 'green', cb: o.onNext, wide: true });
+    const unit = 72 * U, wideW = 120 * U, gapb = 12 * U;
+    const totw = btns.reduce((s2, b) => s2 + (b.wide ? wideW : unit), 0) + gapb * (btns.length - 1);
+    let bx = W / 2 - totw / 2;
+    const ready = this.t > 0.5;
+    btns.forEach(b => {
+      const bw2 = b.wide ? wideW : unit;
+      button(b.id, bx, by2, bw2, bh2, { icon: b.icon, color: b.color, pulse: b.wide, disabled: !ready, onClick: () => { this.hide(); b.cb(); } });
+      bx += bw2 + gapb;
+    });
+    ctx.restore();
+  }
+};
+
+/* ---------- 主迴圈 ---------- */
+function resizeCanvas() {
+  dpr = Math.min(window.devicePixelRatio || 1, 3);
+  W = cv.clientWidth || innerWidth; H = cv.clientHeight || innerHeight;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  U = clamp(Math.min(W / 400, H / 680), 0.72, 1.4);
+  Game.onResize();
+}
+window.addEventListener('resize', resizeCanvas);
+let lastFrame = performance.now();
+function frame(now) {
+  const rdt = Math.min(0.05, Math.max(0, (now - lastFrame) / 1000));
+  lastFrame = now;
+  time += rdt;
+  if (shakeT > 0) shakeT -= rdt;
+  let dt = rdt;
+  if (stopT > 0) { stopT -= rdt; dt = 0; }
+  updateTweens(rdt);
+  Music.update(rdt);
+  Game.update(dt, rdt);
+  btnReg = [];
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  Game.draw();
+  requestAnimationFrame(frame);
+}
+function bootGame() {
+  resizeCanvas();
+  requestAnimationFrame((t) => { lastFrame = t; frame(t); });
+}
+/* =====================================================================
+ * 小鳥飛飛：點一下讓小鳥往上飛，穿過水管、撿星星，飛到彩虹終點！
+ * ===================================================================== */
+
+/* ---------- 關卡與主題 ---------- */
+const LEVELS = [
+  { name: '草地', goal: 6, gap: 230, speed: 100, move: 0, theme: 'meadow' },
+  { name: '花園', goal: 8, gap: 220, speed: 108, move: 0, theme: 'garden' },
+  { name: '海邊', goal: 9, gap: 214, speed: 114, move: 26, theme: 'sunset' },
+  { name: '雪地', goal: 10, gap: 208, speed: 118, move: 36, theme: 'snow' },
+  { name: '夜空', goal: 12, gap: 204, speed: 122, move: 44, theme: 'night' }
+];
+const THEMES = {
+  meadow: { sky: ['#5fbcff', '#b9e6ff', '#fff1d0'], far: ['#a5d4ef', '#cfe9f5'], near: ['#93de8c', '#5bbb68'], front: ['#7ad46f', '#4fae55'],
+    ground: ['#f0cf8f', '#c99a5c'], grass: ['#93e672', '#4cb04a'], pipe: '#5ccb6a', deco: 'tree', sun: '#fff0a0' },
+  garden: { sky: ['#7fcbff', '#d6f0ff', '#ffe3f0'], far: ['#c9c6f2', '#e4e1fa'], near: ['#9be29a', '#63c070'], front: ['#ffb6d0', '#ef8db4'],
+    ground: ['#f3d49b', '#cf9f64'], grass: ['#a0ea7c', '#56b852'], pipe: '#f07fae', deco: 'bush', sun: '#fff3b0' },
+  sunset: { sky: ['#ff8f8a', '#ffc49c', '#ffe9b5'], far: ['#c48bb8', '#e2a7c0'], near: ['#7fd3e0', '#4cb1c8'], front: ['#f5cf87', '#e0ad62'],
+    ground: ['#f7d99a', '#d9a868'], grass: ['#f9e3a8', '#e8c27e'], pipe: '#3fc0ae', deco: 'palm', sun: '#ffd27a', sea: true },
+  snow: { sky: ['#8fcdf3', '#d9effb', '#ffffff'], far: ['#c3d9ee', '#e6f1fa'], near: ['#eef7ff', '#c7deef'], front: ['#fbfdff', '#d6e8f5'],
+    ground: ['#f4f9ff', '#c9dcec'], grass: ['#ffffff', '#d3e6f4'], pipe: '#6cb6e8', deco: 'pine', sun: '#fffbe0', snow: true },
+  night: { sky: ['#1e2a66', '#3b4790', '#7d6ab3'], far: ['#3a3f7c', '#4b4f8e'], near: ['#2e6c5e', '#225246'], front: ['#3a8a5d', '#2a6c47'],
+    ground: ['#7b5c8c', '#563b67'], grass: ['#4fb27c', '#2d7a55'], pipe: '#9a84e0', deco: 'round', moon: true }
+};
+const SKINS = [
+  { name: '小黃', need: 0, c: ['#fff7b0', '#ffd83a', '#f0a400'], belly: '#fffbe0', acc: '' },
+  { name: '粉粉', need: 3, c: ['#ffe3ef', '#ff9fc3', '#e5679a'], belly: '#fff2f7', acc: 'bow' },
+  { name: '藍藍', need: 6, c: ['#e2f5ff', '#7fcaff', '#3b8ed6'], belly: '#f2fbff', acc: 'scarf' },
+  { name: '綠綠', need: 9, c: ['#eaffd6', '#93e07c', '#46a548'], belly: '#f6ffe9', acc: 'crest' },
+  { name: '公主', need: 12, c: ['#f4e8ff', '#c9a7ff', '#8d62df'], belly: '#fbf5ff', acc: 'crown' }
+];
+const SONG = {
+  bpm: 132,
+  mel: 'C5 E5 G5 E5 F5 A5 G5 - E5 G5 C6 G5 A5 F5 G5 - C5 E5 G5 E5 F5 D5 E5 C5 D5 E5 F5 D5 C5 - . .',
+  bass: 'C3 . G3 . F3 . C3 . C3 . E3 . F3 . G3 . C3 . G3 . F3 . G3 . G3 . B2 . C3 . G2 .'
+};
+
+/* ---------- 狀態 ---------- */
+let scene = 'title', sceneT = 0;
+let S = 1, LW = 400, LH = 600;
+const GROUND = 84, PW = 76, CAP_H = 30, SPACING = 270;
+let skin = clamp(Save.get('skin', 0), 0, SKINS.length - 1);
+let lvIdx = 0, LV = LEVELS[0], TH = THEMES.meadow;
+const bird = { x: 100, y: 300, vy: 0, rot: 0, wing: 0, flapT: 0, sx: 1, sy: 1, blink: 0, blinkT: 2, hurtT: 0, happy: 0 };
+let pipes = [], stars = [], clouds = [], bgStars = [], flakes = [], flies = [];
+let worldX = 0, passed = 0, spawned = 0, starGot = 0, starSpawned = 0, hearts = 3, hits = 0, combo = 0, sub = 'ready', subT = 0;
+let arch = null, lastGapY = 300;
+const fx = new FX();       // 世界座標的粒子
+const ui = new FX();       // 螢幕座標的粒子
+
+Game.onResize = () => {
+  S = Math.min(H / (H < 560 ? 530 : 600), W / 400);
+  LW = W / S; LH = H / S;
+  bird.x = Math.max(95, Math.min(LW * 0.28, 300));
+  makeClouds();
+};
+
+function makeClouds() {
+  clouds = [];
+  for (let i = 0; i < 7; i++) clouds.push({ x: Math.random() * (LW + 200) - 100, y: 40 + Math.random() * (LH * 0.35), s: 0.55 + Math.random() * 0.8, p: 0.1 + Math.random() * 0.15 });
+  bgStars = [];
+  for (let i = 0; i < 60; i++) bgStars.push({ x: Math.random() * LW, y: Math.random() * LH * 0.6, r: 0.6 + Math.random() * 1.6, ph: Math.random() * 6 });
+  flakes = [];
+  for (let i = 0; i < 50; i++) flakes.push({ x: Math.random() * LW, y: Math.random() * LH, r: 1.5 + Math.random() * 3, v: 20 + Math.random() * 40, ph: Math.random() * 6 });
+  flies = [];
+  for (let i = 0; i < 14; i++) flies.push({ x: Math.random() * LW, y: LH * 0.4 + Math.random() * LH * 0.4, ph: Math.random() * 6 });
+}
+
+/* ---------- 場景切換 ---------- */
+function goTitle() { scene = 'title'; sceneT = 0; Result.hide(); TH = THEMES.meadow; Music.start(SONG); }
+function goMap() { scene = 'map'; sceneT = 0; Result.hide(); TH = THEMES.meadow; if (!Music.on) Music.start(SONG); }
+function startLevel(i) {
+  lvIdx = i; LV = LEVELS[i]; TH = THEMES[LV.theme];
+  scene = 'play'; sceneT = 0; sub = 'ready'; subT = 0;
+  pipes = []; stars = []; fx.list = []; arch = null;
+  worldX = 0; passed = 0; spawned = 0; starGot = 0; starSpawned = 0; hearts = 3; hits = 0; combo = 0;
+  bird.y = (LH - GROUND) * 0.45; bird.vy = 0; bird.rot = 0; bird.hurtT = 0; bird.happy = 0;
+  lastGapY = (LH - GROUND) / 2;
+  Music.start(SONG);
+}
+
+/* ---------- 輸入 ---------- */
+function flap() {
+  if (scene !== 'play' || Result.on) return;
+  if (sub === 'ready') { sub = 'fly'; subT = 0; spawnPipe(LW + 140); }
+  if (sub !== 'fly') return;
+  bird.vy = -330;
+  bird.flapT = 0.25;
+  killTweens(bird);
+  bird.sx = 0.8; bird.sy = 1.25;
+  tween(bird, { sx: 1, sy: 1 }, 0.35, 'outElastic');
+  KG.note(520, 0.12, 'sine', 0.18, 0, 900);
+  fx.burst(bird.x - 14, bird.y + 8, { n: 3, shape: 'circle', colors: [SKINS[skin].c[0], '#ffffff'], speed: 80, dir: Math.PI * 0.8, spread: 1, g: 100, size: 4, life: 0.5 });
+}
+Game.onDown = () => flap();
+Game.onKey = (e, down) => {
+  if (!down) return;
+  if (['Space', 'ArrowUp', 'KeyW', 'Enter'].includes(e.code)) {
+    e.preventDefault();
+    if (e.repeat) return;
+    if (scene === 'play') flap();
+    else if (scene === 'title') goMap();
+  }
+};
+
+/* ---------- 水管 ---------- */
+function spawnPipe(x) {
+  if (spawned >= LV.goal) {
+    if (!arch) arch = { x: x + 40 };
+    return;
+  }
+  const top = 120, bottom = LH - GROUND - 120;
+  let gy = lastGapY + (Math.random() * 2 - 1) * 140;
+  gy = clamp(gy, top + LV.move, bottom - LV.move);
+  const prev = pipes[pipes.length - 1];
+  pipes.push({ x, base: gy, gy, gap: LV.gap, passed: false, ph: Math.random() * TAU, fl: Math.floor(Math.random() * 3), wob: 0 });
+  spawned++;
+  if (prev && Math.random() < 0.85) {
+    stars.push({ x: (prev.x + x) / 2 + PW / 2, y: (prev.base + gy) / 2, ph: Math.random() * 6 });
+    starSpawned++;
+  }
+  lastGapY = gy;
+}
+
+function circleRect(cx, cy, r, rx, ry, rw, rh) {
+  const nx = clamp(cx, rx, rx + rw), ny = clamp(cy, ry, ry + rh);
+  return (cx - nx) * (cx - nx) + (cy - ny) * (cy - ny) < r * r;
+}
+function hitPipe(p) {
+  const r = 14, topH = p.gy - p.gap / 2, botY = p.gy + p.gap / 2;
+  return circleRect(bird.x, bird.y, r, p.x, -200, PW, topH + 200) ||
+    circleRect(bird.x, bird.y, r, p.x - 7, topH - CAP_H, PW + 14, CAP_H) ||
+    circleRect(bird.x, bird.y, r, p.x, botY, PW, LH) ||
+    circleRect(bird.x, bird.y, r, p.x - 7, botY, PW + 14, CAP_H);
+}
+
+function ouch(p) {
+  hearts--; hits++; combo = 0;
+  bird.hurtT = 1.8;
+  KG.sound('hit'); KG.vibrate(60);
+  shake(9, 0.35); hitStop(0.12);
+  if (p) p.wob = 1;
+  fx.burst(bird.x, bird.y, { n: 8, shape: 'circle', colors: [SKINS[skin].c[1], '#fff'], speed: 160, g: 200, size: 5 });
+  fx.burst(bird.x, bird.y - 10, { n: 6, shape: 'star', colors: ['#ffe066', '#fff'], speed: 120, g: 0, size: 6, life: 0.6 });
+  fx.text(bird.x, bird.y - 40, '哎呀！', { color: '#ff7aa2', size: 26 });
+  if (hearts <= 0) {
+    sub = 'fail'; subT = 0;
+    bird.vy = -200;
+  } else {
+    bird.vy = -260;
+  }
+}
+
+function winLevel() {
+  sub = 'win'; subT = 0;
+  bird.happy = 1;
+  KG.sound('sparkle');
+  fx.burst(bird.x, bird.y, { n: 30, shape: 'confetti', speed: 320, g: 400, size: 9 });
+  const st = 1 + (hits <= 1 ? 1 : 0) + (starGot >= Math.ceil(starSpawned / 2) ? 1 : 0);
+  const before = Save.total();
+  Save.setStars(lvIdx, st);
+  const after = Save.total();
+  const newSkin = SKINS.find(s => s.need > before && s.need <= after);
+  setTimeout(() => {
+    if (scene !== 'play') return;
+    Music.stop();
+    Result.show({
+      stars: st, title: st === 3 ? '完美！太厲害了！' : '過關了！好棒！', color: '#3c9ff0',
+      lines: ['穿過 ' + LV.goal + ' 根水管', '撿到 ' + starGot + ' 顆星星'],
+      unlock: newSkin ? '解鎖新造型：' + newSkin.name + '！' : '',
+      onNext: lvIdx < LEVELS.length - 1 ? () => startLevel(lvIdx + 1) : null,
+      onRetry: () => startLevel(lvIdx), onMenu: goMap
+    });
+  }, 1200);
+}
+function failLevel() {
+  Music.stop();
+  Result.show({
+    stars: 0, title: '再試一次！', color: '#f45f93',
+    lines: ['已經飛過 ' + passed + ' 根水管了', '休息一下，再飛一次吧！'],
+    onRetry: () => startLevel(lvIdx), onMenu: goMap
+  });
+}
+
+/* ---------- 更新 ---------- */
+const CHEERS = ['好棒！', '太厲害了！', '完美！', '飛得真好！'];
+Game.update = (dt, rdt) => {
+  sceneT += rdt;
+  fx.update(dt); ui.update(rdt);
+  Result.update(rdt, ui);
+  bird.blinkT -= rdt;
+  if (bird.blinkT <= 0) { bird.blink = 0.14; bird.blinkT = 2 + Math.random() * 3; }
+  bird.blink -= rdt;
+  bird.flapT = Math.max(0, bird.flapT - dt);
+  bird.wing += dt * (bird.flapT > 0 ? 36 : 13);
+  if (bird.hurtT > 0) bird.hurtT -= dt;
+
+  const flying = scene !== 'play' || sub === 'ready' || sub === 'fly' || sub === 'win';
+  const speed = scene === 'play' ? LV.speed : 90;
+  if (flying) worldX += speed * dt;
+  clouds.forEach(c => { c.x -= (flying ? speed * c.p : 0) * dt + 5 * dt; if (c.x < -200) { c.x = LW + 80 + Math.random() * 200; c.y = 40 + Math.random() * LH * 0.35; } });
+  flakes.forEach(f => { f.y += f.v * dt; f.x += Math.sin(time + f.ph) * 15 * dt - (flying ? speed * 0.3 : 0) * dt; if (f.y > LH) { f.y = -5; f.x = Math.random() * LW; } if (f.x < -5) f.x += LW + 10; });
+
+  if (scene !== 'play') {
+    bird.y = LH * 0.5 + Math.sin(time * 2.4) * 18;
+    bird.rot = Math.cos(time * 2.4) * -0.15;
+    bird.wing += dt * 10;
+    return;
+  }
+  subT += dt;
+  pipes.forEach(p => {
+    if (LV.move) p.gy = p.base + Math.sin(time * 1.1 + p.ph) * LV.move;
+    if (p.wob > 0) p.wob = Math.max(0, p.wob - dt * 2);
+  });
+
+  if (sub === 'ready') {
+    bird.y = (LH - GROUND) * 0.45 + Math.sin(time * 3) * 10;
+    bird.rot = Math.sin(time * 3) * 0.08;
+  } else if (sub === 'fly') {
+    bird.vy = Math.min(bird.vy + 1000 * dt, 410);
+    bird.y += bird.vy * dt;
+    if (bird.y < 24) { bird.y = 24; bird.vy = Math.max(bird.vy, 0); }
+    bird.rot = clamp(bird.vy / 520, -0.45, 1.0);
+
+    pipes.forEach(p => {
+      p.x -= LV.speed * dt;
+      if (!p.passed && p.x + PW < bird.x - 10) {
+        p.passed = true; passed++; combo++;
+        KG.note(660 + Math.min(combo, 10) * 40, 0.14, 'triangle', 0.18);
+        fx.text(bird.x + 10, bird.y - 34, '+1', { color: '#fff', size: 24 });
+        if (combo % 3 === 0) {
+          ui.text(W / 2, H * 0.32, CHEERS[(combo / 3 - 1) % CHEERS.length], { color: '#ffe066', size: 40 * U, vy: -40, life: 1.2, stroke: '#e0568a' });
+          KG.sound('correct');
+        }
+      }
+      if (bird.hurtT <= 0 && hitPipe(p)) ouch(p);
+    });
+    pipes = pipes.filter(p => p.x > -PW - 40);
+    const last = pipes[pipes.length - 1];
+    if (!arch && (!last || last.x < LW - SPACING + 40)) spawnPipe((last ? last.x : LW) + SPACING);
+    if (arch) {
+      arch.x -= LV.speed * dt;
+      if (arch.x < bird.x) winLevel();
+    }
+    stars.forEach(s => {
+      s.x -= LV.speed * dt;
+      if (!s.got && Math.hypot(s.x - bird.x, s.y - bird.y) < 36) {
+        s.got = true; starGot++;
+        KG.sound('coin');
+        fx.burst(s.x, s.y, { n: 14, colors: ['#ffe066', '#fff', '#ffb3c8'], speed: 200, g: 100, size: 6 });
+        fx.ring(s.x, s.y, '#fff3a0', 40);
+        fx.text(s.x, s.y - 26, '+1', { color: '#ffe066', size: 26 });
+      }
+    });
+    stars = stars.filter(s => s.x > -40 && !s.got);
+    // 碰到地面：彈起來
+    if (bird.y > LH - GROUND - 18) {
+      bird.y = LH - GROUND - 18;
+      if (bird.hurtT <= 0) ouch(null);
+      else bird.vy = -300;
+      fx.burst(bird.x, LH - GROUND, { n: 8, shape: 'circle', colors: ['#fff6dc', TH.grass[0]], speed: 120, dir: -Math.PI / 2, spread: 2, g: 300, size: 5 });
+    }
+  } else if (sub === 'fail') {
+    bird.vy = Math.min(bird.vy + 1200 * dt, 600);
+    bird.y += bird.vy * dt;
+    bird.rot = Math.min(1.4, bird.rot + dt * 4);
+    if (bird.y > LH - GROUND - 18) { bird.y = LH - GROUND - 18; bird.vy = 0; }
+    if (subT > 1.0 && !Result.on) failLevel();
+  } else if (sub === 'win') {
+    // 開心翻圈，往上飛
+    bird.y += Math.sin(subT * 6) * 60 * dt - 20 * dt;
+    bird.rot = subT < 0.8 ? -subT * TAU / 0.8 : Math.sin(time * 4) * 0.1;
+    bird.wing += dt * 20;
+    if (arch) arch.x -= LV.speed * dt;
+    if (Math.random() < dt * 8) fx.burst(bird.x, bird.y, { n: 2, shape: 'sparkle', colors: ['#fff', '#ffe066'], speed: 60, g: 0, size: 8, life: 0.7 });
+  }
+};
+
+/* ---------- 繪圖：背景 ---------- */
 function hillY(x, off, base, amp, f) {
   const t = (x + off) * f;
   return base - amp * (0.55 + 0.3 * Math.sin(t) + 0.15 * Math.sin(t * 2.3 + 1.3));
 }
-function drawHills(off, base, amp, f, c1, c2) {
+function drawHills(off, base, amp, f, cols, snowCap) {
   const g = ctx.createLinearGradient(0, base - amp, 0, LH);
-  g.addColorStop(0, c1); g.addColorStop(1, c2);
+  g.addColorStop(0, cols[0]); g.addColorStop(1, cols[1]);
   ctx.fillStyle = g;
-  ctx.beginPath(); ctx.moveTo(0, LH);
-  for (let x = 0; x <= LW + 10; x += 10) ctx.lineTo(x, hillY(x, off, base, amp, f));
+  ctx.beginPath(); ctx.moveTo(-10, LH);
+  for (let x = -10; x <= LW + 10; x += 10) ctx.lineTo(x, hillY(x, off, base, amp, f));
   ctx.lineTo(LW + 10, LH); ctx.closePath(); ctx.fill();
+  // 山頂亮邊
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 3;
+  ctx.beginPath();
+  for (let x = -10; x <= LW + 10; x += 10) ctx.lineTo(x, hillY(x, off, base, amp, f) + 2);
+  ctx.stroke();
 }
-function drawTree(x, y, s) {
+function drawCloud(x, y, s, night) {
   ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
-  ctx.fillStyle = '#8a5a3c'; rr(-4, -18, 8, 20, 3); ctx.fill();
-  const g = ctx.createRadialGradient(-6, -36, 3, 0, -30, 22);
-  g.addColorStop(0, '#9ee68b'); g.addColorStop(1, '#3f9d4e');
+  ctx.fillStyle = night ? 'rgba(20,20,60,0.2)' : 'rgba(110,160,210,0.16)';
+  ctx.beginPath(); ctx.ellipse(6, 32, 70, 12, 0, 0, TAU); ctx.fill();
+  const g = ctx.createLinearGradient(0, -32, 0, 34);
+  g.addColorStop(0, night ? '#bfc4ec' : '#ffffff'); g.addColorStop(1, night ? '#7f86c4' : '#e0f0ff');
   ctx.fillStyle = g;
-  ctx.beginPath(); ctx.arc(0, -30, 18, 0, Math.PI * 2); ctx.arc(-11, -22, 12, 0, Math.PI * 2); ctx.arc(11, -22, 12, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath();
+  circ(-38, 12, 22); circ(-12, -2, 30); circ(22, 4, 26); circ(48, 16, 18);
+  ctx.rect(-38, 12, 86, 22); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.beginPath(); ctx.ellipse(-16, -14, 14, 6, -0.3, 0, TAU); ctx.fill();
   ctx.restore();
 }
-
-function drawBackground() {
-  // 天空
-  const sky = ctx.createLinearGradient(0, 0, 0, LH);
-  sky.addColorStop(0, '#7cc8ff'); sky.addColorStop(0.6, '#c4ebff'); sky.addColorStop(1, '#fff3d6');
-  ctx.fillStyle = sky; ctx.fillRect(0, 0, LW, LH);
-  // 太陽
-  const sx = LW - 110, sy = 110;
-  const sg = ctx.createRadialGradient(sx, sy, 10, sx, sy, 120);
-  sg.addColorStop(0, 'rgba(255,250,200,0.9)'); sg.addColorStop(0.35, 'rgba(255,236,150,0.45)'); sg.addColorStop(1, 'rgba(255,236,150,0)');
-  ctx.fillStyle = sg; ctx.beginPath(); ctx.arc(sx, sy, 120, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = '#fff0a0'; ctx.beginPath(); ctx.arc(sx, sy, 36, 0, Math.PI * 2); ctx.fill();
-  clouds.forEach(c => drawCloud(c.x, c.y, c.s));
-  const gy = LH - GROUND;
-  // 遠山、近山
-  drawHills(worldX * 0.15, gy + 10, 170, 0.006, '#a9d8f0', '#cdeaf5');
-  drawHills(worldX * 0.35, gy + 10, 110, 0.011, '#8fdc8f', '#5dbb6a');
-  // 近山上的小樹
-  const off = worldX * 0.35, step = 120;
-  for (let k = Math.floor(off / step) - 1; k < (off + LW) / step + 1; k++) {
-    const x = k * step - off + ((k * 37) % 50);
-    if ((k * 7919) % 3 === 0) continue;
-    drawTree(x, hillY(x, off, gy + 10, 110, 0.011) + 4, 0.8 + ((k * 13) % 5) / 10);
+function drawDeco(kind, x, y, s) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+  ctx.fillStyle = 'rgba(0,0,0,0.12)'; ctx.beginPath(); ctx.ellipse(0, 2, 16, 4, 0, 0, TAU); ctx.fill();
+  if (kind === 'tree' || kind === 'round') {
+    ctx.fillStyle = '#8a5a3c'; rr(-4, -20, 8, 22, 3); ctx.fill();
+    const g = ctx.createRadialGradient(-6, -40, 3, 0, -32, 24);
+    g.addColorStop(0, kind === 'round' ? '#5fb98a' : '#a6ee8f'); g.addColorStop(1, kind === 'round' ? '#1f5a45' : '#3f9d4e');
+    ctx.fillStyle = g;
+    ctx.beginPath(); circ(0, -32, 18); circ(-12, -24, 12); circ(12, -24, 12); ctx.fill();
+    if (kind === 'tree') { ctx.fillStyle = '#ff6b6b'; ctx.beginPath(); circ(-6, -30, 2.5); circ(7, -36, 2.5); circ(5, -22, 2.5); ctx.fill(); }
+  } else if (kind === 'bush') {
+    ctx.fillStyle = '#5cb860';
+    ctx.beginPath(); circ(-10, -10, 12); circ(8, -12, 14); circ(0, -20, 12); ctx.fill();
+    const cols = ['#ff8fb1', '#ffd65c', '#ffffff', '#b49cff'];
+    for (let i = 0; i < 6; i++) { ctx.fillStyle = cols[i % 4]; ctx.beginPath(); circ(-14 + i * 6, -14 - (i % 2) * 9, 3.2); ctx.fill(); }
+  } else if (kind === 'palm') {
+    ctx.strokeStyle = '#a0703e'; ctx.lineWidth = 6; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(-4, -26, 6, -50); ctx.stroke();
+    ctx.fillStyle = '#3fae6a';
+    for (let i = 0; i < 5; i++) {
+      ctx.save(); ctx.translate(6, -50); ctx.rotate(-2.6 + i * 0.75);
+      ctx.beginPath(); ctx.ellipse(16, 0, 18, 5, 0.25, 0, TAU); ctx.fill(); ctx.restore();
+    }
+  } else if (kind === 'pine') {
+    ctx.fillStyle = '#7a5235'; ctx.fillRect(-3, -10, 6, 12);
+    for (let i = 0; i < 3; i++) {
+      const yy = -10 - i * 14, w = 20 - i * 5;
+      ctx.fillStyle = '#3e9a6a';
+      ctx.beginPath(); ctx.moveTo(-w, yy); ctx.lineTo(0, yy - 22); ctx.lineTo(w, yy); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath(); ctx.moveTo(-w * 0.55, yy - 9); ctx.lineTo(0, yy - 22); ctx.lineTo(w * 0.55, yy - 9); ctx.quadraticCurveTo(0, yy - 5, -w * 0.55, yy - 9); ctx.fill();
+    }
   }
-  drawHills(worldX * 0.6, gy + 6, 40, 0.02, '#74cf6c', '#4fae55');
+  ctx.restore();
 }
-
-function drawGround() {
+function drawSky(th) {
+  const sky = ctx.createLinearGradient(0, 0, 0, LH);
+  sky.addColorStop(0, th.sky[0]); sky.addColorStop(0.6, th.sky[1]); sky.addColorStop(1, th.sky[2]);
+  ctx.fillStyle = sky; ctx.fillRect(0, 0, LW, LH);
+  if (th.moon) {
+    bgStars.forEach(s => { ctx.globalAlpha = 0.5 + 0.5 * Math.sin(time * 2 + s.ph); ctx.fillStyle = '#fff8d0'; ctx.beginPath(); circ(s.x, s.y, s.r); ctx.fill(); });
+    ctx.globalAlpha = 1;
+    const mx = LW - 100, my = 100;
+    const mg = ctx.createRadialGradient(mx, my, 20, mx, my, 110);
+    mg.addColorStop(0, 'rgba(255,250,210,0.5)'); mg.addColorStop(1, 'rgba(255,250,210,0)');
+    ctx.fillStyle = mg; ctx.beginPath(); circ(mx, my, 110); ctx.fill();
+    ctx.fillStyle = '#fff5c8'; ctx.beginPath(); circ(mx, my, 34); ctx.fill();
+    ctx.fillStyle = 'rgba(220,200,150,0.5)'; ctx.beginPath(); circ(mx - 10, my - 6, 6); circ(mx + 10, my + 10, 4); ctx.fill();
+    // 月亮的睡臉
+    ctx.strokeStyle = '#a08a50'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.arc(mx - 9, my + 2, 4, 0.2, Math.PI - 0.2); ctx.moveTo(mx + 13, my + 2); ctx.arc(mx + 9, my + 2, 4, 0.2, Math.PI - 0.2); ctx.stroke();
+  } else {
+    const sx = LW - 110, sy = th.sea ? LH * 0.42 : 105;
+    ctx.save(); ctx.translate(sx, sy); ctx.rotate(time * 0.15);
+    ctx.fillStyle = rgba('#ffffff', 0.18);
+    for (let i = 0; i < 10; i++) { ctx.rotate(TAU / 10); ctx.beginPath(); ctx.moveTo(-14, 0); ctx.lineTo(0, 260); ctx.lineTo(14, 0); ctx.fill(); }
+    ctx.restore();
+    const sg = ctx.createRadialGradient(sx, sy, 10, sx, sy, 120);
+    sg.addColorStop(0, 'rgba(255,250,200,0.9)'); sg.addColorStop(0.35, 'rgba(255,236,150,0.4)'); sg.addColorStop(1, 'rgba(255,236,150,0)');
+    ctx.fillStyle = sg; ctx.beginPath(); circ(sx, sy, 120); ctx.fill();
+    ctx.fillStyle = th.sun; ctx.beginPath(); circ(sx, sy, th.sea ? 50 : 36); ctx.fill();
+  }
+  clouds.forEach(c => drawCloud(c.x, c.y, c.s, !!th.moon));
+}
+function drawWorldBg(th) {
+  drawSky(th);
+  const gy = LH - GROUND;
+  drawHills(worldX * 0.12, gy + 10, 190, 0.005, th.far);
+  if (th.snow) {
+    // 遠山的雪頂
+    ctx.save(); ctx.beginPath();
+    for (let x = -10; x <= LW + 10; x += 10) ctx.lineTo(x, hillY(x, worldX * 0.12, gy + 10, 190, 0.005));
+    ctx.lineTo(LW + 10, -10); ctx.lineTo(-10, -10); ctx.closePath();
+    ctx.restore();
+  }
+  if (th.sea) {
+    const sy = gy - 70;
+    const sg = ctx.createLinearGradient(0, sy, 0, gy);
+    sg.addColorStop(0, th.near[0]); sg.addColorStop(1, th.near[1]);
+    ctx.fillStyle = sg; ctx.fillRect(0, sy, LW, 80);
+    ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 2.5; ctx.lineCap = 'round';
+    for (let i = 0; i < 14; i++) {
+      const x = ((i * 97 - worldX * 0.3) % (LW + 60) + LW + 60) % (LW + 60) - 30, y = sy + 10 + (i % 4) * 14;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + 14 + Math.sin(time * 2 + i) * 5, y); ctx.stroke();
+    }
+    // 太陽倒影
+    ctx.fillStyle = 'rgba(255,230,160,0.5)';
+    for (let i = 0; i < 5; i++) { const w = 60 - i * 9 + Math.sin(time * 3 + i) * 6; ctx.fillRect(LW - 110 - w / 2, sy + 6 + i * 12, w, 4); }
+  } else {
+    drawHills(worldX * 0.32, gy + 10, 115, 0.011, th.near);
+  }
+  const off = worldX * 0.32, step = 110;
+  for (let k = Math.floor(off / step) - 1; k < (off + LW) / step + 1; k++) {
+    if ((k * 7919) % 3 === 0) continue;
+    const x = k * step - off + ((k * 37) % 50);
+    const y = th.sea ? gy - 4 : hillY(x, off, gy + 10, 115, 0.011) + 4;
+    if (!th.sea) drawDeco(th.deco, x, y, 0.75 + ((k * 13) % 5) / 10);
+  }
+  drawHills(worldX * 0.6, gy + 6, 42, 0.02, th.front);
+  if (th.sea) {
+    const off2 = worldX * 0.6;
+    for (let k = Math.floor(off2 / 180) - 1; k < (off2 + LW) / 180 + 1; k++) {
+      if (k % 2) continue;
+      const x = k * 180 - off2;
+      drawDeco('palm', x, hillY(x, off2, gy + 6, 42, 0.02) + 6, 1.1);
+    }
+  }
+  if (th.moon) {
+    flies.forEach((f, i) => {
+      const x = (f.x - worldX * 0.5 % LW + LW * 2) % LW, y = f.y + Math.sin(time * 1.5 + f.ph) * 14;
+      const a = 0.4 + 0.6 * Math.abs(Math.sin(time * 2 + i));
+      const g = ctx.createRadialGradient(x, y, 0, x, y, 12);
+      g.addColorStop(0, 'rgba(255,255,170,' + a + ')'); g.addColorStop(1, 'rgba(255,255,170,0)');
+      ctx.fillStyle = g; ctx.beginPath(); circ(x, y, 12); ctx.fill();
+    });
+  }
+}
+function drawGround(th) {
   const gy = LH - GROUND;
   const g = ctx.createLinearGradient(0, gy, 0, LH);
-  g.addColorStop(0, '#e9c98a'); g.addColorStop(1, '#c99a5c');
-  ctx.fillStyle = g; ctx.fillRect(0, gy, LW, GROUND);
-  // 斜紋
+  g.addColorStop(0, th.ground[0]); g.addColorStop(1, th.ground[1]);
+  ctx.fillStyle = g; ctx.fillRect(0, gy, LW, LH - gy);
   ctx.save();
-  ctx.beginPath(); ctx.rect(0, gy + 18, LW, GROUND); ctx.clip();
-  ctx.fillStyle = 'rgba(255,255,255,0.12)';
-  const off = worldX % 40;
-  for (let x = -off - 40; x < LW + 40; x += 40) {
-    ctx.beginPath(); ctx.moveTo(x, gy + 18); ctx.lineTo(x + 20, gy + 18); ctx.lineTo(x - 10, LH); ctx.lineTo(x - 30, LH); ctx.fill();
+  ctx.beginPath(); ctx.rect(0, gy + 18, LW, LH); ctx.clip();
+  ctx.fillStyle = 'rgba(255,255,255,0.13)';
+  const off = worldX % 44;
+  for (let x = -off - 44; x < LW + 44; x += 44) {
+    ctx.beginPath(); ctx.moveTo(x, gy + 18); ctx.lineTo(x + 22, gy + 18); ctx.lineTo(x - 10, LH); ctx.lineTo(x - 32, LH); ctx.fill();
   }
   ctx.restore();
-  // 草皮
-  const gg = ctx.createLinearGradient(0, gy - 4, 0, gy + 20);
-  gg.addColorStop(0, '#8fe36f'); gg.addColorStop(1, '#4fb44a');
+  const gg = ctx.createLinearGradient(0, gy - 6, 0, gy + 20);
+  gg.addColorStop(0, th.grass[0]); gg.addColorStop(1, th.grass[1]);
   ctx.fillStyle = gg;
-  ctx.beginPath(); ctx.moveTo(0, gy + 20);
-  const goff = worldX % 16;
-  for (let x = -goff - 16; x < LW + 16; x += 16) { ctx.lineTo(x, gy + 2); ctx.quadraticCurveTo(x + 8, gy - 6, x + 16, gy + 2); }
-  ctx.lineTo(LW + 16, gy + 20); ctx.closePath(); ctx.fill();
-  ctx.fillStyle = '#3e9a3e'; ctx.fillRect(0, gy + 18, LW, 3);
-  // 小花
-  const foff = worldX % 90;
-  for (let x = -foff; x < LW + 90; x += 90) {
-    ctx.fillStyle = '#fff'; ctx.beginPath();
-    for (let i = 0; i < 5; i++) { const a = i * 1.2566; ctx.arc(x + 30 + Math.cos(a) * 4, gy + 40 + Math.sin(a) * 4, 3, 0, Math.PI * 2); }
+  ctx.beginPath(); ctx.moveTo(-20, gy + 20);
+  const goff = worldX % 18;
+  for (let x = -goff - 18; x < LW + 18; x += 18) { ctx.lineTo(x, gy + 3); ctx.quadraticCurveTo(x + 9, gy - 7, x + 18, gy + 3); }
+  ctx.lineTo(LW + 20, gy + 20); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = 'rgba(0,0,0,0.12)'; ctx.fillRect(0, gy + 18, LW, 3);
+  // 小草叢和小花
+  const foff = worldX % 96;
+  for (let x = -foff; x < LW + 96; x += 96) {
+    const k = Math.floor((x + worldX) / 96);
+    const fx2 = x + 30, fy = gy + 42 + (k % 3) * 8;
+    ctx.fillStyle = th.grass[1];
+    ctx.beginPath(); ctx.moveTo(fx2 - 22, fy + 6); ctx.quadraticCurveTo(fx2 - 20, fy - 8, fx2 - 16, fy + 6); ctx.quadraticCurveTo(fx2 - 13, fy - 10, fx2 - 10, fy + 6); ctx.fill();
+    ctx.fillStyle = ['#ffffff', '#ffd1e0', '#fff1a8'][k % 3]; ctx.beginPath();
+    for (let i = 0; i < 5; i++) { const a = i * 1.2566; circ(fx2 + Math.cos(a) * 4, fy + Math.sin(a) * 4, 3); }
     ctx.fill();
-    ctx.fillStyle = '#ffc93c'; ctx.beginPath(); ctx.arc(x + 30, gy + 40, 2.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#ffc93c'; ctx.beginPath(); circ(fx2, fy, 2.5); ctx.fill();
   }
 }
 
-function drawPipePart(x, y, h, capAtBottom) {
-  // 管身
+/* ---------- 繪圖：水管、星星、終點 ---------- */
+function pipeBody(x, y, h, col) {
   const g = ctx.createLinearGradient(x, 0, x + PW, 0);
-  g.addColorStop(0, '#3f9d4e'); g.addColorStop(0.25, '#a8f08f'); g.addColorStop(0.45, '#6fd36a'); g.addColorStop(1, '#2f8040');
-  ctx.fillStyle = g;
-  ctx.strokeStyle = 'rgba(28,90,40,0.55)'; ctx.lineWidth = 3;
-  rr(x, y, PW, h, 6); ctx.fill(); ctx.stroke();
-  // 白色亮線
-  ctx.fillStyle = 'rgba(255,255,255,0.35)';
-  ctx.fillRect(x + 12, y + 4, 6, h - 8);
-  // 管口
-  const cy = capAtBottom ? y + h - CAP_H : y;
-  const cg = ctx.createLinearGradient(x - 6, 0, x + PW + 6, 0);
-  cg.addColorStop(0, '#46a856'); cg.addColorStop(0.25, '#b8f7a0'); cg.addColorStop(0.5, '#78d870'); cg.addColorStop(1, '#2f8040');
-  ctx.fillStyle = cg;
-  rr(x - 6, cy, PW + 12, CAP_H, 10); ctx.fill(); ctx.stroke();
-  ctx.fillStyle = 'rgba(255,255,255,0.4)';
-  rr(x + 2, cy + 5, PW - 4, 5, 3); ctx.fill();
+  g.addColorStop(0, shade(col, -30)); g.addColorStop(0.22, shade(col, 60)); g.addColorStop(0.45, col); g.addColorStop(1, shade(col, -55));
+  ctx.fillStyle = g; ctx.strokeStyle = shade(col, -90); ctx.lineWidth = 3;
+  rr(x, y, PW, h, 8); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.fillRect(x + 12, y + 6, 7, Math.max(0, h - 12));
+  ctx.fillStyle = 'rgba(255,255,255,0.18)'; ctx.fillRect(x + 24, y + 6, 3, Math.max(0, h - 12));
 }
-function drawFlower(x, y, kind) {
-  const petal = ['#ff8fb1', '#ffd65c', '#b49cff'][kind];
-  ctx.fillStyle = '#4fae55';
-  ctx.beginPath(); ctx.ellipse(x - 7, y + 4, 7, 3.5, -0.5, 0, Math.PI * 2); ctx.ellipse(x + 7, y + 4, 7, 3.5, 0.5, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = petal;
-  for (let i = 0; i < 5; i++) { const a = i * 1.2566 + 0.3; ctx.beginPath(); ctx.arc(x + Math.cos(a) * 5.5, y - 6 + Math.sin(a) * 5.5, 4.2, 0, Math.PI * 2); ctx.fill(); }
-  ctx.fillStyle = '#fff6b0'; ctx.beginPath(); ctx.arc(x, y - 6, 3.4, 0, Math.PI * 2); ctx.fill();
+function pipeCap(x, y, col) {
+  const g = ctx.createLinearGradient(x - 7, 0, x + PW + 7, 0);
+  g.addColorStop(0, shade(col, -25)); g.addColorStop(0.22, shade(col, 75)); g.addColorStop(0.5, shade(col, 15)); g.addColorStop(1, shade(col, -55));
+  ctx.fillStyle = g; ctx.strokeStyle = shade(col, -90); ctx.lineWidth = 3;
+  rr(x - 7, y, PW + 14, CAP_H, 12); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.45)'; rr(x + 2, y + 5, PW - 4, 6, 3); ctx.fill();
+}
+function leaf(x, y, a, s, col) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(a); ctx.scale(s, s);
+  ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(8, -8, 16, 0); ctx.quadraticCurveTo(8, 8, 0, 0); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.4)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(2, 0); ctx.lineTo(13, 0); ctx.stroke();
+  ctx.restore();
+}
+function flower(x, y, k, s) {
+  const petal = ['#ff8fb1', '#ffd65c', '#c4a6ff'][k % 3];
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s); ctx.rotate(Math.sin(time * 2 + x) * 0.1);
+  ctx.fillStyle = petal; ctx.strokeStyle = shade(petal, -50); ctx.lineWidth = 1;
+  for (let i = 0; i < 5; i++) { const a = i * 1.2566; ctx.beginPath(); circ(Math.cos(a) * 5.5, Math.sin(a) * 5.5, 4.4); ctx.fill(); ctx.stroke(); }
+  ctx.fillStyle = '#fff6b0'; ctx.beginPath(); circ(0, 0, 3.6); ctx.fill();
+  ctx.restore();
 }
 function drawPipes() {
+  const col = TH.pipe;
   pipes.forEach(p => {
+    const wob = Math.sin(p.wob * 30) * p.wob * 4;
+    const x = p.x + wob;
     const topH = p.gy - p.gap / 2, botY = p.gy + p.gap / 2;
-    drawPipePart(p.x, -10, topH + 10, true);
-    drawPipePart(p.x, botY, LH - GROUND - botY + 6, false);
-    // 管口上的小花和小葉子
-    drawFlower(p.x + PW * 0.3, botY - 1, p.flower);
-    drawFlower(p.x + PW * 0.75, botY - 1, (p.flower + 1) % 3);
+    pipeBody(x, -10, topH - CAP_H + 12, col); pipeCap(x, topH - CAP_H, col);
+    pipeBody(x, botY + CAP_H - 2, LH - GROUND - botY - CAP_H + 8, col); pipeCap(x, botY, col);
+    // 藤蔓和葉子
+    const lc = TH.snow ? '#8fc9a8' : '#4fb35a';
+    for (let i = 0; i < 3; i++) {
+      leaf(x + 4, botY + CAP_H + 18 + i * 34, 2.6, 1, lc);
+      leaf(x + PW - 4, botY + CAP_H + 34 + i * 34, 0.4, 0.9, lc);
+      leaf(x + 4, topH - CAP_H - 20 - i * 34, 2.8, 0.9, lc);
+    }
+    if (TH.snow) {
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath(); ctx.ellipse(x + PW / 2, botY + 2, PW * 0.58, 8, 0, Math.PI, TAU); ctx.fill();
+      ctx.beginPath(); circ(x + 4, botY + 6, 6); circ(x + PW - 8, botY + 7, 7); ctx.fill();
+      // 冰柱
+      ctx.fillStyle = 'rgba(220,240,255,0.9)';
+      for (let i = 0; i < 4; i++) { const ix = x + 6 + i * 20; ctx.beginPath(); ctx.moveTo(ix, topH); ctx.lineTo(ix + 8, topH); ctx.lineTo(ix + 4, topH + 12 + (i % 2) * 6); ctx.fill(); }
+    } else {
+      flower(x + PW * 0.25, botY - 4, p.fl, 1);
+      flower(x + PW * 0.72, botY - 6, p.fl + 1, 0.85);
+      flower(x + PW * 0.5, topH + 6, p.fl + 2, 0.75);
+    }
+    if (TH.moon) {
+      // 小燈泡串
+      for (let i = 0; i < 4; i++) {
+        const lx = x + 8 + i * 20, ly = botY + CAP_H + 10 + Math.sin(i) * 3;
+        ctx.fillStyle = ['#ffe066', '#ff8fb1', '#7fd8ff', '#a6f59c'][i];
+        ctx.globalAlpha = 0.6 + 0.4 * Math.sin(time * 4 + i + p.ph);
+        ctx.beginPath(); circ(lx, ly, 3.5); ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+    }
   });
 }
-
-function drawStars() {
-  stars.forEach(s => {
-    const bob = Math.sin(time * 4 + s.ph) * 5;
-    const rot = Math.sin(time * 2 + s.ph) * 0.25;
-    const x = s.x, y = s.y + bob;
-    const gl = ctx.createRadialGradient(x, y, 2, x, y, 34);
-    gl.addColorStop(0, 'rgba(255,240,150,0.7)'); gl.addColorStop(1, 'rgba(255,240,150,0)');
-    ctx.fillStyle = gl; ctx.beginPath(); ctx.arc(x, y, 34, 0, Math.PI * 2); ctx.fill();
-    const g = ctx.createRadialGradient(x - 4, y - 6, 2, x, y, 18);
-    g.addColorStop(0, '#fff9c4'); g.addColorStop(0.5, '#ffd84a'); g.addColorStop(1, '#f2a516');
-    ctx.fillStyle = g; ctx.strokeStyle = '#e49a12'; ctx.lineWidth = 2.5; ctx.lineJoin = 'round';
-    starPath(x, y, 18, 8.5, rot); ctx.fill(); ctx.stroke();
-    // 小臉
-    ctx.fillStyle = '#6b4a00';
-    ctx.beginPath(); ctx.arc(x - 4, y - 1, 1.8, 0, Math.PI * 2); ctx.arc(x + 4, y - 1, 1.8, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = '#6b4a00'; ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.arc(x, y + 2, 3, 0.2, Math.PI - 0.2); ctx.stroke();
-  });
+function drawStarItem(x, y, R, ph) {
+  const rot = Math.sin(time * 2 + ph) * 0.25;
+  const gl = ctx.createRadialGradient(x, y, 2, x, y, R * 2);
+  gl.addColorStop(0, 'rgba(255,240,150,0.65)'); gl.addColorStop(1, 'rgba(255,240,150,0)');
+  ctx.fillStyle = gl; ctx.beginPath(); circ(x, y, R * 2); ctx.fill();
+  glossyStar(x, y, R, true, rot);
+  ctx.fillStyle = '#7a4a00';
+  ctx.beginPath(); circ(x - R * 0.22, y - R * 0.02, R * 0.09); circ(x + R * 0.22, y - R * 0.02, R * 0.09); ctx.fill();
+  ctx.strokeStyle = '#7a4a00'; ctx.lineWidth = 1.6; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.arc(x, y + R * 0.1, R * 0.14, 0.2, Math.PI - 0.2); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,120,140,0.5)';
+  ctx.beginPath(); circ(x - R * 0.38, y + R * 0.15, R * 0.09); circ(x + R * 0.38, y + R * 0.15, R * 0.09); ctx.fill();
+}
+function drawArch() {
+  if (!arch) return;
+  const cx = arch.x + 60, base = LH - GROUND, R = Math.min(170, (LH - GROUND) * 0.45);
+  const cols = ['#ff6b6b', '#ffa94d', '#ffd84a', '#7bd88f', '#5cc4ff', '#b48cff'];
+  ctx.lineCap = 'butt';
+  cols.forEach((c, i) => { ctx.strokeStyle = c; ctx.lineWidth = 12; ctx.beginPath(); ctx.arc(cx, base, R - i * 12, Math.PI, TAU); ctx.stroke(); });
+  drawCloud(cx - R + 20, base - 20, 0.8, false); drawCloud(cx + R - 30, base - 20, 0.8, false);
+  // 終點旗子
+  ctx.fillStyle = '#8a5a3c'; ctx.fillRect(cx - 3, base - R - 60, 6, 70);
+  ctx.fillStyle = '#ff6b9a';
+  ctx.beginPath(); ctx.moveTo(cx + 3, base - R - 60); ctx.quadraticCurveTo(cx + 30, base - R - 54 + Math.sin(time * 6) * 4, cx + 50, base - R - 48); ctx.lineTo(cx + 3, base - R - 34); ctx.fill();
 }
 
-function drawBird() {
+/* ---------- 繪圖：小鳥 ---------- */
+function drawBird(x, y, o) {
+  const sk = SKINS[o.skin == null ? skin : o.skin];
+  const sc = o.scale || 1;
   ctx.save();
-  ctx.translate(bird.x, bird.y);
-  // 地面影子
-  const gy = LH - GROUND;
-  ctx.save(); ctx.rotate(0);
-  const dist = Math.max(0, gy - bird.y);
-  ctx.fillStyle = 'rgba(60,90,40,' + Math.max(0.05, 0.25 - dist / 2000) + ')';
-  ctx.beginPath(); ctx.ellipse(0, dist + 2, 18 - Math.min(10, dist / 40), 4, 0, 0, Math.PI * 2); ctx.fill();
-  ctx.restore();
-
-  ctx.rotate(bird.rot);
-  const r = 21;
+  ctx.translate(x, y); ctx.scale(sc, sc);
+  ctx.rotate(o.rot || 0);
+  ctx.scale(o.sx || 1, o.sy || 1);
+  const r = 21, c = sk.c, ol = shade(c[2], -70);
+  const mood = o.mood || 'idle';
   // 尾巴
-  ctx.fillStyle = '#f2a900';
-  ctx.beginPath(); ctx.moveTo(-r + 2, -2); ctx.lineTo(-r - 12, -10); ctx.lineTo(-r - 8, 0); ctx.lineTo(-r - 13, 8); ctx.lineTo(-r + 2, 6); ctx.fill();
+  ctx.fillStyle = c[2]; ctx.strokeStyle = ol; ctx.lineWidth = 2.2; ctx.lineJoin = 'round';
+  ctx.beginPath(); ctx.moveTo(-r + 3, -3); ctx.lineTo(-r - 13, -12); ctx.lineTo(-r - 8, -1); ctx.lineTo(-r - 14, 9); ctx.lineTo(-r + 3, 6); ctx.closePath(); ctx.fill(); ctx.stroke();
   // 身體
-  const g = ctx.createRadialGradient(-6, -9, 3, 0, 0, r * 1.15);
-  g.addColorStop(0, '#fff8b8'); g.addColorStop(0.5, '#ffd83a'); g.addColorStop(1, '#f0a400');
-  ctx.fillStyle = g;
-  ctx.strokeStyle = 'rgba(190,120,0,0.6)'; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.ellipse(0, 0, r * 1.08, r, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  const g = ctx.createRadialGradient(-7, -10, 3, 0, 0, r * 1.2);
+  g.addColorStop(0, c[0]); g.addColorStop(0.5, c[1]); g.addColorStop(1, c[2]);
+  ctx.fillStyle = g; ctx.strokeStyle = ol; ctx.lineWidth = 2.6;
+  ctx.beginPath(); ctx.ellipse(0, 0, r * 1.08, r, 0, 0, TAU); ctx.fill(); ctx.stroke();
+  // 邊光
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.ellipse(0, 0, r * 0.92, r * 0.84, 0, Math.PI * 1.1, Math.PI * 1.55); ctx.stroke();
   // 肚子
-  ctx.fillStyle = 'rgba(255,252,220,0.85)';
-  ctx.beginPath(); ctx.ellipse(2, 9, r * 0.62, r * 0.42, 0, 0, Math.PI * 2); ctx.fill();
-  // 頭上呆毛
-  ctx.strokeStyle = '#f0a400'; ctx.lineWidth = 3; ctx.lineCap = 'round';
-  ctx.beginPath(); ctx.moveTo(-2, -r + 1); ctx.quadraticCurveTo(-4, -r - 10, 4, -r - 9); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(3, -r + 2); ctx.quadraticCurveTo(6, -r - 6, 11, -r - 3); ctx.stroke();
+  ctx.fillStyle = sk.belly; ctx.globalAlpha = 0.9;
+  ctx.beginPath(); ctx.ellipse(3, 9, r * 0.62, r * 0.44, 0, 0, TAU); ctx.fill(); ctx.globalAlpha = 1;
+  // 呆毛 / 冠羽
+  if (sk.acc === 'crest') {
+    ['#ff6b6b', '#ffa94d', '#ffd84a'].forEach((cc, i) => {
+      ctx.fillStyle = cc; ctx.save(); ctx.translate(-2 + i * 4, -r + 2); ctx.rotate(-0.5 + i * 0.35);
+      ctx.beginPath(); ctx.ellipse(0, -8, 3.5, 9, 0, 0, TAU); ctx.fill(); ctx.restore();
+    });
+  } else {
+    ctx.strokeStyle = c[2]; ctx.lineWidth = 3; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(-2, -r + 1); ctx.quadraticCurveTo(-4, -r - 11, 4, -r - 10); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(3, -r + 2); ctx.quadraticCurveTo(7, -r - 7, 12, -r - 4); ctx.stroke();
+  }
   // 眼睛
-  const dead = state === 'dying' || state === 'over';
-  if (dead) {
+  ctx.lineCap = 'round';
+  if (mood === 'hurt') {
     ctx.strokeStyle = '#3a2a1a'; ctx.lineWidth = 2.5;
-    ctx.beginPath(); ctx.moveTo(4, -11); ctx.lineTo(12, -3); ctx.moveTo(12, -11); ctx.lineTo(4, -3); ctx.stroke();
-  } else if (bird.blink > 0) {
+    ctx.beginPath(); ctx.moveTo(4, -11); ctx.lineTo(11, -6); ctx.lineTo(4, -2); ctx.stroke();
+  } else if (mood === 'happy') {
+    ctx.strokeStyle = '#3a2a1a'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(8, -5, 5, Math.PI + 0.3, -0.3); ctx.stroke();
+  } else if (o.blink) {
     ctx.strokeStyle = '#3a2a1a'; ctx.lineWidth = 2.5;
     ctx.beginPath(); ctx.arc(8, -7, 5, 0.2, Math.PI - 0.2); ctx.stroke();
   } else {
-    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(8, -7, 7, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = '#2b1d14'; ctx.beginPath(); ctx.arc(10, -6.5, 4.4, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(11.5, -8.5, 1.7, 0, Math.PI * 2); ctx.arc(8.6, -4.6, 0.9, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.ellipse(8, -7, 7, 7.5, 0, 0, TAU); ctx.fill();
+    ctx.strokeStyle = rgba('#3a2a1a', 0.3); ctx.lineWidth = 1; ctx.stroke();
+    ctx.fillStyle = '#2b1d14'; ctx.beginPath(); ctx.ellipse(10, -6.5, 4.6, 5, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); circ(11.6, -8.8, 1.9); circ(8.6, -4.4, 1); ctx.fill();
   }
   // 腮紅
-  ctx.fillStyle = 'rgba(255,110,140,0.5)';
-  ctx.beginPath(); ctx.ellipse(6, 5, 5, 3.2, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = 'rgba(255,100,140,0.5)';
+  ctx.beginPath(); ctx.ellipse(6, 5, 5.2, 3.3, 0, 0, TAU); ctx.fill();
   // 嘴巴
-  ctx.fillStyle = '#ff8a1f'; ctx.strokeStyle = '#d96a0a'; ctx.lineWidth = 1.5;
-  ctx.beginPath(); ctx.moveTo(r - 3, -4); ctx.quadraticCurveTo(r + 11, -1, r + 9, 2); ctx.lineTo(r - 3, 3); ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#ff8a1f'; ctx.strokeStyle = '#c45a08'; ctx.lineWidth = 1.6;
+  const open = mood === 'happy' || mood === 'hurt' ? 4 : 0;
+  ctx.beginPath(); ctx.moveTo(r - 3, -4); ctx.quadraticCurveTo(r + 11, -1 - open * 0.3, r + 9, 2 - open * 0.3); ctx.lineTo(r - 3, 3); ctx.closePath(); ctx.fill(); ctx.stroke();
   ctx.fillStyle = '#ffa64a';
-  ctx.beginPath(); ctx.moveTo(r - 3, 3); ctx.lineTo(r + 7, 3); ctx.quadraticCurveTo(r + 2, 8, r - 3, 7); ctx.closePath(); ctx.fill(); ctx.stroke();
-  // 翅膀（拍動）
-  const wa = dead ? 0.5 : Math.sin(bird.wing) * 0.7;
+  ctx.beginPath(); ctx.moveTo(r - 3, 3 + open * 0.3); ctx.lineTo(r + 7, 3 + open); ctx.quadraticCurveTo(r + 2, 8 + open, r - 3, 7 + open * 0.5); ctx.closePath(); ctx.fill(); ctx.stroke();
+  // 配件
+  if (sk.acc === 'bow') {
+    ctx.save(); ctx.translate(-6, -r + 2); ctx.rotate(-0.3);
+    ctx.fillStyle = '#ff4f8b'; ctx.strokeStyle = '#b8285e'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-11, -7); ctx.lineTo(-11, 7); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(11, -7); ctx.lineTo(11, 7); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); circ(0, 0, 3.5); ctx.fill(); ctx.stroke();
+    ctx.restore();
+  } else if (sk.acc === 'scarf') {
+    ctx.fillStyle = '#ff6b6b'; ctx.strokeStyle = '#b83a3a'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.ellipse(0, 12, 17, 5, 0, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.save(); ctx.translate(-10, 14); ctx.rotate(0.6 + Math.sin(time * 10) * 0.2);
+    rr(-4, 0, 8, 16, 3); ctx.fill(); ctx.stroke(); ctx.restore();
+    ctx.fillStyle = '#fff'; ctx.fillRect(-6, 10, 3, 4); ctx.fillRect(2, 10, 3, 4);
+  } else if (sk.acc === 'crown') {
+    ctx.save(); ctx.translate(-2, -r - 2);
+    const cg = ctx.createLinearGradient(0, -12, 0, 2);
+    cg.addColorStop(0, '#fff2a0'); cg.addColorStop(1, '#f2a516');
+    ctx.fillStyle = cg; ctx.strokeStyle = '#b06d00'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(-10, 2); ctx.lineTo(-11, -9); ctx.lineTo(-5, -3); ctx.lineTo(0, -12); ctx.lineTo(5, -3); ctx.lineTo(11, -9); ctx.lineTo(10, 2); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#ff4f8b'; ctx.beginPath(); circ(0, -2, 2); ctx.fill();
+    ctx.restore();
+  }
+  // 翅膀
+  const wa = mood === 'hurt' ? 0.6 : Math.sin(o.wing || 0) * 0.75;
   ctx.save();
   ctx.translate(-6, 2); ctx.rotate(-wa);
-  const wg = ctx.createLinearGradient(0, -8, 0, 10);
-  wg.addColorStop(0, '#fff3a0'); wg.addColorStop(1, '#f0b000');
-  ctx.fillStyle = wg; ctx.strokeStyle = 'rgba(190,120,0,0.7)'; ctx.lineWidth = 1.8;
-  ctx.beginPath(); ctx.ellipse(-6, 0, 12, 7.5, 0.25, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  const wg = ctx.createLinearGradient(0, -9, 0, 10);
+  wg.addColorStop(0, c[0]); wg.addColorStop(1, c[2]);
+  ctx.fillStyle = wg; ctx.strokeStyle = ol; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.ellipse(-6, 0, 12.5, 7.8, 0.25, 0, TAU); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = rgba('#ffffff', 0.5); ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(-14, 1); ctx.lineTo(-4, 3); ctx.stroke();
   ctx.restore();
   ctx.restore();
-
-  // 撞到時頭上的暈暈星星
-  if (dead) {
+}
+function drawPlayBird() {
+  const gy = LH - GROUND;
+  const dist = Math.max(0, gy - bird.y);
+  ctx.fillStyle = 'rgba(40,60,30,' + Math.max(0.06, 0.25 - dist / 2000) + ')';
+  ctx.beginPath(); ctx.ellipse(bird.x, gy + 3, 18 - Math.min(10, dist / 40), 4, 0, 0, TAU); ctx.fill();
+  if (bird.hurtT > 0 && sub === 'fly' && Math.floor(bird.hurtT * 12) % 2 === 0) ctx.globalAlpha = 0.45;
+  const mood = sub === 'fail' || bird.hurtT > 1.4 ? 'hurt' : sub === 'win' ? 'happy' : 'idle';
+  drawBird(bird.x, bird.y, { rot: bird.rot, wing: bird.wing, sx: bird.sx, sy: bird.sy, blink: bird.blink > 0, mood });
+  ctx.globalAlpha = 1;
+  if (mood === 'hurt') {
     for (let i = 0; i < 3; i++) {
-      const a = time * 4 + i * 2.1;
-      ctx.fillStyle = '#ffe066'; ctx.strokeStyle = '#e49a12'; ctx.lineWidth = 1.5;
-      starPath(bird.x + Math.cos(a) * 22, bird.y - 30 + Math.sin(a) * 6, 6, 2.7, a);
-      ctx.fill(); ctx.stroke();
+      const a = time * 5 + i * 2.1;
+      glossyStar(bird.x + Math.cos(a) * 22, bird.y - 30 + Math.sin(a) * 6, 6, true, a);
     }
   }
 }
 
-function drawParts() {
-  parts.forEach(p => {
-    const a = Math.max(0, p.life / p.max);
-    ctx.globalAlpha = a;
-    if (p.t === 'spark') {
-      ctx.fillStyle = p.c; starPath(p.x, p.y, 5 * a + 2, 2 * a + 1, 0); ctx.fill();
-    } else if (p.t === 'feather') {
-      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.r);
-      ctx.fillStyle = '#ffe27a'; ctx.beginPath(); ctx.ellipse(0, 0, 6, 2.6, 0, 0, Math.PI * 2); ctx.fill();
-      ctx.restore();
-    } else if (p.t === 'text') {
-      ctx.font = 'bold 24px ' + FONT; ctx.textAlign = 'center';
-      ctx.lineWidth = 5; ctx.strokeStyle = 'rgba(80,60,20,0.6)'; ctx.strokeText(p.s, p.x, p.y);
-      ctx.fillStyle = p.c; ctx.fillText(p.s, p.x, p.y);
-    }
-    ctx.globalAlpha = 1;
+/* ---------- HUD（螢幕座標） ---------- */
+function drawHud() {
+  const pw = Math.min(W - 150, 250 * U), ph = 40 * U, px = (W - pw) / 2, py = 12;
+  hudPanel(px, py, pw, ph, '#3c9ff0');
+  // 小水管圖示
+  ctx.save(); ctx.translate(px + 22 * U, py + ph / 2);
+  ctx.fillStyle = TH.pipe; ctx.strokeStyle = shade(TH.pipe, -90); ctx.lineWidth = 2;
+  rr(-7 * U, -6 * U, 14 * U, 16 * U, 3); ctx.fill(); ctx.stroke();
+  rr(-10 * U, -11 * U, 20 * U, 7 * U, 3); ctx.fill(); ctx.stroke();
+  ctx.restore();
+  progressBar(px + 40 * U, py + ph / 2 - 9 * U, pw - 100 * U, 18 * U, passed / LV.goal, '#7bd88f');
+  txt(Math.min(passed, LV.goal) + '/' + LV.goal, px + pw - 32 * U, py + ph / 2 + 1, 17 * U, '#2a6a9e', { shadow: false });
+  // 愛心和星星
+  const y2 = py + ph + 22 * U;
+  for (let i = 0; i < 3; i++) glossyHeart(W / 2 - 64 * U + i * 26 * U, y2, 11 * U, i < hearts);
+  hudPanel(W / 2 + 20 * U, y2 - 15 * U, 70 * U, 30 * U, '#f8b921');
+  glossyStar(W / 2 + 36 * U, y2, 11 * U, true);
+  txt(String(starGot), W / 2 + 64 * U, y2 + 1, 18 * U, '#8a5a00', { shadow: false });
+  // 等待開始的提示
+  if (sub === 'ready') {
+    const s = 1 + Math.sin(time * 6) * 0.06;
+    ctx.save(); ctx.translate(W / 2, H * 0.68); ctx.scale(s, s);
+    rr(-130 * U, -30 * U, 260 * U, 60 * U, 30 * U); ctx.fillStyle = 'rgba(255,255,255,0.94)'; ctx.fill();
+    ctx.strokeStyle = '#ffd65c'; ctx.lineWidth = 4; ctx.stroke();
+    txt('點一下就會飛喔！', 0, 1, 24 * U, '#4a3b52', { shadow: false });
+    ctx.restore();
+    // 小手指
+    const hy = H * 0.68 + 52 * U + Math.abs(Math.sin(time * 4)) * -10 * U;
+    ctx.save(); ctx.translate(W / 2 + 80 * U, hy);
+    ctx.fillStyle = '#ffe0c8'; ctx.strokeStyle = '#c98a6a'; ctx.lineWidth = 2.5;
+    rr(-7 * U, -26 * U, 14 * U, 30 * U, 7 * U); ctx.fill(); ctx.stroke();
+    rr(-13 * U, -4 * U, 30 * U, 26 * U, 10 * U); ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+/* ---------- 標題畫面 ---------- */
+function drawTitle() {
+  ctx.save(); ctx.scale(S, S);
+  drawWorldBg(THEMES.meadow); drawGround(THEMES.meadow);
+  ctx.restore();
+  vignette(0.2);
+  const ly = titleY(0.22);
+  logo('小鳥飛飛', W / 2, ly, Math.min(78 * U, W * 0.17), ['#ffd83a', '#ff8fb1', '#6cc4ff', '#7bd88f'], '#3a5a9e');
+  if (H >= 560) txt('穿過水管・撿星星・飛到彩虹', W / 2, ly + 62 * U, 18 * U, '#fff', { stroke: '#3c7fc0', sw: 6 * U });
+  // 小鳥在中間飛
+  const bx = W / 2 + Math.sin(time * 1.3) * 40 * U, by = H * 0.5 + Math.sin(time * 2.6) * 16 * U;
+  drawBird(bx, by, { scale: 2.6 * U, rot: Math.cos(time * 2.6) * -0.15, wing: time * 14, blink: bird.blink > 0, mood: Math.sin(time * 0.8) > 0.7 ? 'happy' : 'idle' });
+  for (let i = 0; i < 3; i++) {
+    const a = time * 1.5 + i * TAU / 3;
+    glossyStar(bx + Math.cos(a) * 90 * U, by + Math.sin(a) * 40 * U, 12 * U, true, a);
+  }
+  const bw = 210 * U, bh = 74 * U;
+  button('start', W / 2 - bw / 2, H * 0.72, bw, bh, { label: '開始', icon: 'play', color: 'green', pulse: true, onClick: goMap });
+}
+
+function drawMap() {
+  ctx.save(); ctx.scale(S, S);
+  drawWorldBg(THEMES.meadow); drawGround(THEMES.meadow);
+  ctx.restore();
+  ctx.fillStyle = 'rgba(255,255,255,0.25)'; ctx.fillRect(0, 0, W, H);
+  levelSelect({
+    levels: LEVELS, title: '選擇關卡', color: '#3c9ff0', enterT: 0, cardColors: ['green', 'pink', 'orange', 'blue', 'purple'],
+    onPick: (i) => startLevel(i),
+    skins: SKINS.map((s, i) => ({ name: s.name, need: s.need, draw: (x, y, sz) => drawBird(x, y, { skin: i, scale: sz / 24, wing: time * 8 + i, blink: false }) })),
+    skin, onSkin: (i) => { skin = i; Save.set('skin', i); KG.sound('sparkle'); ui.burst(W / 2, H - 100 * U, { n: 16, speed: 200, g: 200 }); }
   });
 }
 
-function drawReadyHint() {
-  if (state !== 'ready') return;
-  const x = LW / 2, y = (LH - GROUND) * 0.72;
-  const s = 1 + Math.sin(time * 6) * 0.06;
-  ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
-  ctx.fillStyle = 'rgba(255,255,255,0.92)';
-  rr(-120, -30, 240, 60, 30); ctx.fill();
-  ctx.strokeStyle = '#ffd65c'; ctx.lineWidth = 4; ctx.stroke();
-  ctx.fillStyle = '#4a3b52'; ctx.font = 'bold 24px ' + FONT; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText('👆 點一下就飛！', 0, 1);
-  ctx.restore();
-  ctx.textBaseline = 'alphabetic';
-}
+Game.draw = () => {
+  if (scene === 'title') drawTitle();
+  else if (scene === 'map') { drawMap(); }
+  else {
+    const [sx, sy] = shakeOffset();
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.scale(S, S);
+    drawWorldBg(TH);
+    drawArch();
+    drawPipes();
+    drawGround(TH);
+    stars.forEach(s => drawStarItem(s.x, s.y + Math.sin(time * 4 + s.ph) * 5, 17, s.ph));
+    drawPlayBird();
+    if (TH.snow) { ctx.fillStyle = '#fff'; flakes.forEach(f => { ctx.globalAlpha = 0.85; ctx.beginPath(); circ(f.x, f.y, f.r); ctx.fill(); }); ctx.globalAlpha = 1; }
+    fx.draw();
+    ctx.restore();
+    vignette(TH.moon ? 0.35 : 0.15);
+    drawHud();
+  }
+  ui.draw();
+  Result.draw();
+};
 
-function draw() {
-  ctx.setTransform(dpr * S, 0, 0, dpr * S, 0, 0);
-  drawBackground();
-  drawPipes();
-  drawGround();
-  drawStars();
-  drawBird();
-  drawParts();
-  drawReadyHint();
-}
-
-/* ========== 主迴圈（只會啟動一次） ========== */
-let last = performance.now();
-function loop(now) {
-  const dt = Math.min(0.05, (now - last) / 1000);
-  last = now;
-  update(dt);
-  draw();
-  requestAnimationFrame(loop);
-}
-
-resize();
-initClouds();
-reset();
-requestAnimationFrame(loop);
-KG.showStart({
-  icon: '🐤',
-  title: '小鳥飛飛',
-  message: '點一下螢幕（或按空白鍵）讓小鳥往上飛，穿過大樹、撿星星！',
-  button: '開始飛！',
-  onStart: () => { reset(); state = 'ready'; }
-});
+bootGame();
+goTitle();
 </script>
 </body>
 </html>

@@ -7,18 +7,47 @@
 <link rel="stylesheet" href="../../assets/common.css">
 <style>
   html, body { height: 100%; overflow: hidden; background: #1b1446; }
-  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh; display: block; touch-action: none; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh; display: block; }
+  #gl { pointer-events: none; }
+  #ui { touch-action: none; }
+  #loading { position: fixed; inset: 0; display: grid; place-items: center; color: #ffe6b0; font-size: 22px; font-weight: 800; }
 </style>
+<script type="importmap">
+{ "imports": { "three": "../../assets/vendor/three/three.module.min.js", "three/addons/": "../../assets/vendor/three/addons/" } }
+</script>
+<script nomodule>location.replace('classic.html');</script>
 </head>
 <body>
-<canvas id="cv" aria-label="夜市彈珠台遊戲畫面"></canvas>
+<div id="loading">夜市彈珠台準備中…</div>
+<canvas id="gl"></canvas>
+<canvas id="ui" aria-label="夜市彈珠台遊戲畫面"></canvas>
 <script src="../../assets/common.js"></script>
 <script>
-(function () {
-  'use strict';
+  // 3D 載入失敗（太舊的瀏覽器）就改玩平面版
+  setTimeout(function () { if (!window.__pb3dReady) location.replace('classic.html'); }, 20000);
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
-  const cv = document.getElementById('cv');
+let renderer = null;
+try {
+  renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gl'), antialias: true, powerPreference: 'high-performance' });
+} catch (e) {
+  renderer = null;
+}
+if (!renderer) location.replace('classic.html');
+else main();
+
+function main() {
+  const cv = document.getElementById('ui');
   const ctx = cv.getContext('2d');
+
   const FONT = "'Baloo 2','PingFang TC','Noto Sans TC','Microsoft JhengHei',sans-serif";
   const font = (w, s) => w + ' ' + s + 'px ' + FONT;
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -217,6 +246,7 @@
     if (b.still > 1.2) { b.vx += (Math.random() - 0.5) * 160; b.vy -= 80; b.still = 0; }
   }
 
+
   /* =========================================================
    * 遊戲狀態
    * ========================================================= */
@@ -318,7 +348,7 @@
       if (win >= 20) {
         bigWin = { t: 0, n: win };
         KG.sound('win');
-        const sx = OX + (PFX + px) * S, sy = OY + (PFY + py) * S;
+        const [sx, sy] = boardToScreen(px, py);
         KG.confetti(sx, sy, 140);
         KG.vibrate(60);
       }
@@ -364,69 +394,6 @@
     startMusic();
   }
 
-  /* =========================================================
-   * 版面配置
-   * ========================================================= */
-  let W = 0, H = 0, dpr = 1, S = 1, OX = 0, OY = 0, CW = 440, CH = 980, mode = 'port';
-  const PFX = 20, PFY = 130;
-  let PANEL, UI, BULBS = [];
-  let bgCanvas = null, pfCanvas = null;
-
-  function layoutUI() {
-    if (mode === 'port') {
-      CW = 440; CH = 980;
-      PANEL = { x: 0, y: 800, w: 440, h: 180 };
-      UI = {
-        led: { x: 16, y: 812, w: 150, h: 62 },
-        betLabel: { x: 91, y: 892 },
-        minus: { x: 36, y: 930, r: 21 }, plus: { x: 146, y: 930, r: 21 }, betVal: { x: 91, y: 930 },
-        spin: { x: 238, y: 888, r: 54 },
-        knobX: PFX + LANE_X, knobTop: 806, knobRest: 838, knobPull: 62,
-        gauge: { x: 330, y: 814, w: 14, h: 150 },
-        plArea: { x: 312, y: 800, w: 128, h: 180 },
-        hint: { x: 372, y: 962 }
-      };
-    } else {
-      CW = 660; CH = 800;
-      PANEL = { x: 448, y: 130, w: 202, h: 660 };
-      UI = {
-        led: { x: 466, y: 146, w: 166, h: 70 },
-        betLabel: { x: 549, y: 248 },
-        minus: { x: 488, y: 290, r: 23 }, plus: { x: 610, y: 290, r: 23 }, betVal: { x: 549, y: 290 },
-        spin: { x: 549, y: 412, r: 60 },
-        knobX: 566, knobTop: 498, knobRest: 540, knobPull: 120,
-        gauge: { x: 488, y: 520, w: 16, h: 200 },
-        plArea: { x: 456, y: 490, w: 186, h: 290 },
-        hint: { x: 549, y: 760 }
-      };
-    }
-    // 外框跑馬燈的燈泡
-    BULBS = [];
-    const x0 = PFX - 6, y0 = PFY - 4, x1 = PFX + PW + 6, y1 = PFY + PH + 4;
-    const per = 2 * (x1 - x0) + 2 * (y1 - y0), n = Math.round(per / 24);
-    for (let i = 0; i < n; i++) {
-      let d = i * per / n, x, y;
-      if (d < x1 - x0) { x = x0 + d; y = y0; }
-      else if ((d -= x1 - x0) < y1 - y0) { x = x1; y = y0 + d; }
-      else if ((d -= y1 - y0) < x1 - x0) { x = x1 - d; y = y1; }
-      else { d -= x1 - x0; x = x0; y = y1 - d; }
-      BULBS.push({ x, y });
-    }
-  }
-
-  function resize() {
-    dpr = Math.min(2, window.devicePixelRatio || 1);
-    W = window.innerWidth; H = window.innerHeight;
-    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
-    const sP = Math.min(W / 440, (H - 6) / 980), sL = Math.min(W / 660, (H - 6) / 800);
-    mode = sL > sP * 1.08 ? 'land' : 'port';
-    layoutUI();
-    S = mode === 'port' ? sP : sL;
-    OX = (W - CW * S) / 2;
-    OY = Math.max(3, (H - CH * S) / 2);
-    buildBackground();
-    buildPlayfield();
-  }
 
   /* =========================================================
    * 繪圖小工具
@@ -474,24 +441,8 @@
     }
     c.closePath();
   }
-  function cabToScreen(x, y) { return [OX + x * S, OY + y * S]; }
 
-  /* =========================================================
-   * 背景：夜市 + 彈珠台機身（靜態，縮放時重畫）
-   * ========================================================= */
-  function buildBackground() {
-    bgCanvas = document.createElement('canvas');
-    bgCanvas.width = cv.width; bgCanvas.height = cv.height;
-    const c = bgCanvas.getContext('2d');
-    c.setTransform(dpr, 0, 0, dpr, 0, 0);
-    drawNightMarket(c);
-    c.save();
-    c.translate(OX, OY); c.scale(S, S);
-    drawCabinetBody(c);
-    c.restore();
-  }
-
-  function drawNightMarket(c) {
+  function drawNightMarket(c, W, H) {
     const sky = c.createLinearGradient(0, 0, 0, H);
     sky.addColorStop(0, '#120c33');
     sky.addColorStop(0.55, '#2e1b5e');
@@ -578,56 +529,7 @@
     }
   }
 
-  function drawCabinetBody(c) {
-    // 影子
-    c.fillStyle = 'rgba(0,0,0,.35)';
-    c.beginPath(); c.ellipse(CW / 2, CH + 2, CW * 0.48, 14, 0, 0, TAU); c.fill();
-    // 紅色烤漆機身
-    const body = c.createLinearGradient(0, 0, CW, 0);
-    body.addColorStop(0, '#8e1320'); body.addColorStop(0.15, '#d8323d'); body.addColorStop(0.5, '#e8414b'); body.addColorStop(0.85, '#d8323d'); body.addColorStop(1, '#8e1320');
-    rr(c, 0, 0, CW, CH, 26);
-    c.fillStyle = body; c.fill();
-    c.lineWidth = 5; c.strokeStyle = '#ffd36b'; c.stroke();
-    rr(c, 6, 6, CW - 12, CH - 12, 22);
-    c.lineWidth = 1.5; c.strokeStyle = 'rgba(255,240,200,.45)'; c.stroke();
-    // 招牌底
-    const mq = c.createLinearGradient(0, 8, 0, 116);
-    mq.addColorStop(0, '#2c1052'); mq.addColorStop(1, '#14072b');
-    rr(c, 12, 10, CW - 24, 108, 18);
-    c.fillStyle = mq; c.fill();
-    c.lineWidth = 3; c.strokeStyle = '#ffcf5a'; c.stroke();
-    // 彈珠台金框
-    const fr = c.createLinearGradient(PFX - 14, 0, PFX + PW + 14, 0);
-    fr.addColorStop(0, '#9c6a12'); fr.addColorStop(0.2, '#ffe08a'); fr.addColorStop(0.5, '#f2b632'); fr.addColorStop(0.8, '#ffe08a'); fr.addColorStop(1, '#9c6a12');
-    rr(c, PFX - 14, PFY - 12, PW + 28, PH + 24, 20);
-    c.fillStyle = fr; c.fill();
-    rr(c, PFX - 4, PFY - 3, PW + 8, PH + 6, 12);
-    c.fillStyle = '#3b1608'; c.fill();
-    // 操作面板
-    const pn = c.createLinearGradient(0, PANEL.y, 0, PANEL.y + PANEL.h);
-    pn.addColorStop(0, '#4a1b3a'); pn.addColorStop(1, '#25101f');
-    rr(c, PANEL.x + 8, PANEL.y + 4, PANEL.w - 16, PANEL.h - 14, 18);
-    c.fillStyle = pn; c.fill();
-    c.lineWidth = 2.5; c.strokeStyle = '#ffcf5a'; c.stroke();
-    [[PANEL.x + 20, PANEL.y + 16], [PANEL.x + PANEL.w - 20, PANEL.y + 16], [PANEL.x + 20, PANEL.y + PANEL.h - 22], [PANEL.x + PANEL.w - 20, PANEL.y + PANEL.h - 22]].forEach(p => {
-      const g = c.createRadialGradient(p[0] - 1, p[1] - 1, 0, p[0], p[1], 4);
-      g.addColorStop(0, '#fff6d0'); g.addColorStop(1, '#a0761c');
-      c.fillStyle = g; c.beginPath(); c.arc(p[0], p[1], 3.5, 0, TAU); c.fill();
-    });
-    // 拉桿軌道
-    const gx = UI.knobX;
-    c.fillStyle = '#12060e';
-    rr(c, gx - 7, UI.knobTop, 14, UI.knobRest + UI.knobPull - UI.knobTop + 26, 7); c.fill();
-    // 力量表外框
-    const gg = UI.gauge;
-    rr(c, gg.x - 3, gg.y - 3, gg.w + 6, gg.h + 6, 9);
-    c.fillStyle = '#12060e'; c.fill();
-    c.strokeStyle = '#a77a26'; c.lineWidth = 2; c.stroke();
-  }
 
-  /* =========================================================
-   * 盤面（靜態）：畫布、招財貓、釘子、洞口
-   * ========================================================= */
   function arcPath(c) {
     c.beginPath();
     c.moveTo(392, 200);
@@ -637,97 +539,6 @@
     c.closePath();
   }
 
-  function buildPlayfield() {
-    const k = S * dpr;
-    pfCanvas = document.createElement('canvas');
-    pfCanvas.width = Math.ceil(PW * k); pfCanvas.height = Math.ceil(PH * k);
-    const c = pfCanvas.getContext('2d');
-    c.scale(k, k);
-    // 外圍深色
-    c.fillStyle = '#2a0e05'; c.fillRect(0, 0, PW, PH);
-    c.save();
-    arcPath(c); c.clip();
-    // 底圖：放射光 + 漸層
-    const bg = c.createRadialGradient(190, 330, 20, 190, 330, 420);
-    bg.addColorStop(0, '#6a3bc8'); bg.addColorStop(0.5, '#3d1f8a'); bg.addColorStop(1, '#1a0d4a');
-    c.fillStyle = bg; c.fillRect(0, 0, PW, PH);
-    c.save();
-    c.translate(190, 340);
-    for (let i = 0; i < 24; i++) {
-      c.rotate(TAU / 24);
-      c.fillStyle = i % 2 ? 'rgba(255,255,255,.045)' : 'rgba(255,200,255,.02)';
-      c.beginPath(); c.moveTo(0, 0); c.lineTo(-40, -520); c.lineTo(40, -520); c.closePath(); c.fill();
-    }
-    c.restore();
-    // 小星星
-    let seed = 11;
-    const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-    for (let i = 0; i < 40; i++) {
-      c.fillStyle = 'rgba(255,240,200,' + (0.25 + rnd() * 0.5) + ')';
-      star(c, 20 + rnd() * 340, 40 + rnd() * 540, 2 + rnd() * 3, rnd());
-      c.fill();
-    }
-    // 月亮
-    c.fillStyle = '#fff3c4';
-    c.beginPath(); c.arc(92, 112, 24, 0, TAU); c.fill();
-    c.fillStyle = '#3a1d85';
-    c.beginPath(); c.arc(103, 104, 22, 0, TAU); c.fill();
-    // 「幸運夜市」緞帶
-    drawRibbon(c, 200, 70);
-    // 燈籠串
-    c.strokeStyle = 'rgba(255,220,160,.6)'; c.lineWidth = 1.2;
-    c.beginPath(); c.moveTo(40, 150); c.quadraticCurveTo(200, 200, 350, 150); c.stroke();
-    for (let i = 0; i <= 8; i++) {
-      const t = i / 8, x = 40 + t * 310, y = (1 - t) * (1 - t) * 150 + 2 * (1 - t) * t * 200 + t * t * 150;
-      c.fillStyle = ['#ff5a5a', '#ffd04a', '#7fd6ff', '#ff8fd0'][i % 4];
-      c.beginPath(); c.ellipse(x, y + 7, 5, 6, 0, 0, TAU); c.fill();
-      c.fillStyle = 'rgba(255,255,255,.6)'; c.fillRect(x - 3, y, 6, 1.5);
-    }
-    // 招財貓
-    drawLuckyCat(c, 185, 372, 1);
-    // 洞口
-    for (let i = 0; i < SLOTS; i++) drawSlot(c, i);
-    // 發射軌道
-    const lane = c.createLinearGradient(SEP_X, 0, 392, 0);
-    lane.addColorStop(0, '#1b0b36'); lane.addColorStop(0.5, '#2c1460'); lane.addColorStop(1, '#1b0b36');
-    c.fillStyle = lane; c.fillRect(SEP_X, 170, 392 - SEP_X, PH - 170);
-    for (let y = 250; y < 600; y += 46) {
-      c.strokeStyle = 'rgba(255,220,120,.35)'; c.lineWidth = 2.5; c.lineCap = 'round';
-      c.beginPath(); c.moveTo(LANE_X - 6, y + 6); c.lineTo(LANE_X, y); c.lineTo(LANE_X + 6, y + 6); c.stroke();
-    }
-    c.restore();
-    // 金屬軌道與牆
-    chrome(c, () => { c.beginPath(); c.arc(ARC.x, ARC.y, ARC.r + 1.5, 0, Math.PI, true); }, 5);
-    chrome(c, () => { c.beginPath(); c.moveTo(7, 200); c.lineTo(7, PH); }, 4);
-    chrome(c, () => { c.beginPath(); c.moveTo(393, 200); c.lineTo(393, PH); }, 4);
-    chrome(c, () => { c.beginPath(); c.moveTo(SEP_X, 170); c.lineTo(SEP_X, PH); }, 4);
-    DIVIDERS.forEach(x => chrome(c, () => { c.beginPath(); c.moveTo(x, SLOT_TOP); c.lineTo(x, PH); }, 3.5));
-    RAMPS.forEach(r => chrome(c, () => { c.beginPath(); c.moveTo(r[0], r[1]); c.lineTo(r[2], r[3]); }, 3.5));
-    // 釘子
-    PINS.forEach(p => drawPin(c, p.x, p.y));
-    DIVIDERS.forEach(x => drawPin(c, x, SLOT_TOP, 3.4));
-    drawPin(c, SEP_X, 170, 3.4);
-    RAMPS.forEach(r => drawPin(c, r[2], r[3], 3));
-    CUPS.forEach(cp => { drawPin(c, cp.x - cp.w, cp.y - 12, 3); drawPin(c, cp.x + cp.w, cp.y - 12, 3); });
-  }
-
-  function chrome(c, path, w) {
-    c.save();
-    c.lineCap = 'round';
-    path(); c.strokeStyle = 'rgba(0,0,0,.45)'; c.lineWidth = w + 2.5; c.stroke();
-    path(); c.strokeStyle = '#9aa3b4'; c.lineWidth = w; c.stroke();
-    path(); c.strokeStyle = 'rgba(255,255,255,.75)'; c.lineWidth = w * 0.35; c.stroke();
-    c.restore();
-  }
-  function drawPin(c, x, y, r) {
-    r = r || 2.6;
-    c.fillStyle = 'rgba(0,0,0,.4)';
-    c.beginPath(); c.arc(x + 1.2, y + 1.8, r, 0, TAU); c.fill();
-    const g = c.createRadialGradient(x - r * 0.4, y - r * 0.4, 0.2, x, y, r);
-    g.addColorStop(0, '#fffbe0'); g.addColorStop(0.45, '#f0c24a'); g.addColorStop(1, '#8a5a10');
-    c.fillStyle = g;
-    c.beginPath(); c.arc(x, y, r, 0, TAU); c.fill();
-  }
   function drawRibbon(c, x, y) {
     c.save();
     c.translate(x, y);
@@ -813,376 +624,685 @@
     }
   }
 
+
   /* =========================================================
-   * 動態繪圖
+   * 盤面圖案（貼在 3D 盤面上的印刷圖）
    * ========================================================= */
-  function drawBumper(c, b, t, i) {
-    const s = 1 + b.flash * 0.18;
+  function paintBoard(scale) {
+    const cnv = document.createElement('canvas');
+    cnv.width = Math.round(PW * scale); cnv.height = Math.round(PH * scale);
+    const c = cnv.getContext('2d');
+    c.scale(scale, scale);
+    c.fillStyle = '#2a0e05'; c.fillRect(0, 0, PW, PH);
     c.save();
-    c.translate(b.x, b.y); c.scale(s, s);
-    c.fillStyle = 'rgba(0,0,0,.35)';
-    c.beginPath(); c.ellipse(2, 4, b.r + 2, b.r, 0, 0, TAU); c.fill();
-    c.fillStyle = '#d9dee8';
-    c.beginPath(); c.arc(0, 0, b.r + 3, 0, TAU); c.fill();
-    const g = c.createRadialGradient(-5, -6, 2, 0, 0, b.r);
-    g.addColorStop(0, b.flash > 0.2 ? '#ffffff' : b.c1); g.addColorStop(1, b.c2);
-    c.fillStyle = g;
-    c.beginPath(); c.arc(0, 0, b.r, 0, TAU); c.fill();
-    c.strokeStyle = b.d; c.lineWidth = 2; c.stroke();
-    // 臉
-    c.strokeStyle = '#3a2340'; c.fillStyle = '#3a2340'; c.lineWidth = 1.8; c.lineCap = 'round';
-    const blink = ((t + i * 1.3) % 3.4) < 0.12;
-    if (b.flash > 0.2) {
-      c.beginPath(); c.arc(-5, -2, 3, Math.PI * 1.1, Math.PI * 1.9); c.stroke();
-      c.beginPath(); c.arc(5, -2, 3, Math.PI * 1.1, Math.PI * 1.9); c.stroke();
-      c.beginPath(); c.arc(0, 4, 4, 0, Math.PI); c.fill();
-    } else if (blink) {
-      c.beginPath(); c.moveTo(-7, -2); c.lineTo(-3, -2); c.moveTo(3, -2); c.lineTo(7, -2); c.stroke();
-      c.beginPath(); c.arc(0, 3, 3, 0.1, Math.PI - 0.1); c.stroke();
-    } else {
-      c.beginPath(); c.arc(-5, -2, 2.2, 0, TAU); c.fill();
-      c.beginPath(); c.arc(5, -2, 2.2, 0, TAU); c.fill();
-      c.fillStyle = '#fff';
-      c.beginPath(); c.arc(-4.3, -2.8, 0.8, 0, TAU); c.fill();
-      c.beginPath(); c.arc(5.7, -2.8, 0.8, 0, TAU); c.fill();
-      c.beginPath(); c.arc(0, 3, 3, 0.1, Math.PI - 0.1); c.stroke();
-    }
-    c.fillStyle = 'rgba(255,140,170,.55)';
-    c.beginPath(); c.arc(-9, 3, 2.4, 0, TAU); c.fill();
-    c.beginPath(); c.arc(9, 3, 2.4, 0, TAU); c.fill();
-    c.fillStyle = 'rgba(255,255,255,.7)';
-    c.beginPath(); c.ellipse(-6, -9, 5, 2.5, -0.5, 0, TAU); c.fill();
-    if (b.flash > 0) {
-      c.strokeStyle = 'rgba(255,255,255,' + b.flash + ')'; c.lineWidth = 3;
-      c.beginPath(); c.arc(0, 0, b.r + 6 + (1 - b.flash) * 10, 0, TAU); c.stroke();
+    arcPath(c); c.clip();
+    const bg = c.createRadialGradient(190, 330, 20, 190, 330, 420);
+    bg.addColorStop(0, '#6a3bc8'); bg.addColorStop(0.5, '#3d1f8a'); bg.addColorStop(1, '#1a0d4a');
+    c.fillStyle = bg; c.fillRect(0, 0, PW, PH);
+    c.save();
+    c.translate(190, 340);
+    for (let i = 0; i < 24; i++) {
+      c.rotate(TAU / 24);
+      c.fillStyle = i % 2 ? 'rgba(255,255,255,.045)' : 'rgba(255,200,255,.02)';
+      c.beginPath(); c.moveTo(0, 0); c.lineTo(-40, -520); c.lineTo(40, -520); c.closePath(); c.fill();
     }
     c.restore();
-  }
-
-  function drawCup(c, cp, t) {
-    const glow = cp.flash > 0 ? cp.flash : 0;
-    c.save();
-    c.translate(cp.x, cp.y);
-    if (glow) {
-      const g = c.createRadialGradient(0, 0, 2, 0, 0, 40);
-      g.addColorStop(0, 'rgba(255,240,150,' + 0.8 * Math.min(1, glow) + ')'); g.addColorStop(1, 'rgba(255,240,150,0)');
-      c.fillStyle = g; c.beginPath(); c.arc(0, 0, 40, 0, TAU); c.fill();
-    }
-    if (cp.kind === 'tulip') {
-      // 鬱金香花瓣
-      const sway = Math.sin(t * 2 + cp.x) * 0.04;
-      [-1, 1].forEach(sd => {
-        c.save(); c.rotate(sway * sd);
-        const g = c.createLinearGradient(sd * 15, -12, sd * 6, 8);
-        g.addColorStop(0, '#ff7a9a'); g.addColorStop(1, '#d81e4a');
-        c.fillStyle = g; c.strokeStyle = '#8a1030'; c.lineWidth = 1.5;
-        c.beginPath();
-        c.moveTo(sd * (cp.w + 1), -14);
-        c.quadraticCurveTo(sd * (cp.w + 6), 2, sd * 8, 10);
-        c.lineTo(sd * 6, 6);
-        c.quadraticCurveTo(sd * (cp.w - 4), -2, sd * (cp.w - 2), -14);
-        c.closePath(); c.fill(); c.stroke();
-        c.restore();
-      });
-      c.fillStyle = '#5a1030';
-      rr(c, -9, 6, 18, 6, 3); c.fill();
-      c.fillStyle = '#3fae5c';
-      c.fillRect(-1.5, 12, 3, 8);
-      c.beginPath(); c.ellipse(-6, 18, 6, 2.5, -0.5, 0, TAU); c.fill();
-    } else {
-      // 金色獎盃
-      const g = c.createLinearGradient(-14, 0, 14, 0);
-      g.addColorStop(0, '#a8700e'); g.addColorStop(0.35, '#fff1a0'); g.addColorStop(0.65, '#ffc93c'); g.addColorStop(1, '#a8700e');
-      c.fillStyle = g; c.strokeStyle = '#7a4d06'; c.lineWidth = 1.5;
-      c.beginPath();
-      c.moveTo(-cp.w - 1, -14); c.lineTo(-7, 8); c.lineTo(7, 8); c.lineTo(cp.w + 1, -14);
-      c.lineTo(cp.w - 3, -14); c.lineTo(5, 5); c.lineTo(-5, 5); c.lineTo(-cp.w + 3, -14);
-      c.closePath(); c.fill(); c.stroke();
-      c.beginPath(); c.arc(-cp.w - 2, -6, 5, Math.PI * 0.5, Math.PI * 1.5); c.stroke();
-      c.beginPath(); c.arc(cp.w + 2, -6, 5, -Math.PI * 0.5, Math.PI * 0.5); c.stroke();
-      c.fillStyle = g;
-      rr(c, -8, 8, 16, 5, 2); c.fill(); c.stroke();
-      rr(c, -11, 14, 22, 5, 2); c.fill(); c.stroke();
-      c.fillStyle = 'rgba(255,255,255,.9)';
-      star(c, 0, -20 + Math.sin(t * 3) * 1.5, 4, t);
+    let seed = 11;
+    const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    for (let i = 0; i < 40; i++) {
+      c.fillStyle = 'rgba(255,240,200,' + (0.25 + rnd() * 0.5) + ')';
+      star(c, 20 + rnd() * 340, 40 + rnd() * 540, 2 + rnd() * 3, rnd());
       c.fill();
     }
-    // 數字牌
-    const plateY = cp.kind === 'gold' ? 28 : 28;
-    rr(c, -15, plateY - 8, 30, 16, 8);
-    c.fillStyle = cp.kind === 'gold' ? '#ffcf3f' : '#ff5f8a'; c.fill();
-    c.strokeStyle = '#fff'; c.lineWidth = 1.5; c.stroke();
-    txt(c, '×' + cp.value, 0, plateY + 0.5, 11, cp.kind === 'gold' ? '#6b3f00' : '#ffffff');
-    c.restore();
-  }
-
-  function drawSlotsDynamic(c, t) {
-    for (let i = 0; i < SLOTS; i++) {
-      const x0 = SLOT_L + i * SLOT_W, cx = x0 + SLOT_W / 2;
-      const lit = slotFlash[i] > 0 && Math.floor(slotFlash[i] * 10) % 2 === 0;
-      // 每個洞上面的小燈
-      const g = c.createRadialGradient(cx, 605, 0.5, cx, 605, lit ? 10 : 4);
-      g.addColorStop(0, lit ? '#ffffff' : 'rgba(255,240,180,.8)');
-      g.addColorStop(1, lit ? 'rgba(255,230,120,0)' : 'rgba(255,200,120,.1)');
-      c.fillStyle = g;
-      c.beginPath(); c.arc(cx, 605, lit ? 10 : 4, 0, TAU); c.fill();
-      if (slotFlash[i] > 0) {
-        c.fillStyle = 'rgba(255,255,220,' + 0.35 * Math.min(1, slotFlash[i]) + ')';
-        c.fillRect(x0 + 1, SLOT_TOP, SLOT_W - 2, PH - SLOT_TOP);
-      }
+    c.fillStyle = '#fff3c4';
+    c.beginPath(); c.arc(92, 112, 24, 0, TAU); c.fill();
+    c.fillStyle = '#3a1d85';
+    c.beginPath(); c.arc(103, 104, 22, 0, TAU); c.fill();
+    drawRibbon(c, 200, 70);
+    c.strokeStyle = 'rgba(255,220,160,.6)'; c.lineWidth = 1.2;
+    c.beginPath(); c.moveTo(40, 150); c.quadraticCurveTo(200, 200, 350, 150); c.stroke();
+    for (let i = 0; i <= 8; i++) {
+      const t = i / 8, x = 40 + t * 310, y = (1 - t) * (1 - t) * 150 + 2 * (1 - t) * t * 200 + t * t * 150;
+      c.fillStyle = ['#ff5a5a', '#ffd04a', '#7fd6ff', '#ff8fd0'][i % 4];
+      c.beginPath(); c.ellipse(x, y + 7, 5, 6, 0, 0, TAU); c.fill();
+      c.fillStyle = 'rgba(255,255,255,.6)'; c.fillRect(x - 3, y, 6, 1.5);
     }
-  }
-
-  function drawPlayfieldDynamic(c, t) {
-    c.save();
-    c.translate(PFX, PFY);
-    c.drawImage(pfCanvas, 0, 0, PW, PH);
-    c.save();
-    arcPath(c); c.clip();
-    // 釘子被打到時閃一下
-    for (let i = 0; i < PINS.length; i++) {
-      const p = PINS[i];
-      if (p.flash > 0) {
-        c.fillStyle = 'rgba(255,250,200,' + p.flash * 0.8 + ')';
-        c.beginPath(); c.arc(p.x, p.y, 3 + p.flash * 4, 0, TAU); c.fill();
-      }
-    }
-    drawSlotsDynamic(c, t);
-    CUPS.forEach(cp => drawCup(c, cp, t));
-    BUMPERS.forEach((b, i) => drawBumper(c, b, t, i));
-    // 發射台與待發射的鋼珠
-    const pull = charging ? chargePower() : 0;
-    const plY = 652 + pull * 6;
-    const pg = c.createLinearGradient(SEP_X, 0, 392, 0);
-    pg.addColorStop(0, '#6d7688'); pg.addColorStop(0.5, '#e7ecf3'); pg.addColorStop(1, '#6d7688');
-    c.fillStyle = pg;
-    rr(c, SEP_X + 2, plY, 392 - SEP_X - 4, 10, 3); c.fill();
-    if (phase === 'play' && st.balls > 0 && cooldown <= 0) {
-      c.fillStyle = 'rgba(0,0,0,.3)';
-      c.beginPath(); c.ellipse(LANE_X + 1.5, plY - R + 3, R, R * 0.6, 0, 0, TAU); c.fill();
-      steelBall(c, LANE_X, plY - R, R);
-    }
-    // 飛行中的鋼珠
-    flying.forEach(b => {
-      for (let i = 0; i < b.trail.length; i++) {
-        const p = b.trail[i];
-        c.fillStyle = 'rgba(200,220,255,' + (i / b.trail.length) * 0.25 + ')';
-        c.beginPath(); c.arc(p[0], p[1], R * (0.4 + 0.6 * i / b.trail.length), 0, TAU); c.fill();
-      }
-      c.fillStyle = 'rgba(0,0,0,.3)';
-      c.beginPath(); c.ellipse(b.x + 2.5, b.y + 4, R, R * 0.7, 0, 0, TAU); c.fill();
-      steelBall(c, b.x, b.y, R);
-      if (b.bet >= 5) {
-        c.strokeStyle = 'rgba(255,215,64,' + (0.6 + 0.4 * Math.sin(t * 12)) + ')';
-        c.lineWidth = 2;
-        c.beginPath(); c.arc(b.x, b.y, R + 3, 0, TAU); c.stroke();
-      }
+    drawLuckyCat(c, 185, 372, 1);
+    for (let i = 0; i < SLOTS; i++) drawSlot(c, i);
+    // 洞口下面的數字牌
+    CUPS.forEach(cp => {
+      const py = cp.y + 28;
+      rr(c, cp.x - 15, py - 8, 30, 16, 8);
+      c.fillStyle = cp.kind === 'gold' ? '#ffcf3f' : '#ff5f8a'; c.fill();
+      c.strokeStyle = '#fff'; c.lineWidth = 1.5; c.stroke();
+      txt(c, '×' + cp.value, cp.x, py + 0.5, 11, cp.kind === 'gold' ? '#6b3f00' : '#ffffff');
     });
-    // 粒子
-    parts.forEach(p => {
-      c.globalAlpha = Math.max(0, Math.min(1, p.life * 1.5));
-      c.fillStyle = p.c;
-      if (p.star) { star(c, p.x, p.y, p.r * 2, p.life * 5); c.fill(); }
-      else { c.beginPath(); c.arc(p.x, p.y, p.r, 0, TAU); c.fill(); }
-    });
-    c.globalAlpha = 1;
-    // 飄起來的字
-    floats.forEach(f => {
-      const a = Math.min(1, f.life * 1.4), rise = (1.6 - f.life) * 30;
-      const pop = f.life > 1.45 ? 0.6 + (1.6 - f.life) * 2.7 : 1;
-      c.globalAlpha = a;
-      txt(c, f.text, clamp(f.x, 50, SEP_X - 50), f.y - rise, f.size * pop, f.color, { stroke: f.stroke, sw: f.size * 0.25 });
-    });
-    c.globalAlpha = 1;
-    c.restore();
-    // 玻璃反光
-    c.save();
-    arcPath(c); c.clip();
-    const gl = c.createLinearGradient(0, 0, PW, PH * 0.6);
-    gl.addColorStop(0, 'rgba(255,255,255,0)');
-    gl.addColorStop(0.42, 'rgba(255,255,255,0)');
-    gl.addColorStop(0.47, 'rgba(255,255,255,.09)');
-    gl.addColorStop(0.55, 'rgba(255,255,255,.03)');
-    gl.addColorStop(0.6, 'rgba(255,255,255,0)');
-    c.fillStyle = gl; c.fillRect(0, 0, PW, PH);
-    c.restore();
-    // 大獎
-    if (bigWin) {
-      const k = bigWin.t;
-      const sc = k < 0.3 ? 0.3 + k / 0.3 * 0.9 : 1.2 - Math.min(0.2, (k - 0.3) * 0.5);
-      c.save();
-      c.globalAlpha = k > 1.6 ? Math.max(0, 1 - (k - 1.6) / 0.5) : 1;
-      c.translate(185, 320); c.scale(sc, sc); c.rotate(Math.sin(k * 10) * 0.04);
-      txt(c, '大獎！', 0, -18, 54, '#ffe14a', { stroke: '#b8121f', sw: 12, glow: '#ff9a3d', blur: 20 });
-      txt(c, '+' + bigWin.n + ' 顆', 0, 32, 30, '#ffffff', { stroke: '#6a2ab0', sw: 8 });
-      c.restore();
+    const lane = c.createLinearGradient(SEP_X, 0, 392, 0);
+    lane.addColorStop(0, '#1b0b36'); lane.addColorStop(0.5, '#2c1460'); lane.addColorStop(1, '#1b0b36');
+    c.fillStyle = lane; c.fillRect(SEP_X, 170, 392 - SEP_X, PH - 170);
+    for (let y = 250; y < 600; y += 46) {
+      c.strokeStyle = 'rgba(255,220,120,.35)'; c.lineWidth = 2.5; c.lineCap = 'round';
+      c.beginPath(); c.moveTo(LANE_X - 6, y + 6); c.lineTo(LANE_X, y); c.lineTo(LANE_X + 6, y + 6); c.stroke();
     }
+    // 每根釘子底下一點點陰影，看起來像真的釘在木板上
+    c.fillStyle = 'rgba(0,0,0,.28)';
+    OBS.forEach(o => { if (o.t === 'c' && o.r < 4) { c.beginPath(); c.arc(o.x + 0.6, o.y + 0.8, o.r + 1.2, 0, TAU); c.fill(); } });
     c.restore();
+    return cnv;
   }
 
-  function lampX(i) { return CW / 2 + (i - (MULTS.length - 1) / 2) * (mode === 'port' ? 62 : 70); }
-  function drawMarquee(c, t) {
-    const flick = Math.sin(t * 37) > 0.97 ? 0.55 : 1;
-    c.save();
-    c.globalAlpha = flick;
-    txt(c, '夜市彈珠台', CW / 2, 42, mode === 'port' ? 38 : 42, '#ffe9f6', { stroke: '#ff3d9a', sw: 4, glow: '#ff4fa8', blur: 18 });
-    c.restore();
-    // 倍率燈
-    for (let i = 0; i < MULTS.length; i++) {
-      const x = lampX(i), y = 88;
-      let lit = 0;
-      const afford = MULTS[i] <= Math.max(1, st.balls);
-      if (spin.state === 'spinning') lit = i === spin.idx ? 1 : 0;
-      else if (i === betIdx) lit = 0.85 + 0.15 * Math.sin(t * 5);
-      else lit = afford ? 0.12 : 0;
-      const cols = ['#7fe0ff', '#7dff9a', '#ffe14a', '#ff9a3d', '#ff4f8a'];
-      if (lit > 0.5) {
-        const g = c.createRadialGradient(x, y, 2, x, y, 34);
-        g.addColorStop(0, cols[i]); g.addColorStop(1, 'rgba(0,0,0,0)');
-        c.globalAlpha = lit * 0.8;
-        c.fillStyle = g; c.beginPath(); c.arc(x, y, 34, 0, TAU); c.fill();
-        c.globalAlpha = 1;
-      }
-      c.fillStyle = '#0c0418';
-      c.beginPath(); c.arc(x, y, 21, 0, TAU); c.fill();
-      const g2 = c.createRadialGradient(x - 5, y - 6, 2, x, y, 19);
-      g2.addColorStop(0, lit > 0.5 ? '#ffffff' : 'rgba(255,255,255,' + (0.15 + lit) + ')');
-      g2.addColorStop(1, lit > 0.5 ? cols[i] : 'rgba(80,60,110,' + (0.6 + lit) + ')');
-      c.fillStyle = g2;
-      c.beginPath(); c.arc(x, y, 18, 0, TAU); c.fill();
-      c.strokeStyle = '#ffcf5a'; c.lineWidth = 2;
-      c.beginPath(); c.arc(x, y, 20, 0, TAU); c.stroke();
-      txt(c, '×' + MULTS[i], x, y + 1, MULTS[i] >= 10 ? 14 : 16, lit > 0.5 ? '#3a1050' : afford ? 'rgba(255,240,255,.75)' : 'rgba(255,240,255,.25)');
-    }
+
+  /* =========================================================
+   * 3D 場景
+   * ========================================================= */
+  const K = 0.01;                       // 盤面 1 像素 = 0.01 個 3D 單位
+  const wx = x => (x - 200) * K;
+  const wy = y => (330 - y) * K;
+  const BALL_Z = R * K;
+  const WALL_H = 0.2, PIN_H = 0.17;
+  let W = innerWidth, H = innerHeight, mode = '';
+  const small = Math.min(W, H) < 600;
+
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, small ? 1.75 : 2));
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.0;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x140c30);
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  scene.environmentIntensity = 0.32;
+  const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 80);
+
+  scene.add(new THREE.HemisphereLight(0x9a8cff, 0x2a1030, 0.25));
+  const key = new THREE.DirectionalLight(0xfff0dc, 1.7);
+  key.position.set(-2.4, 5.2, 8);
+  key.castShadow = true;
+  key.shadow.mapSize.set(small ? 1024 : 2048, small ? 1024 : 2048);
+  Object.assign(key.shadow.camera, { left: -3.2, right: 5.2, top: 5.6, bottom: -6.6, near: 1, far: 25 });
+  key.shadow.bias = -0.0005;
+  key.shadow.normalBias = 0.012;
+  key.shadow.radius = 3;
+  scene.add(key, key.target);
+  const pinkL = new THREE.PointLight(0xff4fa8, 14, 18, 1.6);
+  pinkL.position.set(-6, 3.5, 5);
+  const cyanL = new THREE.PointLight(0x58d8ff, 10, 18, 1.6);
+  cyanL.position.set(7, -1.5, 5);
+  scene.add(pinkL, cyanL);
+
+  const MAT = {
+    chrome: new THREE.MeshStandardMaterial({ color: 0xeef1f6, metalness: 1, roughness: 0.16 }),
+    brass: new THREE.MeshStandardMaterial({ color: 0xf2c766, metalness: 1, roughness: 0.26 }),
+    gold: new THREE.MeshStandardMaterial({ color: 0xffcf5a, metalness: 1, roughness: 0.24 }),
+    lacquer: new THREE.MeshPhysicalMaterial({ color: 0xc81e2c, roughness: 0.36, clearcoat: 1, clearcoatRoughness: 0.08 }),
+    marquee: new THREE.MeshPhysicalMaterial({ color: 0x23103f, roughness: 0.45, clearcoat: 0.8, clearcoatRoughness: 0.15 }),
+    panel: new THREE.MeshPhysicalMaterial({ color: 0x4a1636, roughness: 0.42, clearcoat: 0.9, clearcoatRoughness: 0.18 }),
+    groove: new THREE.MeshStandardMaterial({ color: 0x0b0307, roughness: 0.85 }),
+    ball: new THREE.MeshStandardMaterial({ color: 0xf6f8fb, metalness: 1, roughness: 0.05 }),
+    red: new THREE.MeshPhysicalMaterial({ color: 0xe8213a, roughness: 0.18, clearcoat: 1, clearcoatRoughness: 0.05 })
+  };
+
+  function makeCanvas(w, h) {
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 4;
+    return { canvas, c: canvas.getContext('2d'), tex };
+  }
+  function canvasTex(w, h, draw) {
+    const o = makeCanvas(w, h);
+    draw(o.c, w, h);
+    o.tex.needsUpdate = true;
+    return o.tex;
+  }
+  function decal(w, h, tex, glow) {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ map: tex, transparent: true, toneMapped: !glow, depthWrite: false }));
+    return m;
+  }
+  function roundRectShape(x, y, w, h, r, shape) {
+    const s = shape || new THREE.Shape();
+    s.moveTo(x + r, y);
+    s.lineTo(x + w - r, y); s.quadraticCurveTo(x + w, y, x + w, y + r);
+    s.lineTo(x + w, y + h - r); s.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    s.lineTo(x + r, y + h); s.quadraticCurveTo(x, y + h, x, y + h - r);
+    s.lineTo(x, y + r); s.quadraticCurveTo(x, y, x + r, y);
+    return s;
+  }
+  function frameRing(x, y, w, h, r, inset, depth, mat, bevel) {
+    const outer = roundRectShape(x, y, w, h, r);
+    outer.holes.push(roundRectShape(x + inset, y + inset, w - inset * 2, h - inset * 2, Math.max(0.02, r - inset * 0.7), new THREE.Path()));
+    const geo = new THREE.ExtrudeGeometry(outer, { depth, bevelEnabled: !!bevel, bevelThickness: bevel || 0, bevelSize: bevel || 0, bevelSegments: 3, curveSegments: 10 });
+    const m = new THREE.Mesh(geo, mat);
+    m.castShadow = m.receiveShadow = true;
+    return m;
+  }
+  function shadowy(m) { m.castShadow = true; m.receiveShadow = true; return m; }
+
+  /* ---------- 背景：夜市 ---------- */
+  const bgCnv = document.createElement('canvas');
+  bgCnv.width = 2048; bgCnv.height = 1152;
+  drawNightMarket(bgCnv.getContext('2d'), 2048, 1152);
+  const bgTex = new THREE.CanvasTexture(bgCnv);
+  bgTex.colorSpace = THREE.SRGBColorSpace;
+  const bgMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: bgTex, color: 0xb8b0c8 }));
+  bgMesh.position.z = -10;
+  scene.add(bgMesh);
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(60, 30), new THREE.MeshStandardMaterial({ color: 0x1c1026, roughness: 0.85 }));
+  floor.rotation.x = -Math.PI / 2;
+  floor.receiveShadow = true;
+  scene.add(floor);
+
+  /* ---------- 盤面 ---------- */
+  const board = new THREE.Group();
+  scene.add(board);
+  const boardTex = new THREE.CanvasTexture(paintBoard(small ? 2 : 2.6));
+  boardTex.colorSpace = THREE.SRGBColorSpace;
+  boardTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  const boardMesh = new THREE.Mesh(new THREE.PlaneGeometry(PW * K, PH * K),
+    new THREE.MeshPhysicalMaterial({ map: boardTex, roughness: 0.5, clearcoat: 0.35, clearcoatRoughness: 0.3 }));
+  boardMesh.receiveShadow = true;
+  board.add(boardMesh);
+
+  // 金屬軌道（弧形）
+  {
+    const cx = wx(ARC.x), cy = wy(ARC.y), r0 = ARC.r * K, r1 = (ARC.r + 5) * K;
+    const sh = new THREE.Shape();
+    sh.absarc(cx, cy, r1, 0, Math.PI, false);
+    sh.lineTo(cx - r0, cy);
+    sh.absarc(cx, cy, r0, Math.PI, 0, true);
+    sh.lineTo(cx + r1, cy);
+    const arcMesh = new THREE.Mesh(new THREE.ExtrudeGeometry(sh, { depth: WALL_H, bevelEnabled: false, curveSegments: 72 }), MAT.chrome);
+    board.add(shadowy(arcMesh));
+  }
+  function wallBox(x1, y1, x2, y2, thick, mat, h) {
+    h = h || WALL_H;
+    const len = Math.hypot(x2 - x1, y2 - y1) * K;
+    const m = new THREE.Mesh(new THREE.BoxGeometry(len, thick * K, h), mat || MAT.chrome);
+    m.position.set(wx((x1 + x2) / 2), wy((y1 + y2) / 2), h / 2);
+    m.rotation.z = -Math.atan2(y2 - y1, x2 - x1);
+    board.add(shadowy(m));
+    return m;
+  }
+  wallBox(6, 200, 6, PH, 4);
+  wallBox(394, 200, 394, PH, 4);
+  wallBox(SEP_X, 170, SEP_X, PH, 3);
+  DIVIDERS.forEach(x => wallBox(x, SLOT_TOP, x, PH, 3));
+  RAMPS.forEach(r => wallBox(r[0], r[1], r[2], r[3], 3));
+
+  // 釘子（黃銅）
+  {
+    const posts = OBS.filter(o => o.t === 'c' && o.r < 4);
+    const shaftGeo = new THREE.CylinderGeometry(1, 1, PIN_H, 12, 1);
+    shaftGeo.rotateX(Math.PI / 2);
+    shaftGeo.translate(0, 0, PIN_H / 2);
+    const headGeo = new THREE.SphereGeometry(1, 14, 10);
+    const shafts = new THREE.InstancedMesh(shaftGeo, MAT.brass, posts.length);
+    const heads = new THREE.InstancedMesh(headGeo, MAT.brass, posts.length);
+    const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), v = new THREE.Vector3(), s = new THREE.Vector3();
+    posts.forEach((p, i) => {
+      const r = p.r * K;
+      m4.compose(v.set(wx(p.x), wy(p.y), 0), q, s.set(r * 0.85, r * 0.85, 1));
+      shafts.setMatrixAt(i, m4);
+      m4.compose(v.set(wx(p.x), wy(p.y), PIN_H), q, s.set(r * 1.25, r * 1.25, r * 0.9));
+      heads.setMatrixAt(i, m4);
+    });
+    shafts.castShadow = heads.castShadow = true;
+    board.add(shafts, heads);
   }
 
-  function drawBulbs(c, t) {
-    const fast = bigWin ? 22 : 7;
-    const ph = Math.floor(t * fast);
-    const cols = ['#ffe14a', '#ff5f9e', '#7fe0ff'];
-    BULBS.forEach((b, i) => {
-      const on = (i + ph) % 3 === 0;
-      const col = cols[(i + Math.floor(ph / 3)) % 3];
-      if (on) {
-        const g = c.createRadialGradient(b.x, b.y, 0.5, b.x, b.y, 9);
-        g.addColorStop(0, '#ffffff'); g.addColorStop(0.4, col); g.addColorStop(1, 'rgba(0,0,0,0)');
-        c.fillStyle = g; c.beginPath(); c.arc(b.x, b.y, 9, 0, TAU); c.fill();
+  // 彈跳球（有臉）
+  function faceTexture(kind) {
+    return canvasTex(256, 256, (c) => {
+      c.translate(128, 128);
+      c.strokeStyle = '#3a2340'; c.fillStyle = '#3a2340'; c.lineCap = 'round'; c.lineWidth = 12;
+      if (kind === 'happy') {
+        c.beginPath(); c.arc(-40, -10, 22, Math.PI * 1.1, Math.PI * 1.9); c.stroke();
+        c.beginPath(); c.arc(40, -10, 22, Math.PI * 1.1, Math.PI * 1.9); c.stroke();
+        c.beginPath(); c.arc(0, 28, 30, 0, Math.PI); c.fill();
+      } else if (kind === 'blink') {
+        c.beginPath(); c.moveTo(-56, -10); c.lineTo(-24, -10); c.moveTo(24, -10); c.lineTo(56, -10); c.stroke();
+        c.beginPath(); c.arc(0, 22, 22, 0.15, Math.PI - 0.15); c.stroke();
       } else {
-        c.fillStyle = 'rgba(255,230,180,.35)';
-        c.beginPath(); c.arc(b.x, b.y, 3, 0, TAU); c.fill();
+        c.beginPath(); c.arc(-40, -12, 17, 0, TAU); c.fill();
+        c.beginPath(); c.arc(40, -12, 17, 0, TAU); c.fill();
+        c.fillStyle = '#fff';
+        c.beginPath(); c.arc(-34, -18, 6, 0, TAU); c.fill();
+        c.beginPath(); c.arc(46, -18, 6, 0, TAU); c.fill();
+        c.beginPath(); c.arc(0, 22, 22, 0.15, Math.PI - 0.15); c.stroke();
       }
+      c.fillStyle = 'rgba(255,120,160,.55)';
+      c.beginPath(); c.arc(-72, 22, 18, 0, TAU); c.fill();
+      c.beginPath(); c.arc(72, 22, 18, 0, TAU); c.fill();
     });
   }
+  const FACES = { normal: faceTexture('normal'), blink: faceTexture('blink'), happy: faceTexture('happy') };
+  BUMPERS.forEach(b => {
+    const g = new THREE.Group();
+    g.position.set(wx(b.x), wy(b.y), 0);
+    const ringGeo = new THREE.CylinderGeometry((b.r + 3) * K, (b.r + 4.5) * K, 0.06, 40);
+    ringGeo.rotateX(Math.PI / 2);
+    const ring = shadowy(new THREE.Mesh(ringGeo, MAT.chrome));
+    ring.position.z = 0.03;
+    const domeGeo = new THREE.SphereGeometry(b.r * K, 40, 20, 0, TAU, 0, Math.PI / 2);
+    domeGeo.rotateX(Math.PI / 2);
+    const domeMat = new THREE.MeshPhysicalMaterial({ color: b.c2, roughness: 0.18, clearcoat: 1, clearcoatRoughness: 0.05, emissive: new THREE.Color(b.c2), emissiveIntensity: 0.12 });
+    const dome = shadowy(new THREE.Mesh(domeGeo, domeMat));
+    dome.position.z = 0.06;
+    dome.scale.z = 0.85;
+    const face = decal(b.r * K * 1.5, b.r * K * 1.5, FACES.normal);
+    face.position.z = 0.06 + b.r * K * 0.85 + 0.004;
+    g.add(ring, dome, face);
+    board.add(g);
+    Object.assign(b, { g, domeMat, face });
+  });
 
-  function roundButton(c, x, y, r, base, dark, pressed, draw) {
-    c.save();
-    c.fillStyle = 'rgba(0,0,0,.45)';
-    c.beginPath(); c.arc(x, y + 5, r + 2, 0, TAU); c.fill();
-    c.fillStyle = dark;
-    c.beginPath(); c.arc(x, y + (pressed ? 3 : 4), r, 0, TAU); c.fill();
-    const oy = pressed ? 3 : 0;
-    const g = c.createRadialGradient(x - r * 0.35, y - r * 0.4 + oy, r * 0.1, x, y + oy, r);
-    g.addColorStop(0, '#ffffff'); g.addColorStop(0.18, base); g.addColorStop(1, dark);
-    c.fillStyle = g;
-    c.beginPath(); c.arc(x, y + oy, r, 0, TAU); c.fill();
-    c.fillStyle = 'rgba(255,255,255,.4)';
-    c.beginPath(); c.ellipse(x - r * 0.15, y - r * 0.5 + oy, r * 0.55, r * 0.25, 0, 0, TAU); c.fill();
-    draw && draw(x, y + oy);
-    c.restore();
+  // 鬱金香與金杯洞口
+  CUPS.forEach(cp => {
+    const g = new THREE.Group();
+    g.position.set(wx(cp.x), wy(cp.y), 0);
+    const mats = [];
+    const P = (x, y) => [x * K, -y * K];
+    if (cp.kind === 'tulip') {
+      const mat = new THREE.MeshPhysicalMaterial({ color: 0xf0335f, roughness: 0.22, clearcoat: 1, clearcoatRoughness: 0.06, emissive: new THREE.Color(0xff6a8a), emissiveIntensity: 0 });
+      mats.push(mat);
+      [-1, 1].forEach(sd => {
+        const s = new THREE.Shape();
+        s.moveTo(...P(sd * (cp.w + 1), -14));
+        s.quadraticCurveTo(...P(sd * (cp.w + 6), 2), ...P(sd * 8, 10));
+        s.lineTo(...P(sd * 6, 6));
+        s.quadraticCurveTo(...P(sd * (cp.w - 4), -2), ...P(sd * (cp.w - 2), -14));
+        const m = shadowy(new THREE.Mesh(new THREE.ExtrudeGeometry(s, { depth: 0.14, bevelEnabled: true, bevelThickness: 0.012, bevelSize: 0.008, bevelSegments: 2 }), mat));
+        g.add(m);
+      });
+      const base = shadowy(new THREE.Mesh(new RoundedBoxGeometry(18 * K, 6 * K, 0.1, 2, 0.01), new THREE.MeshStandardMaterial({ color: 0x5a1030, roughness: 0.5 })));
+      base.position.set(0, -9 * K, 0.05);
+      const stem = new THREE.Mesh(new THREE.CylinderGeometry(1.4 * K, 1.4 * K, 9 * K, 8), new THREE.MeshStandardMaterial({ color: 0x3fae5c, roughness: 0.5 }));
+      stem.position.set(0, -16 * K, 0.02);
+      g.add(base, stem);
+    } else {
+      const mat = new THREE.MeshStandardMaterial({ color: 0xffd04a, metalness: 1, roughness: 0.22, emissive: new THREE.Color(0xffc040), emissiveIntensity: 0 });
+      mats.push(mat);
+      const s = new THREE.Shape();
+      s.moveTo(...P(-cp.w - 1, -14)); s.lineTo(...P(-7, 8)); s.lineTo(...P(7, 8)); s.lineTo(...P(cp.w + 1, -14));
+      s.lineTo(...P(cp.w - 3, -14)); s.lineTo(...P(5, 5)); s.lineTo(...P(-5, 5)); s.lineTo(...P(-cp.w + 3, -14));
+      g.add(shadowy(new THREE.Mesh(new THREE.ExtrudeGeometry(s, { depth: 0.15, bevelEnabled: true, bevelThickness: 0.012, bevelSize: 0.008, bevelSegments: 2 }), mat)));
+      [-1, 1].forEach(sd => {
+        const tg = new THREE.TorusGeometry(5 * K, 1.2 * K, 8, 16, Math.PI);
+        const hd = shadowy(new THREE.Mesh(tg, mat));
+        hd.position.set(sd * (cp.w + 2) * K, 6 * K, 0.075);
+        hd.rotation.z = sd > 0 ? -Math.PI / 2 : Math.PI / 2;
+        g.add(hd);
+      });
+      const b1 = shadowy(new THREE.Mesh(new RoundedBoxGeometry(16 * K, 5 * K, 0.12, 2, 0.01), mat));
+      b1.position.set(0, -10.5 * K, 0.06);
+      const b2 = shadowy(new THREE.Mesh(new RoundedBoxGeometry(22 * K, 5 * K, 0.12, 2, 0.01), mat));
+      b2.position.set(0, -16.5 * K, 0.06);
+      const starShape = new THREE.Shape();
+      for (let i = 0; i < 10; i++) {
+        const rad = (i % 2 ? 2 : 4.5) * K, a = i * Math.PI / 5 + Math.PI / 2;
+        if (i === 0) starShape.moveTo(Math.cos(a) * rad, Math.sin(a) * rad); else starShape.lineTo(Math.cos(a) * rad, Math.sin(a) * rad);
+      }
+      const starM = shadowy(new THREE.Mesh(new THREE.ExtrudeGeometry(starShape, { depth: 0.03, bevelEnabled: false }), mat));
+      starM.position.set(0, 22 * K, 0.1);
+      g.add(b1, b2, starM);
+      cp.star = starM;
+    }
+    board.add(g);
+    cp.mats = mats;
+  });
+
+  // 洞口上的小燈
+  const slotLamps = [];
+  for (let i = 0; i < SLOTS; i++) {
+    const m = new THREE.Mesh(new THREE.SphereGeometry(0.032, 14, 10), new THREE.MeshBasicMaterial({ color: 0x664422, toneMapped: false }));
+    m.position.set(wx(SLOT_L + (i + 0.5) * SLOT_W), wy(605), 0.025);
+    board.add(m);
+    slotLamps.push(m);
   }
 
-  function drawPanel(c, t) {
-    // 鋼珠計數器
-    const L = UI.led;
-    rr(c, L.x, L.y, L.w, L.h, 12);
-    c.fillStyle = '#0d0408'; c.fill();
-    c.strokeStyle = '#a77a26'; c.lineWidth = 2; c.stroke();
-    steelBall(c, L.x + 20, L.y + L.h / 2 + 6, 9);
-    txt(c, '鋼珠', L.x + 20, L.y + 15, 12, '#ffcf5a');
-    const shownN = Math.round(shown);
-    txt(c, String(shownN), L.x + L.w - 12, L.y + L.h / 2 + 3, mode === 'port' ? 34 : 38, '#ffb340', { align: 'right', glow: '#ff6a00', blur: 14 });
-    // 每次投幾顆
-    txt(c, '倍率（每次投）', UI.betLabel.x, UI.betLabel.y, 13, '#ffe6b0');
-    const bv = UI.betVal;
-    rr(c, bv.x - 30, bv.y - 20, 60, 40, 10);
-    c.fillStyle = '#0d0408'; c.fill();
-    c.strokeStyle = '#a77a26'; c.lineWidth = 2; c.stroke();
-    txt(c, String(bet), bv.x - 6, bv.y - 1, 26, '#7dff9a', { glow: '#2fd05a', blur: 10 });
-    txt(c, '顆', bv.x + 19, bv.y + 4, 11, '#9fd8a8');
-    const mk = (b, sign) => roundButton(c, b.x, b.y, b.r, '#ffd36b', '#b07a10', pressedId === sign, (x, y) => {
-      c.strokeStyle = '#5a3300'; c.lineWidth = 4; c.lineCap = 'round';
-      c.beginPath(); c.moveTo(x - 8, y); c.lineTo(x + 8, y);
-      if (sign === 'plus') { c.moveTo(x, y - 8); c.lineTo(x, y + 8); }
-      c.stroke();
-    });
-    mk(UI.minus, 'minus');
-    mk(UI.plus, 'plus');
-    // 轉倍率按鈕
-    const sp = UI.spin;
-    if (spin.state === 'idle' && phase === 'play') {
-      const pul = 0.5 + 0.5 * Math.sin(t * 5);
-      c.fillStyle = 'rgba(255,90,90,' + (0.15 + pul * 0.25) + ')';
-      c.beginPath(); c.arc(sp.x, sp.y, sp.r + 8 + pul * 4, 0, TAU); c.fill();
+  // 鋼珠
+  const ballGeo = new THREE.SphereGeometry(BALL_Z, 32, 24);
+  const ballPool = [];
+  function ballMesh(i) {
+    while (ballPool.length <= i) {
+      const m = new THREE.Mesh(ballGeo, MAT.ball);
+      m.castShadow = true;
+      board.add(m);
+      ballPool.push(m);
     }
-    c.fillStyle = '#c9a03a';
-    c.beginPath(); c.arc(sp.x, sp.y + 2, sp.r + 5, 0, TAU); c.fill();
-    const pressed = spin.state === 'spinning' || pressedId === 'spin';
-    roundButton(c, sp.x, sp.y, sp.r, '#ff5a5a', '#b3121f', pressed, (x, y) => {
-      if (spin.state === 'spinning') txt(c, '轉轉轉…', x, y, sp.r * 0.36, '#fff', { stroke: 'rgba(120,0,0,.5)', sw: 4 });
-      else {
-        txt(c, '隨機', x, y - sp.r * 0.24, sp.r * 0.36, '#fff', { stroke: 'rgba(120,0,0,.55)', sw: 5 });
-        txt(c, '倍率', x, y + sp.r * 0.2, sp.r * 0.36, '#fff', { stroke: 'rgba(120,0,0,.55)', sw: 5 });
-        txt(c, 'SPIN', x, y + sp.r * 0.58, sp.r * 0.17, 'rgba(255,230,230,.9)');
-      }
-    });
-    // 力量表
-    const gg = UI.gauge, pw = charging ? chargePower() : 0;
-    const fill = c.createLinearGradient(0, gg.y + gg.h, 0, gg.y);
-    fill.addColorStop(0, '#5fe07a'); fill.addColorStop(0.55, '#ffe14a'); fill.addColorStop(1, '#ff4f4f');
-    c.fillStyle = 'rgba(255,255,255,.06)';
-    rr(c, gg.x, gg.y, gg.w, gg.h, 6); c.fill();
-    if (pw > 0) { c.fillStyle = fill; rr(c, gg.x, gg.y + gg.h * (1 - pw), gg.w, gg.h * pw, 6); c.fill(); }
-    const my = gg.y + gg.h * (1 - lastPower);
-    c.strokeStyle = '#ffffff'; c.lineWidth = 2;
-    c.beginPath(); c.moveTo(gg.x - 5, my); c.lineTo(gg.x + gg.w + 5, my); c.stroke();
-    c.fillStyle = '#fff';
-    c.beginPath(); c.moveTo(gg.x - 5, my - 4); c.lineTo(gg.x - 1, my); c.lineTo(gg.x - 5, my + 4); c.fill();
-    // 拉桿
-    const kx = UI.knobX, ky = UI.knobRest + pw * UI.knobPull;
-    c.strokeStyle = '#d6dbe4'; c.lineWidth = 6; c.lineCap = 'round';
-    c.beginPath(); c.moveTo(kx, UI.knobTop); c.lineTo(kx, ky); c.stroke();
-    c.strokeStyle = '#8a93a4'; c.lineWidth = 2;
-    c.beginPath();
-    const coils = 7, top = UI.knobTop + 4, len = ky - 18 - top;
-    for (let i = 0; i <= coils * 2; i++) {
-      const yy = top + len * i / (coils * 2);
-      c.lineTo(kx + (i % 2 ? 8 : -8), yy);
+    return ballPool[i];
+  }
+  const restBall = new THREE.Mesh(ballGeo, MAT.ball);
+  restBall.castShadow = true;
+  board.add(restBall);
+  const plHead = shadowy(new THREE.Mesh(new THREE.BoxGeometry((392 - SEP_X - 4) * K, 9 * K, 0.12), MAT.chrome));
+  board.add(plHead);
+
+  // 玻璃（反光）
+  const glass = new THREE.Mesh(new THREE.PlaneGeometry(PW * K, PH * K), new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.03, metalness: 0, transparent: true, opacity: 0.06, depthWrite: false }));
+  glass.position.z = 0.215;
+  const streakTex = canvasTex(256, 512, (c, w, h) => {
+    const g = c.createLinearGradient(0, 0, w, h * 0.55);
+    g.addColorStop(0, 'rgba(255,255,255,0)');
+    g.addColorStop(0.38, 'rgba(255,255,255,0)');
+    g.addColorStop(0.44, 'rgba(255,255,255,.22)');
+    g.addColorStop(0.5, 'rgba(255,255,255,.05)');
+    g.addColorStop(0.56, 'rgba(255,255,255,.14)');
+    g.addColorStop(0.6, 'rgba(255,255,255,0)');
+    c.fillStyle = g; c.fillRect(0, 0, w, h);
+  });
+  const streak = new THREE.Mesh(new THREE.PlaneGeometry(PW * K, PH * K), new THREE.MeshBasicMaterial({ map: streakTex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.3 }));
+  streak.position.z = 0.216;
+  board.add(glass, streak);
+
+  // 金框與跑馬燈
+  const boardFrame = frameRing(-2.22, -3.52, 4.44, 7.04, 0.24, 0.22, 0.26, MAT.gold, 0.03);
+  boardFrame.position.z = -0.02;
+  board.add(boardFrame);
+  const BULB_PTS = [];
+  {
+    const x0 = -2.11, x1 = 2.11, y0 = -3.41, y1 = 3.41;
+    const per = 2 * (x1 - x0) + 2 * (y1 - y0), n = Math.round(per / 0.24);
+    for (let i = 0; i < n; i++) {
+      let d = i * per / n, x, y;
+      if (d < x1 - x0) { x = x0 + d; y = y1; }
+      else if ((d -= x1 - x0) < y1 - y0) { x = x1; y = y1 - d; }
+      else if ((d -= y1 - y0) < x1 - x0) { x = x1 - d; y = y0; }
+      else { d -= x1 - x0; x = x0; y = y0 + d; }
+      BULB_PTS.push([x, y]);
     }
+  }
+  const bulbs = new THREE.InstancedMesh(new THREE.SphereGeometry(0.045, 12, 8), new THREE.MeshBasicMaterial({ toneMapped: false }), BULB_PTS.length);
+  {
+    const m4 = new THREE.Matrix4();
+    BULB_PTS.forEach((p, i) => { m4.makeTranslation(p[0], p[1], 0.3); bulbs.setMatrixAt(i, m4); bulbs.setColorAt(i, new THREE.Color(1, 1, 1)); });
+  }
+  board.add(bulbs);
+
+  /* ---------- 機身、招牌、操作台（直式和橫式不同） ---------- */
+  let cabinet = null;
+  const lamps = [];
+  const UI3 = {};
+  const ledC = makeCanvas(512, 232), betC = makeCanvas(256, 160);
+  let ledShown = -1, betShown = -1;
+  const spinTex = {
+    idle: canvasTex(256, 256, (c) => {
+      c.translate(128, 128); c.textAlign = 'center'; c.textBaseline = 'middle';
+      [['隨機', -44, 64], ['倍率', 26, 64], ['SPIN', 82, 26]].forEach(([s, y, sz]) => {
+        c.font = font(900, sz); c.lineJoin = 'round'; c.lineWidth = sz * 0.2; c.strokeStyle = 'rgba(110,0,10,.6)'; c.strokeText(s, 0, y); c.fillStyle = '#fff'; c.fillText(s, 0, y);
+      });
+    }),
+    spinning: canvasTex(256, 256, (c) => {
+      c.translate(128, 128); c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.font = font(900, 50); c.lineJoin = 'round'; c.lineWidth = 9; c.strokeStyle = 'rgba(110,0,10,.6)'; c.strokeText('轉轉轉…', 0, 0); c.fillStyle = '#fff'; c.fillText('轉轉轉…', 0, 0);
+    })
+  };
+  const signTex = s => canvasTex(128, 128, (c) => {
+    c.strokeStyle = '#5a3300'; c.lineWidth = 16; c.lineCap = 'round';
+    c.beginPath(); c.moveTo(34, 64); c.lineTo(94, 64);
+    if (s === '+') { c.moveTo(64, 34); c.lineTo(64, 94); }
     c.stroke();
-    const kg = c.createRadialGradient(kx - 7, ky - 7, 2, kx, ky, 22);
-    kg.addColorStop(0, '#ffffff'); kg.addColorStop(0.25, '#ff6a6a'); kg.addColorStop(1, '#8e0d18');
-    c.fillStyle = 'rgba(0,0,0,.4)';
-    c.beginPath(); c.arc(kx + 2, ky + 4, 20, 0, TAU); c.fill();
-    c.fillStyle = kg;
-    c.beginPath(); c.arc(kx, ky, 19, 0, TAU); c.fill();
-    c.strokeStyle = '#5a0710'; c.lineWidth = 1.5; c.stroke();
-    if (!charging && phase === 'play' && idleHint > 4 && spin.state !== 'spinning') {
-      const bob = Math.sin(t * 6) * 4;
-      c.fillStyle = '#ffe14a';
-      c.beginPath(); c.moveTo(kx - 9, ky + 30 + bob); c.lineTo(kx + 9, ky + 30 + bob); c.lineTo(kx, ky + 42 + bob); c.closePath(); c.fill();
-    }
-    txt(c, mode === 'port' ? '按住拉桿 放開發射' : '按住拉桿・放開發射', UI.hint.x, UI.hint.y, mode === 'port' ? 10 : 13, '#ffe6b0');
+  });
+  const textTex = (s, size, color, w, h, align) => canvasTex(w, h, (c) => {
+    c.font = font(900, size); c.textAlign = align || 'center'; c.textBaseline = 'middle';
+    c.fillStyle = color; c.fillText(s, align === 'left' ? 6 : w / 2, h / 2 + 2);
+  });
+
+  function drawLED() {
+    const c = ledC.c, w = 512, h = 232;
+    c.clearRect(0, 0, w, h);
+    rr(c, 6, 6, w - 12, h - 12, 28);
+    c.fillStyle = '#0d0408'; c.fill();
+    c.lineWidth = 6; c.strokeStyle = '#a77a26'; c.stroke();
+    txt(c, '鋼珠', 74, 50, 38, '#ffcf5a');
+    steelBall(c, 74, 140, 34);
+    txt(c, String(Math.round(shown)), w - 34, h / 2 + 10, 128, '#ffb340', { align: 'right', glow: '#ff6a00', blur: 26 });
+    ledC.tex.needsUpdate = true;
   }
+  function drawBetBox() {
+    const c = betC.c, w = 256, h = 160;
+    c.clearRect(0, 0, w, h);
+    rr(c, 6, 6, w - 12, h - 12, 24);
+    c.fillStyle = '#0d0408'; c.fill();
+    c.lineWidth = 6; c.strokeStyle = '#a77a26'; c.stroke();
+    txt(c, String(bet), w / 2 - 22, h / 2 + 2, 96, '#7dff9a', { glow: '#2fd05a', blur: 18 });
+    txt(c, '顆', w - 46, h / 2 + 22, 34, '#9fd8a8');
+    betC.tex.needsUpdate = true;
+  }
+
+  function roundButton3D(r, color, emissive) {
+    const g = new THREE.Group();
+    const socketGeo = new THREE.CylinderGeometry(r * 1.18, r * 1.25, 0.05, 40);
+    socketGeo.rotateX(Math.PI / 2);
+    const socket = shadowy(new THREE.Mesh(socketGeo, MAT.gold));
+    socket.position.z = 0.025;
+    const cap = new THREE.Group();
+    const bodyGeo = new THREE.CylinderGeometry(r, r, 0.08, 40);
+    bodyGeo.rotateX(Math.PI / 2);
+    const mat = new THREE.MeshPhysicalMaterial({ color, roughness: 0.2, clearcoat: 1, clearcoatRoughness: 0.05, metalness: 0.1, emissive: new THREE.Color(emissive || 0x000000), emissiveIntensity: 0 });
+    const body = shadowy(new THREE.Mesh(bodyGeo, mat));
+    body.position.z = 0.06;
+    const domeGeo = new THREE.SphereGeometry(r, 40, 16, 0, TAU, 0, Math.PI / 2);
+    domeGeo.rotateX(Math.PI / 2);
+    const dome = shadowy(new THREE.Mesh(domeGeo, mat));
+    dome.position.z = 0.1;
+    dome.scale.z = 0.38;
+    cap.add(body, dome);
+    g.add(socket, cap);
+    return { g, cap, mat, top: 0.1 + r * 0.38 };
+  }
+
+  function buildCabinet() {
+    if (cabinet) {
+      board.remove(cabinet);
+      cabinet.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+    }
+    lamps.length = 0;
+    cabinet = new THREE.Group();
+    board.add(cabinet);
+    const port = mode === 'port';
+    const B = port ? { x: 0, y: -0.5, w: 5.0, h: 10.9 } : { x: 1.03, y: 0.55, w: 7.1, h: 8.75 };
+    // 紅色烤漆機身
+    const body = shadowy(new THREE.Mesh(new RoundedBoxGeometry(B.w, B.h, 0.9, 4, 0.2), MAT.lacquer));
+    body.position.set(B.x, B.y, -0.47);
+    cabinet.add(body);
+    const trim = frameRing(B.x - B.w / 2 + 0.07, B.y - B.h / 2 + 0.07, B.w - 0.14, B.h - 0.14, 0.16, 0.05, 0.02, MAT.gold);
+    trim.position.z = -0.02;
+    cabinet.add(trim);
+    floor.position.y = B.y - B.h / 2;
+    // 招牌
+    const mq = { x: B.x, y: 4.2, w: B.w - 0.3, h: 1.3 };
+    const mqBox = shadowy(new THREE.Mesh(new RoundedBoxGeometry(mq.w, mq.h, 0.34, 3, 0.08), MAT.marquee));
+    mqBox.position.set(mq.x, mq.y, 0.03);
+    cabinet.add(mqBox);
+    const mqRing = frameRing(mq.x - mq.w / 2, mq.y - mq.h / 2, mq.w, mq.h, 0.12, 0.07, 0.05, MAT.gold, 0.012);
+    mqRing.position.z = 0.19;
+    cabinet.add(mqRing);
+    const titleTex = canvasTex(1024, 220, (c, w, h) => {
+      txt(c, '夜市彈珠台', w / 2, h / 2 + 6, 150, '#ffe9f6', { stroke: '#ff3d9a', sw: 14, glow: '#ff4fa8', blur: 40 });
+    });
+    const title = decal(Math.min(3.9, mq.w - 0.5), Math.min(3.9, mq.w - 0.5) * 220 / 1024, titleTex, true);
+    title.position.set(mq.x, mq.y + 0.26, 0.205);
+    title.material.color.setScalar(1.25);
+    cabinet.add(title);
+    UI3.title = title;
+    const gap = port ? 0.62 : 0.86, cols = [0x7fe0ff, 0x7dff9a, 0xffe14a, 0xff9a3d, 0xff4f8a];
+    MULTS.forEach((v, i) => {
+      const lx = mq.x + (i - 2) * gap, ly = mq.y - 0.3;
+      const socket = shadowy(new THREE.Mesh(new THREE.TorusGeometry(0.205, 0.03, 10, 36), MAT.gold));
+      socket.position.set(lx, ly, 0.21);
+      const domeGeo = new THREE.SphereGeometry(0.19, 32, 16, 0, TAU, 0, Math.PI / 2);
+      domeGeo.rotateX(Math.PI / 2);
+      const mat = new THREE.MeshPhysicalMaterial({ color: cols[i], roughness: 0.15, clearcoat: 1, emissive: new THREE.Color(cols[i]), emissiveIntensity: 0.1, transmission: 0 });
+      const dome = new THREE.Mesh(domeGeo, mat);
+      dome.position.set(lx, ly, 0.2);
+      dome.scale.z = 0.7;
+      const label = decal(0.36, 0.19, textTexOutlined('×' + v), false);
+      label.position.set(lx, ly, 0.2 + 0.19 * 0.7 + 0.004);
+      cabinet.add(socket, dome, label);
+      lamps.push({ dome, mat });
+    });
+    // 操作台
+    const L = port ? {
+      w: 4.7, h: 1.95, pos: [0, -4.72, 0.34], rot: [-0.55, 0],
+      led: [-1.45, 0.42, 1.5, 0.68], betLabel: [-1.45, -0.12, 1.5, 0.22], betVal: [-1.45, -0.55, 0.62, 0.39],
+      minus: [-2.05, -0.55, 0.19], plus: [-0.85, -0.55, 0.19],
+      spin: [0.35, -0.02, 0.56],
+      gauge: [1.33, -0.7, 0.15, 1.42],
+      knob: [1.95, 0.58, -0.66],
+      hint: [0.35, -0.8, 1.3, 0.2]
+    } : {
+      w: 1.95, h: 6.95, pos: [3.43, 0.0, 0.24], rot: [0, -0.2],
+      led: [0, 2.85, 1.62, 0.74], betLabel: [0, 2.22, 1.62, 0.24], betVal: [0, 1.74, 0.7, 0.44],
+      minus: [-0.63, 1.74, 0.21], plus: [0.63, 1.74, 0.21],
+      spin: [0, 0.48, 0.62],
+      gauge: [-0.5, -2.9, 0.18, 2.3],
+      knob: [0.38, -0.65, -2.75],
+      hint: [0, -3.18, 1.7, 0.22]
+    };
+    const pg = new THREE.Group();
+    pg.position.set(...L.pos);
+    pg.rotation.set(L.rot[0], L.rot[1], 0);
+    cabinet.add(pg);
+    const base = shadowy(new THREE.Mesh(new RoundedBoxGeometry(L.w, L.h, 0.24, 3, 0.08), MAT.panel));
+    pg.add(base);
+    const pRing = frameRing(-L.w / 2, -L.h / 2, L.w, L.h, 0.1, 0.06, 0.03, MAT.gold, 0.01);
+    pRing.position.z = 0.1;
+    pg.add(pRing);
+    const Z = 0.125;
+    const led = decal(L.led[2], L.led[3], ledC.tex, true);
+    led.position.set(L.led[0], L.led[1], Z);
+    const betLabel = decal(L.betLabel[2], L.betLabel[3], textTex('倍率（每次投）', 44, '#ffe6b0', 512, 76), false);
+    betLabel.position.set(L.betLabel[0], L.betLabel[1], Z);
+    const betVal = decal(L.betVal[2], L.betVal[3], betC.tex, true);
+    betVal.position.set(L.betVal[0], L.betVal[1], Z);
+    pg.add(led, betLabel, betVal);
+    ['minus', 'plus'].forEach(k => {
+      const btn = roundButton3D(L[k][2], 0xffcf5a);
+      btn.g.position.set(L[k][0], L[k][1], Z - 0.005);
+      const sign = decal(L[k][2] * 1.3, L[k][2] * 1.3, signTex(k === 'plus' ? '+' : '-'));
+      sign.position.z = btn.top + 0.004;
+      btn.cap.add(sign);
+      pg.add(btn.g);
+      UI3[k] = btn;
+    });
+    const sp = roundButton3D(L.spin[2], 0xe8213a, 0xff2a40);
+    sp.g.position.set(L.spin[0], L.spin[1], Z - 0.005);
+    const spLabel = decal(L.spin[2] * 1.5, L.spin[2] * 1.5, spinTex.idle);
+    spLabel.position.z = sp.top + 0.006;
+    sp.cap.add(spLabel);
+    sp.label = spLabel;
+    pg.add(sp.g);
+    UI3.spin = sp;
+    // 力量表
+    const gbg = new THREE.Mesh(new RoundedBoxGeometry(L.gauge[2] + 0.06, L.gauge[3] + 0.06, 0.03, 2, 0.02), MAT.groove);
+    gbg.position.set(L.gauge[0], L.gauge[1] + L.gauge[3] / 2, Z);
+    const gradTex = canvasTex(32, 256, (c, w, h) => {
+      const g = c.createLinearGradient(0, h, 0, 0);
+      g.addColorStop(0, '#5fe07a'); g.addColorStop(0.55, '#ffe14a'); g.addColorStop(1, '#ff4f4f');
+      c.fillStyle = g; c.fillRect(0, 0, w, h);
+    });
+    const fillGeo = new THREE.PlaneGeometry(L.gauge[2], L.gauge[3]);
+    fillGeo.translate(0, L.gauge[3] / 2, 0);
+    const fill = new THREE.Mesh(fillGeo, new THREE.MeshBasicMaterial({ map: gradTex, toneMapped: false }));
+    fill.position.set(L.gauge[0], L.gauge[1], Z + 0.02);
+    const marker = new THREE.Mesh(new THREE.PlaneGeometry(L.gauge[2] + 0.12, 0.025), new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }));
+    marker.position.set(L.gauge[0], L.gauge[1], Z + 0.025);
+    pg.add(gbg, fill, marker);
+    UI3.gauge = { fill, marker, y0: L.gauge[1], h: L.gauge[3] };
+    // 拉桿
+    const travel = L.knob[1] - L.knob[2];
+    const groove = new THREE.Mesh(new RoundedBoxGeometry(0.16, travel + 0.4, 0.03, 2, 0.05), MAT.groove);
+    groove.position.set(L.knob[0], (L.knob[1] + L.knob[2]) / 2, Z);
+    pg.add(groove);
+    const knob = new THREE.Group();
+    const rodGeo = new THREE.CylinderGeometry(0.045, 0.045, 0.24, 16);
+    rodGeo.rotateX(Math.PI / 2);
+    rodGeo.translate(0, 0, 0.12);
+    const rod = shadowy(new THREE.Mesh(rodGeo, MAT.chrome));
+    const spring = shadowy(new THREE.Mesh(new THREE.TorusGeometry(0.07, 0.012, 8, 24), MAT.chrome));
+    spring.position.z = 0.08;
+    const ball = shadowy(new THREE.Mesh(new THREE.SphereGeometry(0.2, 32, 24), MAT.red));
+    ball.position.z = 0.3;
+    knob.add(rod, spring, ball);
+    knob.position.set(L.knob[0], L.knob[1], Z);
+    pg.add(knob);
+    UI3.knob = { g: knob, ball, top: L.knob[1], bottom: L.knob[2] };
+    const hint = decal(L.hint[2], L.hint[3], textTex('按住拉桿・放開發射', 40, '#ffe6b0', 512, 72), false);
+    hint.position.set(L.hint[0], L.hint[1], Z);
+    pg.add(hint);
+    UI3.panel = pg;
+    ledShown = -1; betShown = -1;
+  }
+  function textTexOutlined(s) {
+    return canvasTex(192, 100, (c, w, h) => txt(c, s, w / 2, h / 2 + 3, s.length > 2 ? 58 : 68, '#ffffff', { stroke: '#2a0a3c', sw: 16 }));
+  }
+
+  /* ---------- 後製：發光 ---------- */
+  const composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.42, 0.35, 1.0);
+  composer.addPass(bloom);
+  composer.addPass(new OutputPass());
+
+  /* ---------- 鏡頭 ---------- */
+  const view = { cx: 0, cy: 0, dist: 20 };
+  const sway = { x: 0, y: 0, tx: 0, ty: 0 };
+  function resize() {
+    W = innerWidth; H = innerHeight;
+    renderer.setSize(W, H, false);
+    composer.setSize(W, H);
+    bloom.resolution.set(W / 2, H / 2);
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const nm = W / H > 0.78 ? 'land' : 'port';
+    if (nm !== mode) { mode = nm; buildCabinet(); }
+    camera.aspect = W / H;
+    camera.fov = 30;
+    camera.updateProjectionMatrix();
+    const box = mode === 'port' ? { x0: -2.55, x1: 2.55, y0: -5.95, y1: 5.0 } : { x0: -2.6, x1: 4.65, y0: -3.85, y1: 5.0 };
+    view.cx = (box.x0 + box.x1) / 2;
+    view.cy = (box.y0 + box.y1) / 2;
+    const t = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+    view.dist = Math.max((box.y1 - box.y0) / 2 / t, (box.x1 - box.x0) / 2 / (t * camera.aspect)) * 1.02 + 0.5;
+    const hv = 2 * (view.dist + 10) * t * 1.25;
+    const bw = Math.max(hv * camera.aspect, hv * 16 / 9);
+    bgMesh.scale.set(bw, bw * 9 / 16, 1);
+    bgMesh.position.set(view.cx, view.cy + 1, -10);
+  }
+  function updateCamera(t) {
+    sway.x += (sway.tx + Math.sin(t * 0.4) * 0.25 - sway.x) * 0.05;
+    sway.y += (sway.ty + Math.cos(t * 0.33) * 0.15 - sway.y) * 0.05;
+    camera.position.set(view.cx + sway.x * view.dist * 0.07, view.cy + view.dist * 0.06 + sway.y * view.dist * 0.04, view.dist);
+    camera.lookAt(view.cx, view.cy, 0);
+    camera.updateMatrixWorld();
+  }
+
+  const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _right = new THREE.Vector3();
+  function project(x, y, z) {
+    _v.set(x, y, z).project(camera);
+    return [(_v.x + 1) / 2 * W, (1 - _v.y) / 2 * H];
+  }
+  function boardToScreen(x, y, z) { return project(wx(x), wy(y), z == null ? 0.12 : z); }
+  function objToScreen(obj, r) {
+    obj.getWorldPosition(_v2);
+    const p = project(_v2.x, _v2.y, _v2.z);
+    _right.setFromMatrixColumn(camera.matrixWorld, 0).multiplyScalar(r || 0);
+    const q = project(_v2.x + _right.x, _v2.y + _right.y, _v2.z + _right.z);
+    return { x: p[0], y: p[1], r: Math.hypot(q[0] - p[0], q[1] - p[1]) };
+  }
+
 
   /* =========================================================
    * 開始、結束畫面（螢幕座標）
    * ========================================================= */
   let HITS = [];
   let pressedId = null;
-  function addHitCab(id, shape, down, up) {
-    if (shape.r) { const [x, y] = cabToScreen(shape.x, shape.y); HITS.push({ id, c: true, x, y, r: shape.r * S + 6, down, up }); }
-    else { const [x, y] = cabToScreen(shape.x, shape.y); HITS.push({ id, x, y, w: shape.w * S, h: shape.h * S, down, up }); }
-  }
   function screenButton(c, id, x, y, w, h, label, base, dark, onClick) {
     const p = pressedId === id;
     c.save();
@@ -1253,6 +1373,7 @@
     }
   }
 
+
   /* =========================================================
    * 音樂：輕快的夜市小調
    * ========================================================= */
@@ -1274,9 +1395,10 @@
   /* =========================================================
    * 輸入
    * ========================================================= */
+  let pullPx = 120;
   function chargePower() {
     if (!charging) return 0;
-    if (charging.drag > 6) return clamp(charging.drag / (UI.knobPull * S * 1.1), 0, 1);
+    if (charging.drag > 6) return clamp(charging.drag / (pullPx * 1.1), 0, 1);
     return clamp((performance.now() - charging.t0) / 1100, 0, 1);
   }
   function findHit(x, y) {
@@ -1286,9 +1408,15 @@
     }
     return null;
   }
+  function addHit3D(id, obj, r, minPx, down) {
+    const s = objToScreen(obj, r);
+    HITS.push({ id, c: true, x: s.x, y: s.y, r: Math.max(minPx || 26, s.r + 8), down });
+  }
   let activeHit = null;
   cv.addEventListener('pointerdown', e => {
     e.preventDefault();
+    sway.tx = (e.clientX / W - 0.5) * 2;
+    sway.ty = (e.clientY / H - 0.5) * -2;
     const h = findHit(e.clientX, e.clientY);
     if (!h) return;
     activeHit = h;
@@ -1296,9 +1424,8 @@
     if (h.down) h.down(e);
   });
   cv.addEventListener('pointermove', e => {
-    if (charging && charging.id === e.pointerId) {
-      charging.drag = Math.max(charging.drag, e.clientY - charging.y0);
-    }
+    if (e.pointerType === 'mouse') { sway.tx = (e.clientX / W - 0.5) * 2; sway.ty = (e.clientY / H - 0.5) * -2; }
+    if (charging && charging.id === e.pointerId) charging.drag = Math.max(charging.drag, e.clientY - charging.y0);
   });
   function endPointer(e, cancel) {
     if (charging && charging.id === e.pointerId) {
@@ -1325,7 +1452,7 @@
     }
     if (e.key === ' ' || e.key === 'Enter') {
       e.preventDefault();
-      if (!e.repeat && !charging) charging = { id: 'kb', t0: performance.now(), drag: 0, y0: 0 };
+      if (!e.repeat && !charging && cooldown <= 0) charging = { id: 'kb', t0: performance.now(), drag: 0, y0: 0 };
     } else if (e.key === 'ArrowUp' || e.key === 'ArrowRight' || e.key === '+') { e.preventDefault(); setBetIdx(betIdx + 1); }
     else if (e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === '-') { e.preventDefault(); setBetIdx(betIdx - 1); }
     else if (e.key === 's' || e.key === 'S') startSpin();
@@ -1338,7 +1465,7 @@
     }
   });
   window.addEventListener('resize', resize);
-  document.addEventListener('visibilitychange', () => { if (document.hidden) { charging = null; } });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) charging = null; });
 
   /* =========================================================
    * 主迴圈
@@ -1349,7 +1476,6 @@
     clock += dt;
     cooldown = Math.max(0, cooldown - dt);
     if (phase === 'play' && !charging && flying.length === 0) idleHint += dt;
-    // 倍率燈
     if (spin.state === 'spinning') {
       spin.timer += dt;
       if (spin.timer >= spin.interval) {
@@ -1361,14 +1487,16 @@
         if (spin.stepsLeft <= 0) {
           spin.state = 'idle';
           setBetIdx(spin.idx, true);
-          if (bet >= 5) { KG.sound('win'); KG.confetti(OX + CW / 2 * S, OY + 90 * S, 70); }
-          else if (bet > 1) KG.sound('sparkle');
+          if (bet >= 5) {
+            KG.sound('win');
+            const s = objToScreen(lamps[spin.idx].dome, 0);
+            KG.confetti(s.x, s.y, 70);
+          } else if (bet > 1) KG.sound('sparkle');
           else KG.sound('pop');
           addFloat(185, 200, '倍率 ×' + bet + '！', '#ffe14a', 30, '#a8361a');
         }
       }
     }
-    // 物理
     acc += dt;
     let n = 0;
     while (acc >= STEP && n < 40) {
@@ -1387,15 +1515,10 @@
       b.age = (b.age || 0) + dt;
       if (b.age > 25) { settle(b, { kind: 'refund' }); flying.splice(i, 1); }
     }
-    flying.forEach(b => {
-      unstick(b, dt);
-      b.trail.push([b.x, b.y]);
-      if (b.trail.length > 6) b.trail.shift();
-    });
-    // 效果
-    PINS.forEach(p => { if (p.flash > 0) p.flash = Math.max(0, p.flash - dt * 4); });
+    flying.forEach(b => unstick(b, dt));
     BUMPERS.forEach(b => { b.flash = Math.max(0, b.flash - dt * 3); });
     CUPS.forEach(cp => { cp.flash = Math.max(0, cp.flash - dt); });
+    PINS.forEach(p => { if (p.flash > 0) p.flash = Math.max(0, p.flash - dt * 4); });
     for (let i = 0; i < SLOTS; i++) slotFlash[i] = Math.max(0, slotFlash[i] - dt);
     for (let i = parts.length - 1; i >= 0; i--) {
       const p = parts[i];
@@ -1407,45 +1530,153 @@
     shown += (st.balls - shown) * Math.min(1, dt * 8);
     if (Math.abs(st.balls - shown) < 0.5) shown = st.balls;
     if (st.balls > 0 && bet > st.balls && spin.state !== 'spinning') setBetIdx(maxAffordable(), true);
-    // 結束
     if (phase === 'play' && st.balls <= 0 && flying.length === 0) {
       overTimer += dt;
       if (overTimer > 1) { phase = 'over'; overTimer = 0; stopMusic(); KG.sound('lose'); }
     } else overTimer = 0;
   }
 
-  function render() {
-    const t = clock;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.drawImage(bgCanvas, 0, 0, W, H);
+  const BULB_COLS = [new THREE.Color(2.4, 2.0, 0.6), new THREE.Color(2.4, 0.7, 1.4), new THREE.Color(0.7, 2.0, 2.6)];
+  const BULB_OFF = new THREE.Color(0.28, 0.2, 0.12);
+  const SLOT_ON = new THREE.Color(3, 2.6, 1.4), SLOT_OFF = new THREE.Color(0.55, 0.38, 0.2);
+  function sync3D(t) {
+    // 鋼珠
+    flying.forEach((b, i) => { const m = ballMesh(i); m.visible = true; m.position.set(wx(b.x), wy(b.y), BALL_Z); });
+    for (let i = flying.length; i < ballPool.length; i++) ballPool[i].visible = false;
+    const pw = chargePower();
+    const plY = 652 + pw * 6;
+    plHead.position.set(wx((SEP_X + 392) / 2), wy(plY + 4.5), 0.06);
+    restBall.visible = phase === 'play' && st.balls > 0 && cooldown <= 0;
+    restBall.position.set(wx(LANE_X), wy(plY - R), BALL_Z);
+    // 彈跳球、洞口、燈
+    BUMPERS.forEach((b, i) => {
+      const s = 1 + b.flash * 0.18;
+      b.g.scale.set(s, s, 1 + b.flash * 0.3);
+      b.domeMat.emissiveIntensity = 0.12 + b.flash * 2.2;
+      const blink = ((t + i * 1.3) % 3.4) < 0.12;
+      b.face.material.map = b.flash > 0.2 ? FACES.happy : blink ? FACES.blink : FACES.normal;
+    });
+    CUPS.forEach(cp => {
+      const f = cp.flash > 0 ? (Math.floor(cp.flash * 10) % 2 ? 1.6 : 0.5) : 0;
+      cp.mats.forEach(m => { m.emissiveIntensity = f; });
+      if (cp.star) cp.star.rotation.z = t * 1.5;
+    });
+    slotLamps.forEach((m, i) => {
+      const lit = slotFlash[i] > 0 && Math.floor(slotFlash[i] * 10) % 2 === 0;
+      m.material.color.copy(lit ? SLOT_ON : SLOT_OFF);
+      m.scale.setScalar(lit ? 1.6 : 1);
+    });
+    const fast = bigWin ? 22 : 7, ph = Math.floor(t * fast);
+    for (let i = 0; i < BULB_PTS.length; i++) {
+      bulbs.setColorAt(i, (i + ph) % 3 === 0 ? BULB_COLS[(i + Math.floor(ph / 3)) % 3] : BULB_OFF);
+    }
+    bulbs.instanceColor.needsUpdate = true;
+    // 招牌
+    UI3.title.material.color.setScalar(Math.sin(t * 37) > 0.97 ? 0.6 : 1.25);
+    lamps.forEach((l, i) => {
+      const afford = MULTS[i] <= Math.max(1, st.balls);
+      let lit;
+      if (spin.state === 'spinning') lit = i === spin.idx ? 1 : 0;
+      else if (i === betIdx) lit = 0.85 + 0.15 * Math.sin(t * 5);
+      else lit = afford ? 0.1 : 0.02;
+      l.mat.emissiveIntensity = lit > 0.5 ? 1.5 * lit : lit;
+    });
+    // 操作台
+    if (Math.round(shown) !== ledShown) { ledShown = Math.round(shown); drawLED(); }
+    if (bet !== betShown) { betShown = bet; drawBetBox(); }
+    ['minus', 'plus'].forEach(k => { UI3[k].cap.position.z = pressedId === k ? -0.035 : 0; });
+    const sp = UI3.spin;
+    sp.cap.position.z = (spin.state === 'spinning' || pressedId === 'spin') ? -0.04 : 0;
+    sp.mat.emissiveIntensity = spin.state === 'idle' && phase === 'play' ? 0.18 + 0.22 * (0.5 + 0.5 * Math.sin(t * 5)) : 0.05;
+    sp.label.material.map = spin.state === 'spinning' ? spinTex.spinning : spinTex.idle;
+    const gg = UI3.gauge;
+    gg.fill.scale.y = Math.max(0.001, pw);
+    gg.fill.visible = pw > 0;
+    gg.marker.position.y = gg.y0 + gg.h * lastPower;
+    const kn = UI3.knob;
+    kn.g.position.y = kn.top + (kn.bottom - kn.top) * pw;
+    kn.ball.scale.setScalar(charging ? 1.05 : 1);
+  }
+
+  /* ---------- 2D 疊加：飄字、粒子、開始/結束卡片 ---------- */
+  function drawHUD(t) {
+    ctx.clearRect(0, 0, W, H);
     HITS = [];
-    ctx.save();
-    ctx.translate(OX, OY); ctx.scale(S, S);
-    drawMarquee(ctx, t);
-    drawPlayfieldDynamic(ctx, t);
-    drawBulbs(ctx, t);
-    drawPanel(ctx, t);
-    ctx.restore();
+    // 盤面上 1 像素在螢幕上有多大
+    const a = boardToScreen(100, 330), b = boardToScreen(300, 330);
+    const k = Math.hypot(b[0] - a[0], b[1] - a[1]) / 200;
+    parts.forEach(p => {
+      const [sx, sy] = boardToScreen(p.x, p.y, 0.2);
+      ctx.globalAlpha = Math.max(0, Math.min(1, p.life * 1.5));
+      ctx.fillStyle = p.c;
+      if (p.star) { star(ctx, sx, sy, p.r * 2 * k, p.life * 5); ctx.fill(); }
+      else { ctx.beginPath(); ctx.arc(sx, sy, p.r * k, 0, TAU); ctx.fill(); }
+    });
+    ctx.globalAlpha = 1;
+    floats.forEach(f => {
+      const al = Math.min(1, f.life * 1.4), rise = (1.6 - f.life) * 30;
+      const pop = f.life > 1.45 ? 0.6 + (1.6 - f.life) * 2.7 : 1;
+      const [sx, sy] = boardToScreen(clamp(f.x, 50, SEP_X - 50), f.y - rise, 0.25);
+      ctx.globalAlpha = al;
+      txt(ctx, f.text, sx, sy, f.size * pop * k, f.color, { stroke: f.stroke, sw: f.size * 0.25 * k });
+    });
+    ctx.globalAlpha = 1;
+    if (bigWin) {
+      const kk = bigWin.t;
+      const sc = kk < 0.3 ? 0.3 + kk / 0.3 * 0.9 : 1.2 - Math.min(0.2, (kk - 0.3) * 0.5);
+      const [sx, sy] = boardToScreen(185, 320, 0.3);
+      ctx.save();
+      ctx.globalAlpha = kk > 1.6 ? Math.max(0, 1 - (kk - 1.6) / 0.5) : 1;
+      ctx.translate(sx, sy); ctx.scale(sc * k, sc * k); ctx.rotate(Math.sin(kk * 10) * 0.04);
+      txt(ctx, '大獎！', 0, -18, 54, '#ffe14a', { stroke: '#b8121f', sw: 12, glow: '#ff9a3d', blur: 20 });
+      txt(ctx, '+' + bigWin.n + ' 顆', 0, 32, 30, '#ffffff', { stroke: '#6a2ab0', sw: 8 });
+      ctx.restore();
+    }
     if (phase === 'play') {
-      addHitCab('minus', UI.minus, () => setBetIdx(betIdx - 1));
-      addHitCab('plus', UI.plus, () => setBetIdx(betIdx + 1));
-      MULTS.forEach((v, i) => addHitCab('lamp' + i, { x: lampX(i), y: 88, r: 22 }, () => setBetIdx(i)));
-      addHitCab('spin', UI.spin, () => startSpin());
-      addHitCab('plunger', UI.plArea, e => {
+      if (!charging && idleHint > 4 && spin.state !== 'spinning') {
+        const s = objToScreen(UI3.knob.ball, 0.2);
+        const bob = Math.sin(t * 6) * 4;
+        ctx.fillStyle = '#ffe14a';
+        ctx.strokeStyle = 'rgba(90,40,0,.6)'; ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(s.x - 10, s.y + s.r + 10 + bob); ctx.lineTo(s.x + 10, s.y + s.r + 10 + bob); ctx.lineTo(s.x, s.y + s.r + 24 + bob);
+        ctx.closePath(); ctx.fill(); ctx.stroke();
+      }
+      addHit3D('minus', UI3.minus.cap, 0.19, 24, () => setBetIdx(betIdx - 1));
+      addHit3D('plus', UI3.plus.cap, 0.19, 24, () => setBetIdx(betIdx + 1));
+      lamps.forEach((l, i) => addHit3D('lamp' + i, l.dome, 0.2, 20, () => setBetIdx(i)));
+      addHit3D('spin', UI3.spin.cap, 0.6, 30, () => startSpin());
+      const kn = UI3.knob;
+      const top = objToScreen(kn.ball, 0.2);
+      const base = kn.g.position.y;
+      kn.g.position.y = kn.bottom; kn.g.updateMatrixWorld(true);
+      const bot = objToScreen(kn.ball, 0);
+      kn.g.position.y = base; kn.g.updateMatrixWorld(true);
+      pullPx = Math.max(60, Math.hypot(bot.x - top.x, bot.y - top.y));
+      HITS.push({ id: 'plunger', c: true, x: top.x, y: top.y, r: Math.max(44, top.r * 2.2), down: e => {
         if (charging || cooldown > 0 || st.balls <= 0) return;
         charging = { id: e.pointerId, t0: performance.now(), drag: 0, y0: e.clientY };
         KG.note(240, 0.1, 'triangle', 0.06);
-      });
+      } });
     }
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     drawOverlay(ctx);
   }
 
+  let firstFrame = true;
   function frame(now) {
     const dt = Math.max(0, Math.min(0.05, (now - last) / 1000));
     last = now;
     update(dt);
-    render();
+    updateCamera(clock);
+    sync3D(clock);
+    composer.render();
+    drawHUD(clock);
+    if (firstFrame) {
+      firstFrame = false;
+      window.__pb3dReady = true;
+      const ld = document.getElementById('loading');
+      if (ld) ld.remove();
+    }
     requestAnimationFrame(frame);
   }
 
@@ -1454,34 +1685,27 @@
   shown = st.balls;
   requestAnimationFrame(frame);
 
-  /* 測試用：模擬很多顆球，統計落在哪裡（不影響遊戲） */
-  window.__pinsim = function (n, pmin, pmax) {
-    const res = {};
-    for (let k = 0; k < n; k++) {
-      const p = pmin + Math.random() * (pmax - pmin);
-      const b = makeBall(p);
-      let tt = 0, out = null;
-      while (tt < 30 && !out) {
-        stepBall(b, STEP, false);
-        tt += STEP;
-        unstick(b, STEP);
-        out = checkOut(b);
-      }
-      const key = out ? (out.kind === 'slot' ? 's' + out.i : out.kind === 'cup' ? 'c' + out.i : 'refund') : 'timeout';
-      if (!out) { res.stuck = res.stuck || []; if (res.stuck.length < 12) res.stuck.push([Math.round(b.x), Math.round(b.y)]); }
-      res[key] = (res[key] || 0) + 1;
-    }
-    return res;
-  };
   window.__pb = {
-    state: () => ({ phase, st: Object.assign({}, st), bet, spin: Object.assign({}, spin), flying: flying.length }),
+    state: () => ({ phase, st: Object.assign({}, st), bet, spin: Object.assign({}, spin), flying: flying.length, mode }),
     start: () => { phase = 'play'; },
     launch: p => launch(p),
     spin: () => startSpin(),
     setBet: i => setBetIdx(i),
-    setBalls: v => { st.balls = v; }
+    setBalls: v => { st.balls = v; },
+    hits: () => HITS.map(h => ({ id: h.id, x: Math.round(h.x), y: Math.round(h.y), r: Math.round(h.r || 0) }))
   };
-})();
+  window.__pinsim = function (n, pmin, pmax) {
+    const res = {};
+    for (let k = 0; k < n; k++) {
+      const b = makeBall(pmin + Math.random() * (pmax - pmin));
+      let tt = 0, out = null;
+      while (tt < 30 && !out) { stepBall(b, STEP, false); tt += STEP; unstick(b, STEP); out = checkOut(b); }
+      const key = out ? (out.kind === 'slot' ? 's' + out.i : out.kind === 'cup' ? 'c' + out.i : 'refund') : 'timeout';
+      res[key] = (res[key] || 0) + 1;
+    }
+    return res;
+  };
+}
 </script>
 </body>
 </html>

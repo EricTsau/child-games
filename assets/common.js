@@ -18,6 +18,20 @@
   };
   KG.store = store;
 
+  /* ---------- 效能：限制畫布解析度 ----------
+   * 手機的像素密度常常是 3 倍，遊戲畫布照實際密度畫會很吃效能（安裝成 App 後
+   * 沒有網址列、畫面更大，更明顯）。這裡把所有遊戲讀到的 devicePixelRatio
+   * 限制在 2 倍，記憶體或核心少的手機限制在 1.5 倍，畫面幾乎看不出差別。 */
+  var realDpr = window.devicePixelRatio || 1;
+  var lowEnd = (navigator.deviceMemory && navigator.deviceMemory <= 4) || (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 4);
+  var dprCap = lowEnd ? 1.5 : 2;
+  KG.lowEnd = !!lowEnd;
+  if (realDpr > dprCap) {
+    try {
+      Object.defineProperty(window, 'devicePixelRatio', { configurable: true, get: function () { return Math.min(realDpr, dprCap); } });
+    } catch (e) { /* 改不了就照原本的 */ }
+  }
+
   /* ---------- 音效 ---------- */
   var ctx = null;
   var muted = store.get('muted', false);

@@ -1256,7 +1256,7 @@ function main() {
     W = innerWidth; H = innerHeight;
     renderer.setSize(W, H, false);
     composer.setSize(W, H);
-    bloom.resolution.set(W / 2, H / 2);
+    bloom.resolution.set(W / 4, H / 4);
     const dpr = Math.min(2, window.devicePixelRatio || 1);
     cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -1663,13 +1663,56 @@ function main() {
   }
 
   let firstFrame = true;
+  /* ---------- 自動畫質：太卡就一步步降低（解析度 → 發光 → 影子），並記住 ---------- */
+  const QKEY = 'quality:' + location.pathname.split('/').filter(Boolean).slice(-1)[0];
+  const baseRatio = Math.min(window.devicePixelRatio || 1, small ? 1.75 : 2);
+  const QLEVELS = [
+    { ratio: baseRatio, bloom: true, shadow: true },
+    { ratio: Math.min(baseRatio, 1.35), bloom: true, shadow: true },
+    { ratio: 1, bloom: true, shadow: true },
+    { ratio: 1, bloom: false, shadow: true },
+    { ratio: 1, bloom: false, shadow: false }
+  ];
+  let qLevel = clamp(KG.store.get(QKEY, KG.lowEnd ? 2 : 0) | 0, 0, QLEVELS.length - 1);
+  const perf = { last: 0, n: 0, sum: 0, cool: 2.5 };
+  function applyQuality() {
+    const q = QLEVELS[qLevel];
+    renderer.setPixelRatio(q.ratio);
+    renderer.setSize(W, H, false);
+    composer.setPixelRatio(q.ratio);
+    composer.setSize(W, H);
+    if (renderer.shadowMap.enabled !== q.shadow) {
+      renderer.shadowMap.enabled = q.shadow;
+      scene.traverse(o => { if (o.material) [].concat(o.material).forEach(m => { m.needsUpdate = true; }); });
+    }
+  }
+  function renderFrame() {
+    if (QLEVELS[qLevel].bloom) composer.render(); else renderer.render(scene, camera);
+    // 用真實經過的時間判斷（遊戲本身的 dt 有上限，看不出有多卡）
+    const now = performance.now(), dt = perf.last ? Math.min(0.5, (now - perf.last) / 1000) : 0;
+    perf.last = now;
+    if (document.hidden || qLevel >= QLEVELS.length - 1) return;
+    perf.cool -= dt;
+    if (perf.cool > 0) return;
+    perf.sum += dt; perf.n++;
+    if (perf.n >= 60) {
+      // 平均低於約 45 張/秒就降一級
+      if (perf.sum / perf.n > 1 / 45) {
+        qLevel++;
+        KG.store.set(QKEY, qLevel);
+        applyQuality();
+        perf.cool = 1.5;
+      }
+      perf.n = 0; perf.sum = 0;
+    }
+  }
   function frame(now) {
     const dt = Math.max(0, Math.min(0.05, (now - last) / 1000));
     last = now;
     update(dt);
     updateCamera(clock);
     sync3D(clock);
-    composer.render();
+    renderFrame();
     drawHUD(clock);
     if (firstFrame) {
       firstFrame = false;
@@ -1681,6 +1724,7 @@ function main() {
   }
 
   resize();
+  applyQuality();
   if (st.balls <= 0) st = freshState();
   shown = st.balls;
   requestAnimationFrame(frame);

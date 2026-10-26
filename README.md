@@ -45,6 +45,19 @@
 | 31 | 🎰 夜市彈珠台 | 反應 | 3D 擬真彈珠台：送 100 顆鋼珠，選倍率（一次投 1～10 顆）或按隨機倍率，拉拉桿發射，玩到用完為止 |
 | 32 | 🧱 霓虹打磚塊 | 反應 | 3D 街機打磚塊：無限關卡、8 種磚塊、10 種道具，每 5 關一隻 BOSS（哨兵、蜂巢、守衛） |
 
+## 📲 安裝成 App
+
+首頁有「安裝成 App」按鈕（網站是 PWA，可安裝的網頁 App）：
+
+- **Android（Chrome）**：按下按鈕 →「安裝」，App 抽屜和主畫面會出現「遊戲樂園」，打開時是全螢幕、沒有網址列。長按圖示可以直接開「霓虹打磚塊」或「夜市彈珠台」。
+- **iPhone / iPad（Safari）**：按鈕會顯示教學：分享 →「加入主畫面」。
+- **LINE、Facebook 內建瀏覽器**：不能安裝，按鈕會引導改用手機瀏覽器開啟（LINE 可以一鍵轉開）。
+- **電腦（Chrome / Edge）**：網址列右邊的安裝圖示。
+
+安裝後玩過的遊戲會存在手機裡，沒有網路也能玩；第一次打開首頁時會在背景預先下載所有遊戲。
+
+相關檔案：`manifest.webmanifest`（App 名稱、圖示、顏色）、`sw.js`（離線快取）、`assets/icons/`（App 圖示與安裝畫面截圖）。新增遊戲時不用改 `sw.js`，首頁會自動把新遊戲加進預先下載清單。
+
 ## 放到 GitHub Pages
 
 1. 把這個專案推到 GitHub。
@@ -70,6 +83,9 @@ assets/common.css     共用樣式（按鈕、結算畫面、動畫）
 assets/common.js      共用功能（音效、語音、彩帶、最高分）
 assets/thumbs/        首頁用的遊戲截圖
 assets/vendor/three/  three.js（3D 遊戲用）
+assets/icons/         App 圖示與安裝畫面截圖
+manifest.webmanifest  PWA 設定（安裝成 App）
+sw.js                 離線快取（Service Worker）
 games/<遊戲>/index.html  每個遊戲一個檔案
 ```
 

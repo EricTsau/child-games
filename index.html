@@ -308,6 +308,51 @@
   .guide-card li svg { width: 24px; height: 24px; flex: none; vertical-align: middle; }
   .guide-card .row { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
   .guide-card .kg-btn { font-size: 17px; padding: 10px 22px; text-decoration: none; }
+  .guide-card .note { margin: -6px 0 14px; font-size: 13px; text-align: center; opacity: 0.7; }
+  /* iPhone：指向瀏覽器按鈕的箭頭 */
+  .pointer {
+    position: fixed;
+    z-index: 9600;
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    font-weight: 900;
+    font-size: 15px;
+    color: #fff;
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.45);
+  }
+  .pointer[hidden] { display: none; }
+  .pointer svg { width: 58px; height: 58px; filter: drop-shadow(0 3px 4px rgba(0, 0, 0, 0.35)); }
+  .pointer span { background: #ff5f8f; border: 3px solid #fff; border-radius: 999px; padding: 6px 14px; text-shadow: none; box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3); }
+  .pointer.down { left: 50%; bottom: calc(6px + env(safe-area-inset-bottom)); transform: translateX(-50%); animation: ptr-down 1s ease-in-out infinite; }
+  .pointer.up { right: 14px; top: calc(4px + env(safe-area-inset-top)); flex-direction: column-reverse; animation: ptr-up 1s ease-in-out infinite; }
+  .pointer.up svg { transform: rotate(180deg); }
+  @keyframes ptr-down { 0%, 100% { transform: translate(-50%, 0); } 50% { transform: translate(-50%, 10px); } }
+  @keyframes ptr-up { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+  .ios-tip {
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    bottom: calc(12px + env(safe-area-inset-bottom));
+    z-index: 9400;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    border-radius: 20px;
+    background: #fff;
+    box-shadow: 0 10px 30px rgba(40, 30, 60, 0.3);
+    animation: kg-pop 0.35s cubic-bezier(0.2, 1.6, 0.4, 1);
+  }
+  .ios-tip[hidden] { display: none; }
+  .ios-tip img { width: 48px; height: 48px; border-radius: 12px; flex: none; }
+  .ios-tip .t { flex: 1; font-size: 14px; font-weight: 700; line-height: 1.4; }
+  .ios-tip .t b { font-size: 16px; display: block; }
+  .ios-tip button { font-family: var(--kg-font); border: none; cursor: pointer; }
+  .ios-tip .go { background: #3fb25d; color: #fff; font-weight: 900; font-size: 15px; padding: 9px 14px; border-radius: 999px; }
+  .ios-tip .x { background: none; font-size: 22px; color: #9a8fa5; padding: 4px; }
   @media (prefers-reduced-motion: reduce) {
     .cloud, .sun, .logo span, .game, .install { animation: none; }
   }
@@ -384,6 +429,17 @@
     <ol id="guideSteps"></ol>
     <div class="row" id="guideActions"></div>
   </div>
+</div>
+
+<div class="pointer" id="pointer" hidden aria-hidden="true">
+  <span id="pointerText">點這裡</span>
+  <svg viewBox="0 0 24 24"><path d="M12 3v15m-6-6 6 6 6-6" stroke="#ff5f8f" stroke-width="3.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 3v15m-6-6 6 6 6-6" stroke="#fff" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+</div>
+<div class="ios-tip" id="iosTip" hidden role="dialog" aria-label="加到主畫面">
+  <img src="assets/icons/apple-touch-icon.png" alt="">
+  <div class="t"><b>把遊戲樂園放到主畫面</b>之後在主畫面點圖示就能直接玩，不用再開瀏覽器</div>
+  <button class="go" id="iosTipGo" type="button">教我</button>
+  <button class="x" id="iosTipX" type="button" aria-label="關閉">✕</button>
 </div>
 
 <script src="assets/common.js"></script>
@@ -513,6 +569,10 @@
     var ua = navigator.userAgent;
     var isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
     var isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    var isIPad = isIOS && !/iPhone|iPod/.test(ua);
+    // iPhone 上的其他瀏覽器（iOS 16.4 起也能加到主畫面）
+    var iosBrowser = !isIOS ? '' : /CriOS/.test(ua) ? 'chrome' : /FxiOS/.test(ua) ? 'firefox' : /EdgiOS/.test(ua) ? 'edge' : 'safari';
+    var pointer = document.getElementById('pointer');
     var isAndroid = /Android/i.test(ua);
     var isLine = /Line\//i.test(ua);
     var inApp = isLine || /FBAN|FBAV|Instagram|MicroMessenger|WebView|; wv\)/i.test(ua);
@@ -525,22 +585,76 @@
     function show() { if (!isStandalone) btn.hidden = false; }
     function hide() { btn.hidden = true; }
 
-    function openGuide(lead, steps, actions) {
+    function openGuide(lead, steps, actions, noDefault) {
+      var old = guide.querySelector('.note');
+      if (old) old.remove();
+      document.getElementById('guideTitle').textContent = '安裝成 App';
       document.getElementById('guideLead').textContent = lead;
       document.getElementById('guideSteps').innerHTML = steps.map(function (s) { return '<li><span>' + s + '</span></li>'; }).join('');
       var box = document.getElementById('guideActions');
       box.innerHTML = '';
-      (actions || []).concat([{ text: '知道了', cls: 'blue' }]).forEach(function (a) {
+      (actions || []).concat(noDefault ? [] : [{ text: '知道了', cls: 'blue' }]).forEach(function (a) {
         var el = document.createElement(a.href ? 'a' : 'button');
         el.className = 'kg-btn ' + (a.cls || '');
         el.textContent = a.text;
         if (a.href) el.href = a.href;
-        el.addEventListener('click', function () { KG.sound('click'); if (!a.href) guide.hidden = true; });
+        el.addEventListener('click', function () { KG.sound('click'); if (!a.href) guide.hidden = true; if (a.onClick) a.onClick(); });
         box.appendChild(el);
       });
       guide.hidden = false;
     }
     guide.addEventListener('click', function (e) { if (e.target === guide) guide.hidden = true; });
+
+    // 箭頭指向瀏覽器的分享／選單按鈕：iPhone Safari 在下方工具列，iPad 和其他瀏覽器在右上角
+    function showPointer(where, text) {
+      pointer.className = 'pointer ' + where;
+      document.getElementById('pointerText').textContent = text;
+      pointer.hidden = false;
+      clearTimeout(showPointer.t);
+      showPointer.t = setTimeout(function () { pointer.hidden = true; }, 15000);
+    }
+    window.addEventListener('pagehide', function () { pointer.hidden = true; });
+
+    function iosGuide() {
+      var steps, lead, where, ptext;
+      tip.hidden = true;
+      KG.store.set('home:iosTipDone', true);
+      if (iosBrowser === 'safari') {
+        lead = isIPad ? 'iPad 用 Safari，三個步驟就好：' : 'iPhone 用 Safari，三個步驟就好：';
+        steps = [
+          (isIPad ? '點右上角的分享按鈕 ' : '點下面的分享按鈕 ') + ICON_SHARE + '（如果只看到「⋯」，先點「⋯」再選「分享」）',
+          '往下找「加入主畫面」' + ICON_PLUS + '，打開「以網頁 App 打開」',
+          '按「新增」，主畫面就會出現「遊戲樂園」，以後點它就能直接玩'
+        ];
+        where = isIPad ? 'up' : 'down';
+        ptext = isIPad ? '分享在這裡' : '點這裡的分享';
+      } else {
+        var name = { chrome: 'Chrome', firefox: 'Firefox', edge: 'Edge' }[iosBrowser];
+        lead = '在 ' + name + ' 也可以加到主畫面：';
+        steps = [
+          '點網址列右邊的分享按鈕 ' + ICON_SHARE + '（或右下角選單裡的「分享」）',
+          '往下找「加入主畫面」' + ICON_PLUS,
+          '按「新增」，主畫面就會出現「遊戲樂園」'
+        ];
+        where = 'up';
+        ptext = '分享在這裡';
+      }
+      openGuide(lead, steps, [{ text: '我知道了，開始加', cls: 'green', onClick: function () { showPointer(where, ptext); } }], true);
+      document.getElementById('guideTitle').textContent = '加到主畫面';
+      var n = document.createElement('p');
+      n.className = 'note';
+      n.textContent = 'Apple 不允許網頁自己安裝，所以要手動加一次；加好後就跟 App 一樣，打開沒有網址列，也能離線玩。';
+      document.getElementById('guideSteps').after(n);
+    }
+
+    // 第一次用 iPhone Safari 打開時，下方跳出小提示（關掉就不再出現）
+    var tip = document.getElementById('iosTip');
+    if (isIOS && !isStandalone && !inApp && !KG.store.get('home:iosTipDone', false)) {
+      setTimeout(function () { tip.hidden = false; }, 2500);
+    }
+    function closeTip() { tip.hidden = true; KG.store.set('home:iosTipDone', true); }
+    document.getElementById('iosTipX').addEventListener('click', function () { KG.sound('click'); closeTip(); });
+    document.getElementById('iosTipGo').addEventListener('click', function () { KG.sound('click'); closeTip(); iosGuide(); });
 
     function showHelp() {
       if (inApp) {
@@ -552,11 +666,7 @@
           '打開後再按一次「安裝成 App」'
         ], isLine ? [{ text: '用瀏覽器開啟', cls: 'green', href: url }] : []);
       } else if (isIOS) {
-        openGuide('iPhone、iPad 要用 Safari 手動加入主畫面：', [
-          '點下面工具列的分享按鈕 ' + ICON_SHARE,
-          '往下滑，選「加入主畫面」' + ICON_PLUS,
-          '按右上角的「新增」，主畫面就會出現「遊戲樂園」'
-        ]);
+        iosGuide();
       } else if (isAndroid) {
         openGuide('如果沒有跳出安裝視窗，可以這樣做：', [
           '用 Chrome 打開這個網頁，點右上角的 ' + ICON_DOTS,
@@ -593,6 +703,7 @@
       } else showHelp();
     });
     // 手機上一律顯示按鈕；不能一鍵安裝時會改成顯示教學
+    if (isIOS && !inApp) btn.querySelector('span').textContent = '加到主畫面';
     if (!isStandalone && (isAndroid || isIOS || inApp)) show();
 
     // 離線功能：註冊 Service Worker，並預先下載所有遊戲

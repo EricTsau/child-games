@@ -711,7 +711,7 @@ function KSolverFactory() {
           if (s >= 0 && safeF(c)) { out.push(applyMove('t' + p, 'f' + s, 1)); ch = true; }
         }
       }
-      // 翻三張時不自動動廢牌堆，以免改變之後翻牌的分組（保持「保證有解」）
+      // 翻三張的廢牌堆改由 wasteAutoCheck() 先確認不會變成無解才收
       if (G.waste.length && G.draw === 1) {
         const c = G.waste[G.waste.length - 1], s = fSlotFor(c);
         if (s >= 0 && safeF(c)) { out.push(applyMove('waste', 'f' + s, 1)); ch = true; }
@@ -1297,6 +1297,7 @@ function KSolverFactory() {
     hintFx = null;
     sync({ delays, flipDelay: 0.08 });
     afterChange();
+    if (!quiet) wasteAutoCheck();
     return true;
   }
   function commitDraw() {
@@ -1316,7 +1317,47 @@ function KSolverFactory() {
     hintFx = null;
     sync({ delays, flipDelay: 0.02 });
     afterChange();
+    wasteAutoCheck();
     return true;
+  }
+  /* 翻三張：收走廢牌堆的牌會改變之後每三張一組的順序。
+     所以先在背景用求解器確認「收了以後還解得開」才收；
+     如果現在本來就解不開（例如完全隨機的牌局），收了也不會更糟，就照收。 */
+  let wasteBusy = false;
+  function wasteCandidate() {
+    if (!G || G.won || G.draw !== 3 || !settings.autoF || !G.waste.length) return -1;
+    const c = G.waste[G.waste.length - 1], sl = fSlotFor(c);
+    return sl >= 0 && safeF(c) ? sl : -1;
+  }
+  async function wasteAutoCheck() {
+    if (wasteBusy || wasteCandidate() < 0) return;
+    wasteBusy = true;
+    try {
+      const key = hist.length;
+      const solveS = S => Promise.race([wcall({ cmd: 'solve', S: Array.from(S), draw: 3, budget: 40000 }), new Promise(res => setTimeout(() => res(null), 1800))]);
+      while (wasteCandidate() >= 0) {
+        const sl = wasteCandidate(), before = snap();
+        applyMove('waste', 'f' + sl, 1);
+        const after = KS.toS(G);
+        restore(before);
+        let ok = false;
+        const r = await solveS(after);
+        if (key !== hist.length || !G || G.won || phase !== 'play') return;
+        if (r && r.ok) ok = true;
+        else if (r && r.exhausted) {
+          const now = await solveS(KS.toS(G));
+          if (key !== hist.length || !G || G.won || phase !== 'play') return;
+          ok = !!(now && now.exhausted);
+        }
+        if (!ok || wasteCandidate() !== sl) return;
+        const delays = {};
+        const e0 = applyMove('waste', 'f' + sl, 1);
+        delays[e0.cards[0]] = 0.05; moveSfx(e0, 0.05);
+        autoFoundationPass().forEach((e, i) => { const dl = 0.18 + i * 0.11; delays[e.cards[0]] = dl; moveSfx(e, dl); });
+        sync({ delays, flipDelay: 0.02 });
+        afterChange();
+      }
+    } finally { wasteBusy = false; }
   }
   function undo() {
     if (!G || !hist.length || (G.won && winFx)) { if (G && !hist.length) SFX.bad(); return false; }
@@ -1982,6 +2023,8 @@ function KSolverFactory() {
     },
     move(from, to, count) { return commitMove(from, to, count || 1); },
     draw() { return commitDraw(); },
+    wasteBusy: () => wasteBusy,
+    step(limit) { const r = KS.solve(KS.toS(G), G.draw, limit || 100000); if (!r.ok || !r.moves.length) return { ok: r.ok, done: !r.moves.length }; const mv = resolveSolverMove(r.moves[0]); if (!mv) return { ok: false }; if (mv.draw) { for (let i = 0; i < mv.draw; i++) commitDraw(); return { ok: true, m: 'draw' }; } return { ok: !!commitMove(mv.from, mv.to, mv.n), m: mv.from + '>' + mv.to }; },
     autoMove(card) { const c = card2id(card); const l = locOf(c); if (!l || l === 'stock') return null; const a = pile(l), i = a.indexOf(c); if (l[0] === 't' && i < G.down[+l[1]]) return null; return smartMove(l, a.length - i); },
     tap(x, y) { tapAt(x, y); return this.state(); },
     hint() { return hint(); },

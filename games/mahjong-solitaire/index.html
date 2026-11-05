@@ -1519,6 +1519,29 @@
     }
     return -1;
   }
+  /* 手機上牌很小：點擊時在附近找「可以拿的牌」，不用點得剛剛好
+     1. 正下方最上層的牌可以拿 → 就是它
+     2. 否則找手指附近（約 18px 內）可以拿的牌，最近的優先；和已選的牌同花色的再優先
+     3. 都沒有 → 回傳正下方的牌（讓它搖一下，告訴玩家被擋住） */
+  function smartHit(sx, sy, slop) {
+    const exact = hitTile(sx, sy);
+    if (exact >= 0 && free[exact]) return exact;
+    const w = s2w(sx, sy), w2 = s2w(sx + (slop || 18), sy);
+    const tol = Math.hypot(w2.x - w.x, w2.y - w.y);
+    const selKey = sel >= 0 ? keyOf(faces[sel]) : -1;
+    let best = -1, bs = 1e18;
+    for (let i = 0; i < N; i++) {
+      if (!alive[i] || !free[i]) continue;
+      const t = tiles[i];
+      const dx = Math.max(t.wx - D - w.x, 0, w.x - (t.wx + TW)), dy = Math.max(t.wy - w.y, 0, w.y - (t.wy + TH + D));
+      const d = Math.hypot(dx, dy);
+      if (d > tol) continue;
+      let sc = d;
+      if (selKey >= 0 && i !== sel && keyOf(faces[i]) === selKey) sc -= tol * 0.6;
+      if (sc < bs) { bs = sc; best = i; }
+    }
+    return best >= 0 ? best : exact;
+  }
   const ptrs = new Map();
   let gest = null;
   const canPlay = () => phase === 'play' && G && !paused && !G.done && $('stuckOv').classList.contains('hide') && $('levels').classList.contains('hide');
@@ -1526,7 +1549,7 @@
     if (!canPlay()) return;
     try { cv.setPointerCapture(e.pointerId); } catch (_) { /* 忽略 */ }
     ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (ptrs.size === 1) gest = { type: 'tap', id: e.pointerId, x0: e.clientX, y0: e.clientY, px: view.px, py: view.py, t0: performance.now() };
+    if (ptrs.size === 1) gest = { type: 'tap', id: e.pointerId, x0: e.clientX, y0: e.clientY, px: view.px, py: view.py, t0: performance.now(), far: 0 };
     else if (ptrs.size === 2) {
       const p = [...ptrs.values()];
       const mx = (p[0].x + p[1].x) / 2, my = (p[0].y + p[1].y) / 2;
@@ -1540,7 +1563,9 @@
     }
     ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (!gest) return;
-    if (gest.type === 'tap' && e.pointerId === gest.id && Math.hypot(e.clientX - gest.x0, e.clientY - gest.y0) > 10) gest.type = 'pan';
+    if (e.pointerId === gest.id && gest.far != null) gest.far = Math.max(gest.far, Math.hypot(e.clientX - gest.x0, e.clientY - gest.y0));
+    // 手指點下去難免會滑一點：沒放大時（畫面不能拖）多給一點空間
+    if (gest.type === 'tap' && e.pointerId === gest.id && gest.far > (view.uz > 1.02 ? 14 : 28)) gest.type = 'pan';
     if (gest.type === 'pan' && e.pointerId === gest.id) {
       view.px = gest.px + (e.clientX - gest.x0); view.py = gest.py + (e.clientY - gest.y0); clampPan(); markDirty();
     } else if (gest.type === 'pinch' && ptrs.size >= 2) {
@@ -1555,8 +1580,11 @@
   function endPtr(e, cancel) {
     if (!ptrs.has(e.pointerId)) return;
     ptrs.delete(e.pointerId);
-    if (gest && gest.type === 'tap' && gest.id === e.pointerId && !cancel && performance.now() - gest.t0 < 800) {
-      const i = hitTile(e.clientX, e.clientY);
+    // 放大後輕輕拖了一點點又放開，也當成點擊
+    const tapLike = gest && gest.id === e.pointerId && !cancel && performance.now() - gest.t0 < 800 && (gest.type === 'tap' || (gest.type === 'pan' && gest.far <= 18));
+    if (tapLike) {
+      if (gest.type === 'pan') { view.px = gest.px; view.py = gest.py; clampPan(); markDirty(); }
+      const i = smartHit(gest.x0, gest.y0, e.pointerType === 'mouse' ? 6 : 18);
       focus = -1;
       if (i >= 0) pick(i, 'tap');
       else if (sel >= 0) { sel = -1; markDirty(); }

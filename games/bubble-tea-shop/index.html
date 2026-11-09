@@ -1,0 +1,2424 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>珍奶小店</title>
+<link rel="stylesheet" href="../../assets/common.css">
+<style>
+  html, body { height: 100%; overflow: hidden; background: #ffe7d1; overscroll-behavior: none; }
+  #game {
+    position: fixed; inset: 0; display: block;
+    width: 100vw; height: 100vh; height: 100dvh;
+    touch-action: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" aria-label="珍奶小店"></canvas>
+<script src="../../assets/common.js"></script>
+<script>
+'use strict';
+const SLUG = 'bubble-tea-shop';
+/* =====================================================================
+ * 小引擎：畫布、補間、粒子、按鈕、音樂
+ * ===================================================================== */
+const cv = document.getElementById('game');
+let ctx = cv.getContext('2d');
+const mainCtx = ctx;
+function ctxSwap(c) { ctx = c; }
+const FONT = '"Baloo 2","PingFang TC","Noto Sans TC","Microsoft JhengHei","Heiti TC",system-ui,sans-serif';
+let W = 0, H = 0, dpr = 1, U = 1, time = 0;
+
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const TAU = Math.PI * 2;
+const Ease = {
+  outCubic: t => 1 - Math.pow(1 - t, 3),
+  inCubic: t => t * t * t,
+  inOutSine: t => -(Math.cos(Math.PI * t) - 1) / 2,
+  outBack: t => { const c = 1.70158, c3 = c + 1; return 1 + c3 * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); },
+  outElastic: t => (t === 0 || t === 1) ? t : Math.pow(2, -10 * t) * Math.sin((t * 10 - 0.75) * (TAU / 3)) + 1,
+  outBounce: t => {
+    const n = 7.5625, d = 2.75;
+    if (t < 1 / d) return n * t * t;
+    if (t < 2 / d) return n * (t -= 1.5 / d) * t + 0.75;
+    if (t < 2.5 / d) return n * (t -= 2.25 / d) * t + 0.9375;
+    return n * (t -= 2.625 / d) * t + 0.984375;
+  }
+};
+
+let tweens = [];
+function tween(obj, to, dur, ease, delay, done) {
+  const tw = { obj, to, from: null, dur: dur || 0.3, ease: typeof ease === 'function' ? ease : (Ease[ease] || Ease.outCubic), t: -(delay || 0), done };
+  tweens.push(tw);
+  return tw;
+}
+function killTweens(obj) { tweens = tweens.filter(t => t.obj !== obj); }
+function updateTweens(dt) {
+  if (!tweens.length) return;
+  const list = tweens.slice();
+  for (const tw of list) {
+    tw.t += dt;
+    if (tw.t < 0) continue;
+    if (!tw.from) { tw.from = {}; for (const k in tw.to) tw.from[k] = tw.obj[k]; }
+    const p = Math.min(1, tw.t / tw.dur), e = tw.ease(p);
+    for (const k in tw.to) tw.obj[k] = tw.from[k] + (tw.to[k] - tw.from[k]) * e;
+    if (p >= 1) {
+      const i = tweens.indexOf(tw);
+      if (i >= 0) tweens.splice(i, 1);
+      if (tw.done) tw.done();
+    }
+  }
+}
+
+let shakeT = 0, shakeAmt = 0;
+function shake(amt, dur) { shakeAmt = Math.max(shakeT > 0 ? shakeAmt : 0, amt); shakeT = Math.max(shakeT, dur || 0.3); }
+
+function circ(x, y, r) { ctx.moveTo(x + r, y); ctx.arc(x, y, r, 0, TAU); }
+function rr(x, y, w, h, r) {
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+function starPath(x, y, R, r, rot) {
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const a = (rot || 0) + i * Math.PI / 5 - Math.PI / 2, rad = i % 2 ? r : R;
+    ctx.lineTo(x + Math.cos(a) * rad, y + Math.sin(a) * rad);
+  }
+  ctx.closePath();
+}
+function heartPath(x, y, s) {
+  ctx.beginPath();
+  ctx.moveTo(x, y + s * 0.35);
+  ctx.bezierCurveTo(x - s * 1.1, y - s * 0.35, x - s * 0.55, y - s * 1.05, x, y - s * 0.45);
+  ctx.bezierCurveTo(x + s * 0.55, y - s * 1.05, x + s * 1.1, y - s * 0.35, x, y + s * 0.35);
+  ctx.closePath();
+}
+function shade(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  const f = v => clamp(v + amt, 0, 255);
+  return 'rgb(' + f(n >> 16) + ',' + f((n >> 8) & 255) + ',' + f(n & 255) + ')';
+}
+function rgba(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return 'rgba(' + (n >> 16) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+}
+function glossyStar(x, y, R, on, rot) {
+  ctx.save();
+  ctx.lineJoin = 'round';
+  if (on) {
+    ctx.fillStyle = 'rgba(160,90,0,0.25)'; starPath(x, y + R * 0.12, R, R * 0.5, rot); ctx.fill();
+    const g = ctx.createRadialGradient(x - R * 0.3, y - R * 0.4, R * 0.1, x, y, R * 1.1);
+    g.addColorStop(0, '#fffbd0'); g.addColorStop(0.45, '#ffd93d'); g.addColorStop(1, '#f39a0c');
+    ctx.fillStyle = g; ctx.strokeStyle = '#c9700a'; ctx.lineWidth = Math.max(1.5, R * 0.12);
+    starPath(x, y, R, R * 0.5, rot); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.75)';
+    ctx.beginPath(); ctx.ellipse(x - R * 0.25, y - R * 0.3, R * 0.22, R * 0.12, -0.6, 0, TAU); ctx.fill();
+  } else {
+    ctx.fillStyle = 'rgba(110,70,60,0.18)'; ctx.strokeStyle = 'rgba(110,70,60,0.32)'; ctx.lineWidth = Math.max(1.5, R * 0.1);
+    starPath(x, y, R, R * 0.5, rot); ctx.fill(); ctx.stroke();
+  }
+  ctx.restore();
+}
+function txt(s, x, y, size, fill, o) {
+  o = o || {};
+  ctx.save();
+  ctx.font = (o.weight || '900') + ' ' + size + 'px ' + FONT;
+  ctx.textAlign = o.align || 'center';
+  ctx.textBaseline = o.base || 'middle';
+  ctx.lineJoin = 'round';
+  if (o.shadow !== false) {
+    ctx.fillStyle = o.shadow || 'rgba(80,40,20,0.28)';
+    if (o.stroke) { ctx.strokeStyle = ctx.fillStyle; ctx.lineWidth = o.sw || size * 0.22; ctx.strokeText(s, x, y + size * 0.09); }
+    ctx.fillText(s, x, y + size * 0.09);
+  }
+  if (o.stroke) { ctx.strokeStyle = o.stroke; ctx.lineWidth = o.sw || size * 0.22; ctx.strokeText(s, x, y); }
+  ctx.fillStyle = fill; ctx.fillText(s, x, y);
+  ctx.restore();
+}
+/** 文字太寬就縮小 */
+function fitSize(s, maxW, size, weight) {
+  ctx.font = (weight || '900') + ' ' + size + 'px ' + FONT;
+  const w = ctx.measureText(s).width;
+  return w > maxW ? size * maxW / w : size;
+}
+function logo(s, cx, cy, size, colors, outline) {
+  ctx.save();
+  ctx.font = '900 ' + size + 'px ' + FONT;
+  ctx.textBaseline = 'middle'; ctx.textAlign = 'center'; ctx.lineJoin = 'round';
+  const chars = [...s];
+  const widths = chars.map(c => ctx.measureText(c).width * 1.04);
+  const total = widths.reduce((a, b) => a + b, 0);
+  let x = cx - total / 2;
+  chars.forEach((c, i) => {
+    const w = widths[i];
+    const bob = Math.sin(time * 3 + i * 0.7) * size * 0.06;
+    const rot = Math.sin(time * 2.2 + i) * 0.06;
+    ctx.save();
+    ctx.translate(x + w / 2, cy + bob); ctx.rotate(rot);
+    ctx.strokeStyle = 'rgba(80,40,20,0.3)'; ctx.lineWidth = size * 0.36;
+    ctx.strokeText(c, 0, size * 0.1);
+    ctx.strokeStyle = outline || '#6b3a1f'; ctx.lineWidth = size * 0.34; ctx.strokeText(c, 0, 0);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = size * 0.17; ctx.strokeText(c, 0, 0);
+    const col = colors[i % colors.length];
+    const g = ctx.createLinearGradient(0, -size / 2, 0, size / 2);
+    g.addColorStop(0, shade(col, 70)); g.addColorStop(0.5, col); g.addColorStop(1, shade(col, -35));
+    ctx.fillStyle = g; ctx.fillText(c, 0, 0);
+    ctx.restore();
+    x += w;
+  });
+  ctx.restore();
+}
+function progressBar(x, y, w, h, p, col) {
+  rr(x, y, w, h, h / 2); ctx.fillStyle = 'rgba(255,255,255,0.9)'; ctx.fill();
+  ctx.strokeStyle = 'rgba(110,60,40,0.45)'; ctx.lineWidth = 1.5; ctx.stroke();
+  if (p > 0) {
+    rr(x + 2, y + 2, Math.max(h - 4, (w - 4) * clamp(p, 0, 1)), h - 4, (h - 4) / 2);
+    ctx.fillStyle = col; ctx.fill();
+  }
+}
+function pill(x, y, w, h, col) {
+  rr(x, y + 3, w, h, h / 2); ctx.fillStyle = 'rgba(110,60,40,0.2)'; ctx.fill();
+  rr(x, y, w, h, h / 2); ctx.fillStyle = '#fffaf2'; ctx.fill();
+  ctx.strokeStyle = col; ctx.lineWidth = 2.5; ctx.stroke();
+}
+function coinIcon(x, y, r) {
+  ctx.beginPath(); circ(x, y + r * 0.15, r); ctx.fillStyle = '#c98a10'; ctx.fill();
+  ctx.beginPath(); circ(x, y, r); ctx.fillStyle = '#ffd34d'; ctx.fill();
+  ctx.lineWidth = Math.max(1, r * 0.16); ctx.strokeStyle = '#e0a21a'; ctx.stroke();
+  ctx.beginPath(); circ(x, y, r * 0.6); ctx.strokeStyle = '#f0b52a'; ctx.lineWidth = Math.max(1, r * 0.12); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.beginPath(); ctx.ellipse(x - r * 0.35, y - r * 0.35, r * 0.25, r * 0.15, -0.7, 0, TAU); ctx.fill();
+}
+
+/* ---------- 粒子（有上限，重複使用物件） ---------- */
+const FX_MAX = 220;
+class FX {
+  constructor() { this.list = []; this.pool = []; }
+  _get() { if (this.list.length >= FX_MAX) return null; const p = this.pool.pop() || {}; this.list.push(p); return p; }
+  burst(x, y, o) {
+    o = o || {};
+    const n = o.n || 14, cols = o.colors || ['#ffe066', '#ff8fb1', '#7bd88f', '#6cc4ff', '#ffffff'];
+    for (let i = 0; i < n; i++) {
+      const p = this._get(); if (!p) return;
+      const a = o.dir != null ? o.dir + (Math.random() - 0.5) * (o.spread || 1.2) : Math.random() * TAU;
+      const sp = (o.speed || 220) * (0.4 + Math.random() * 0.8);
+      p.x = x; p.y = y; p.vx = Math.cos(a) * sp; p.vy = Math.sin(a) * sp - (o.up || 0);
+      p.max = o.life || 0.8; p.life = p.max * (0.7 + Math.random() * 0.5);
+      p.size = (o.size || 7) * (0.6 + Math.random() * 0.7); p.color = cols[i % cols.length];
+      p.shape = o.shape || 'star'; p.rot = Math.random() * TAU; p.vr = (Math.random() - 0.5) * 8;
+      p.g = o.g == null ? 500 : o.g; p.drag = o.drag == null ? 0.97 : o.drag; p.s = ''; p.pop = 0;
+    }
+  }
+  text(x, y, s, o) {
+    o = o || {};
+    const p = this._get(); if (!p) return;
+    p.shape = 'text'; p.x = x; p.y = y; p.vx = 0; p.vy = o.vy || -70; p.s = s; p.color = o.color || '#fff'; p.size = o.size || 24;
+    p.stroke = o.stroke || '#6b3a1f'; p.life = p.max = o.life || 1.1; p.g = 0; p.drag = 1; p.rot = 0; p.vr = 0; p.pop = 0;
+  }
+  ring(x, y, color, r, life) {
+    const p = this._get(); if (!p) return;
+    p.shape = 'ring'; p.x = x; p.y = y; p.vx = 0; p.vy = 0; p.color = color || '#fff'; p.size = r || 40;
+    p.life = p.max = life || 0.5; p.g = 0; p.drag = 1; p.rot = 0; p.vr = 0; p.pop = 0;
+  }
+  update(dt) {
+    const L2 = this.list;
+    let j = 0;
+    for (let i = 0; i < L2.length; i++) {
+      const p = L2[i];
+      p.life -= dt;
+      if (p.life <= 0) { this.pool.push(p); continue; }
+      p.vy += p.g * dt;
+      const d = Math.pow(p.drag, dt * 60);
+      p.vx *= d; p.vy *= d;
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      p.rot += p.vr * dt; p.pop += dt;
+      L2[j++] = p;
+    }
+    L2.length = j;
+  }
+  draw() {
+    for (const p of this.list) {
+      const a = clamp(p.life / p.max, 0, 1);
+      ctx.save();
+      ctx.globalAlpha = p.shape === 'text' ? Math.min(1, a * 2) : Math.min(1, a * 1.6);
+      ctx.translate(p.x, p.y); ctx.rotate(p.rot);
+      const s = p.size;
+      if (p.shape === 'star') { ctx.fillStyle = p.color; starPath(0, 0, s, s * 0.45, 0); ctx.fill(); }
+      else if (p.shape === 'heart') { ctx.fillStyle = p.color; heartPath(0, 0, s); ctx.fill(); }
+      else if (p.shape === 'circle') { ctx.fillStyle = p.color; ctx.beginPath(); circ(0, 0, s * a + 1); ctx.fill(); }
+      else if (p.shape === 'bubble') { ctx.strokeStyle = p.color; ctx.lineWidth = 2; ctx.beginPath(); circ(0, 0, s); ctx.stroke(); }
+      else if (p.shape === 'drop') { ctx.fillStyle = p.color; ctx.beginPath(); circ(0, 0, s * 0.6); ctx.fill(); }
+      else if (p.shape === 'ring') { const k = 1 - a; ctx.strokeStyle = p.color; ctx.lineWidth = 6 * a + 1; ctx.beginPath(); circ(0, 0, s * (0.3 + k)); ctx.stroke(); }
+      else if (p.shape === 'steam') { ctx.fillStyle = p.color; ctx.globalAlpha *= 0.5; ctx.beginPath(); circ(0, 0, s * (1.6 - a)); ctx.fill(); }
+      else if (p.shape === 'text') {
+        const sc = p.pop < 0.25 ? Ease.outBack(p.pop / 0.25) : 1;
+        ctx.scale(sc, sc);
+        txt(p.s, 0, 0, p.size, p.color, { stroke: p.stroke, sw: p.size * 0.28 });
+      }
+      ctx.restore();
+    }
+  }
+}
+const fx = new FX();
+
+/* ---------- 畫在畫布上的按鈕 ---------- */
+let btnReg = [], pressed = null;
+const BTN = {
+  green: ['#a6f59c', '#3fbf5c', '#24873e'], pink: ['#ffb3cc', '#f45f93', '#b8366a'], blue: ['#a8e0ff', '#3c9ff0', '#22659e'],
+  yellow: ['#fff09a', '#f8b921', '#b57c0b'], purple: ['#dcc6ff', '#9b6ff2', '#5f3fae'], orange: ['#ffd0a0', '#ff8a3d', '#c1561a'],
+  white: ['#ffffff', '#f6ece4', '#c4a594'], brown: ['#e9c39b', '#b9773f', '#7a4a22']
+};
+function drawIcon(name, x, y, s, col) {
+  ctx.save(); ctx.translate(x, y);
+  ctx.fillStyle = col || '#fff'; ctx.strokeStyle = col || '#fff';
+  ctx.lineWidth = s * 0.22; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  if (name === 'play') { ctx.beginPath(); ctx.moveTo(-s * 0.35, -s * 0.5); ctx.lineTo(s * 0.5, 0); ctx.lineTo(-s * 0.35, s * 0.5); ctx.closePath(); ctx.fill(); ctx.stroke(); }
+  else if (name === 'pause') { rr(-s * 0.38, -s * 0.45, s * 0.26, s * 0.9, s * 0.08); ctx.fill(); rr(s * 0.12, -s * 0.45, s * 0.26, s * 0.9, s * 0.08); ctx.fill(); }
+  else if (name === 'replay') {
+    ctx.beginPath(); ctx.arc(0, 0, s * 0.42, -Math.PI * 0.3, Math.PI * 1.35); ctx.stroke();
+    const a = -Math.PI * 0.3, ex = Math.cos(a) * s * 0.42, ey = Math.sin(a) * s * 0.42;
+    ctx.beginPath(); ctx.moveTo(ex + s * 0.2, ey - s * 0.05); ctx.lineTo(ex - s * 0.02, ey + s * 0.25); ctx.lineTo(ex - s * 0.25, ey - s * 0.12); ctx.closePath(); ctx.fill();
+  }
+  else if (name === 'menu') { for (let i = -1; i <= 1; i += 2) for (let j = -1; j <= 1; j += 2) { rr(i * s * 0.25 - s * 0.17, j * s * 0.25 - s * 0.17, s * 0.34, s * 0.34, s * 0.08); ctx.fill(); } }
+  else if (name === 'lock') {
+    ctx.lineWidth = s * 0.16; ctx.beginPath(); ctx.arc(0, -s * 0.12, s * 0.26, Math.PI, 0); ctx.stroke();
+    rr(-s * 0.38, -s * 0.12, s * 0.76, s * 0.6, s * 0.12); ctx.fill();
+  }
+  else if (name === 'back') { ctx.beginPath(); ctx.moveTo(s * 0.3, -s * 0.42); ctx.lineTo(-s * 0.2, 0); ctx.lineTo(s * 0.3, s * 0.42); ctx.stroke(); }
+  ctx.restore();
+}
+/** 立體按鈕。opts: {label, icon, color, onClick, size, pulse, disabled, radius} */
+function button(id, x, y, w, h, opts) {
+  btnReg.push({ id, x, y, w, h, onClick: opts.onClick, disabled: opts.disabled });
+  const pal = BTN[opts.color || 'green'];
+  const isDown = pressed && pressed.id === id;
+  let s = isDown ? 0.93 : 1;
+  if (opts.pulse && !isDown) s *= 1 + Math.sin(time * 5) * 0.035;
+  const lip = Math.max(3, Math.min(7, h * 0.1));
+  ctx.save();
+  ctx.translate(x + w / 2, y + h / 2); ctx.scale(s, s);
+  if (opts.disabled) ctx.globalAlpha = 0.5;
+  const r = opts.radius == null ? h / 2 : opts.radius;
+  const yo = isDown ? lip * 0.6 : 0;
+  rr(-w / 2, -h / 2 + lip + 3, w, h, r); ctx.fillStyle = 'rgba(110,60,40,0.2)'; ctx.fill();
+  rr(-w / 2, -h / 2 + lip, w, h, r); ctx.fillStyle = pal[2]; ctx.fill();
+  rr(-w / 2, -h / 2 + yo, w, h, r); ctx.fillStyle = pal[1]; ctx.fill();
+  ctx.strokeStyle = pal[2]; ctx.lineWidth = Math.max(2, Math.min(4, h * 0.05)); ctx.stroke();
+  rr(-w / 2 + Math.min(r, h * 0.3), -h / 2 + yo + h * 0.08, w - Math.min(r, h * 0.3) * 2, h * 0.34, h * 0.15);
+  ctx.fillStyle = rgba('#ffffff', 0.35); ctx.fill();
+  const fs = opts.size || h * 0.42;
+  const tc = opts.color === 'white' ? '#7a4a32' : '#fff';
+  if (opts.icon && opts.label) {
+    ctx.font = '900 ' + fs + 'px ' + FONT;
+    const tw = ctx.measureText(opts.label).width;
+    const tot = fs * 1.1 + tw;
+    drawIcon(opts.icon, -tot / 2 + fs * 0.45, yo, fs * 0.9, tc);
+    txt(opts.label, -tot / 2 + fs * 1.1 + tw / 2, yo + 1, fs, tc, { stroke: pal[2], sw: fs * 0.2, shadow: false });
+  } else if (opts.icon) drawIcon(opts.icon, 0, yo, fs * 1.1, tc);
+  else if (opts.label != null) {
+    const f2 = fitSize(opts.label, w - 16, fs);
+    txt(opts.label, 0, yo + 1, f2, tc, { stroke: opts.color === 'white' ? null : pal[2], sw: f2 * 0.2, shadow: false });
+  }
+  ctx.restore();
+}
+function hitBtn(x, y) {
+  for (let i = btnReg.length - 1; i >= 0; i--) {
+    const b = btnReg[i];
+    if (!b.disabled && x >= b.x - 6 && x <= b.x + b.w + 6 && y >= b.y - 6 && y <= b.y + b.h + 8) return b;
+  }
+  return null;
+}
+
+/* ---------- 背景音樂 ---------- */
+let userActed = false;
+window.addEventListener('pointerdown', () => { userActed = true; }, { capture: true });
+window.addEventListener('keydown', () => { userActed = true; }, { capture: true });
+const NOTE_IDX = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+function nf(name) {
+  const m = /^([A-G])(#|b)?(\d)$/.exec(name);
+  if (!m) return 0;
+  const n = NOTE_IDX[m[1]] + (m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0) + (parseInt(m[3], 10) + 1) * 12;
+  return 440 * Math.pow(2, (n - 69) / 12);
+}
+const Music = {
+  on: false, song: null, step: 0, next: 0,
+  start(song) {
+    if (this.song && this.song.src === song) return;
+    this.song = { src: song, bpm: song.bpm, mel: song.mel.trim().split(/\s+/), bass: (song.bass || '').trim().split(/\s+/), vol: song.vol || 1, wave: song.wave || 'triangle' };
+    this.on = true; this.step = 0; this.next = 0.15;
+  },
+  update(dt) {
+    if (!this.on || !this.song || !userActed) return;
+    this.next -= dt;
+    if (this.next < -0.3) this.next = 0;
+    const s = this.song, beat = 60 / s.bpm / 2;
+    while (this.next <= 0) {
+      if (!KG.isMuted() && !document.hidden) {
+        const i = this.step % s.mel.length, tok = s.mel[i];
+        if (tok !== '-' && tok !== '.') {
+          let len = 1;
+          while (s.mel[(i + len) % s.mel.length] === '-' && len < 8) len++;
+          const f = nf(tok);
+          KG.note(f, beat * len * 0.9, s.wave, 0.045 * s.vol);
+          KG.note(f * 2, beat * len * 0.4, 'sine', 0.012 * s.vol);
+        }
+        if (s.bass.length > 1) {
+          const bi = this.step % s.bass.length, bt = s.bass[bi];
+          if (bt !== '-' && bt !== '.') KG.note(nf(bt), beat * 1.6, 'sine', 0.07 * s.vol);
+        }
+        if (this.step % 4 === 2) KG.note(2400, 0.03, 'square', 0.008 * s.vol);
+      }
+      this.step++;
+      this.next += beat;
+    }
+  }
+};
+const SONG_PLAY = {
+  bpm: 132, wave: 'triangle',
+  mel: 'C5 E5 G5 E5 A5 G5 E5 . F5 A5 C6 A5 G5 - E5 . D5 F5 A5 F5 G5 E5 C5 . D5 E5 F5 D5 C5 - - . ' +
+       'E5 G5 C6 G5 A5 F5 A5 . G5 E5 G5 C6 B5 - G5 . A5 G5 F5 E5 D5 E5 F5 . G5 F5 E5 D5 C5 - - .',
+  bass: 'C3 . G3 . A2 . E3 . F2 . C3 . G2 . D3 . D3 . A2 . G2 . B2 . C3 . G2 . C3 . . . ' +
+        'C3 . G3 . F2 . C3 . E3 . G3 . A2 . E3 . F2 . C3 . G2 . D3 . C3 . G2 . C3 . . .'
+};
+const SONG_MENU = {
+  bpm: 100, wave: 'sine', vol: 1.1,
+  mel: 'E5 . G5 . C6 - B5 . A5 . G5 - E5 . . . F5 . A5 . G5 - E5 . D5 . E5 - C5 . . .',
+  bass: 'C3 . . . G2 . . . A2 . . . E3 . . . F2 . . . C3 . . . G2 . . . C3 . . .'
+};
+
+/* ---------- 音效 ---------- */
+const Sfx = {
+  tap(i) { KG.note(620 + (i || 0) * 45, 0.07, 'triangle', 0.16); },
+  cup() { KG.note(520, 0.08, 'triangle', 0.18); KG.note(880, 0.1, 'sine', 0.12, 0.05); },
+  pour() { KG.sound('splash'); KG.note(260, 0.5, 'sine', 0.09, 0.05, 620); },
+  plop(n) { for (let i = 0; i < n; i++) KG.note(260 + Math.random() * 200, 0.08, 'sine', 0.18, 0.15 + i * 0.06, 110); },
+  clink(n) { for (let i = 0; i < n; i++) KG.note(2000 + Math.random() * 900, 0.06, 'triangle', 0.07, 0.12 + i * 0.07); },
+  sugar() { KG.sound('sparkle'); },
+  thunk() { KG.sound('hit'); KG.note(85, 0.22, 'square', 0.12, 0, 45); },
+  ding() { KG.note(1568, 0.4, 'sine', 0.22); KG.note(2093, 0.55, 'sine', 0.16, 0.09); KG.note(3136, 0.3, 'sine', 0.05, 0.09); },
+  coin() { KG.note(1319, 0.06, 'square', 0.07); KG.note(1760, 0.12, 'square', 0.06, 0.05); },
+  bell() { KG.note(1318, 0.18, 'sine', 0.13); KG.note(1046, 0.3, 'sine', 0.11, 0.12); },
+  happy() { KG.sound('correct'); },
+  angry() { KG.sound('wrong'); },
+  trash() { KG.sound('whoosh'); KG.note(300, 0.15, 'triangle', 0.12, 0.05, 140); },
+  no() { KG.note(240, 0.12, 'square', 0.07, 0, 180); },
+  bubble() { KG.note(180 + Math.random() * 160, 0.09, 'sine', 0.1, 0, 420); }
+};
+
+/* =====================================================================
+ * 遊戲資料
+ * ===================================================================== */
+const TEAS = [
+  { id: 'black', name: '紅茶', col: '#b8562c', day: 1 },
+  { id: 'green', name: '綠茶', col: '#bcc95a', day: 1 },
+  { id: 'milk', name: '奶茶', col: '#cf9f72', day: 1 },
+  { id: 'oolong', name: '烏龍', col: '#c98a35', day: 3 },
+  { id: 'fresh', name: '鮮奶', col: '#f7f1e6', day: 5 },
+  { id: 'wax', name: '冬瓜茶', col: '#9c6a2e', day: 9 },
+  { id: 'fruit', name: '水果茶', col: '#f2794f', day: 14 }
+];
+const TOPS = [
+  { id: 'pearl', name: '珍珠', col: '#3a2418', day: 1 },
+  { id: 'coco', name: '椰果', col: '#f3f0e2', day: 2 },
+  { id: 'pudding', name: '布丁', col: '#f6c94c', day: 4 },
+  { id: 'grass', name: '仙草', col: '#2a2320', day: 7 },
+  { id: 'taro', name: '芋圓', col: '#b48ad8', day: 11 },
+  { id: 'brown', name: '黑糖', col: '#6b3410', day: 17 },
+  { id: 'cream', name: '奶蓋', col: '#fff6dc', day: 21 }
+];
+const ICES = [{ id: 'reg', name: '正常', long: '正常冰', n: 4 }, { id: 'less', name: '少冰', long: '少冰', n: 2 }, { id: 'none', name: '去冰', long: '去冰', n: 0 }];
+const SUGARS = [{ id: 'full', name: '全糖', n: 4 }, { id: 'half', name: '半糖', n: 2 }, { id: 'low', name: '微糖', n: 1 }, { id: 'zero', name: '無糖', n: 0 }];
+const SIZES = [{ id: 'M', name: '中杯' }, { id: 'L', name: '大杯' }];
+const byId = (arr, id) => arr.find(o => o.id === id);
+const MAXDAY = 30;
+
+const UPGRADES = [
+  { id: 'sealer', name: '快速封口機', desc: '封口動作更快', max: 3, cost: [150, 400, 800], kind: 'lv' },
+  { id: 'pot', name: '大珍珠鍋', desc: '一鍋更多珍珠、煮得更快', max: 3, cost: [120, 350, 700], kind: 'lv' },
+  { id: 'jar', name: '小費罐', desc: '小費多 15%', max: 3, cost: [200, 500, 900], kind: 'lv' },
+  { id: 'plant', name: '綠色盆栽', desc: '客人更有耐心 +8%', cost: [250], kind: 'decor' },
+  { id: 'lantern', name: '彩色燈籠', desc: '客人更有耐心 +8%', cost: [400], kind: 'decor' },
+  { id: 'chime', name: '叮噹風鈴', desc: '客人更有耐心 +8%', cost: [550], kind: 'decor' },
+  { id: 'neon', name: '可愛霓虹招牌', desc: '客人更有耐心 +8%', cost: [700], kind: 'decor' },
+  { id: 'bench', name: '等候長椅', desc: '客人更有耐心 +8%', cost: [900], kind: 'decor' }
+];
+const SEAL_DUR = [1.25, 0.95, 0.7, 0.45];
+const POT_CAP = [4, 6, 9, 12];
+const POT_COOK = [6, 5, 4, 3];
+
+/* ---------- 存檔 ---------- */
+const Save = {
+  data: null,
+  load() {
+    const d = KG.store.get(SLUG + ':save', null) || {};
+    this.data = {
+      stars: Array.isArray(d.stars) ? d.stars : [], coins: d.coins | 0,
+      up: Object.assign({ sealer: 0, pot: 0, jar: 0 }, d.up || {}), decor: Object.assign({}, d.decor || {}),
+      bestIncome: d.bestIncome | 0, freeServed: d.freeServed | 0
+    };
+    return this.data;
+  },
+  save() { KG.store.set(SLUG + ':save', this.data); },
+  totalStars() { return this.data.stars.reduce((s, v) => s + (v || 0), 0); },
+  unlockedDay() { let d = 1; while (d < MAXDAY && this.data.stars[d - 1] > 0) d++; return d; }
+};
+Save.load();
+function decorCount() { let n = 0; for (const u of UPGRADES) if (u.kind === 'decor' && Save.data.decor[u.id]) n++; return n; }
+
+/* ---------- 訂單邏輯 ---------- */
+function teasFor(day) { return TEAS.filter(t => t.day <= day); }
+function topsFor(day) { return TOPS.filter(t => t.day <= day); }
+function priceOf(o) {
+  let p = o.size === 'L' ? 45 : 35;
+  p += o.tops.length * 10;
+  if (o.tea === 'fresh' || o.tea === 'fruit') p += 5;
+  return p;
+}
+function normTops(a) { return a.slice().sort(); }
+/** 比對訂單與飲料。回傳 {ok, wrong:[欄位]} */
+function checkOrder(order, drink) {
+  const wrong = [];
+  if (!drink) return { ok: false, wrong: ['size', 'tea', 'tops', 'ice', 'sugar', 'sealed'] };
+  if (order.size !== drink.size) wrong.push('size');
+  if (order.tea !== drink.tea) wrong.push('tea');
+  const a = normTops(order.tops), b = normTops(drink.tops || []);
+  if (a.length !== b.length || a.some((v, i) => v !== b[i])) wrong.push('tops');
+  if (order.ice !== drink.ice) wrong.push('ice');
+  if (order.sugar !== drink.sugar) wrong.push('sugar');
+  if (!drink.sealed) wrong.push('sealed');
+  return { ok: wrong.length === 0, wrong };
+}
+function pickW(arr, wfn) {
+  let tot = 0; for (const a of arr) tot += wfn(a);
+  let r = Math.random() * tot;
+  for (const a of arr) { r -= wfn(a); if (r <= 0) return a; }
+  return arr[arr.length - 1];
+}
+function genOrder(day, free) {
+  const d = free ? MAXDAY : day;
+  const teas = teasFor(d), tops = topsFor(d);
+  const tea = pickW(teas, t => (t.day === d ? 3 : 1) + (t.day > d - 5 ? 0.6 : 0)).id;
+  let nt = 0;
+  const r = Math.random();
+  if (d <= 2) nt = r < 0.55 ? 1 : 0;
+  else if (d <= 8) nt = r < 0.2 ? 0 : r < 0.75 ? 1 : 2;
+  else nt = r < 0.1 ? 0 : r < 0.55 ? 1 : 2;
+  const chosen = [];
+  while (chosen.length < Math.min(nt, tops.length)) {
+    const t = pickW(tops, x => (x.day === d ? 3 : 1) + (x.id === 'pearl' ? 1.2 : 0)).id;
+    if (!chosen.includes(t)) chosen.push(t);
+  }
+  const ices = d <= 2 ? ['reg', 'none'] : ['reg', 'less', 'none'];
+  const sugars = d <= 2 ? ['full', 'half'] : d <= 5 ? ['full', 'half', 'zero'] : ['full', 'half', 'low', 'zero'];
+  return { size: Math.random() < 0.5 ? 'M' : 'L', tea, tops: chosen, ice: KG.pick(ices), sugar: KG.pick(sugars) };
+}
+function dayCfg(d) {
+  return {
+    n: Math.min(25, 4 + Math.round(d * 0.7)),
+    interval: Math.max(4.2, 12 - d * 0.27),
+    patience: Math.max(28, 62 - d * 1.15)
+  };
+}
+const GOAL_TYPES = ['tea', 'combo', 'top', 'noangry', 'tips', 'earn'];
+function makeGoal(day, orders) {
+  const n = orders.length;
+  let type = day === 1 ? 'earn' : GOAL_TYPES[(day * 5 + 1) % GOAL_TYPES.length];
+  const g = { type, prog: 0, need: 1, done: false, text: '' };
+  if (type === 'tea') {
+    const teas = teasFor(day);
+    const t = teas[(day * 3) % teas.length];
+    g.need = Math.max(2, Math.round(n * 0.3)); g.id = t.id;
+    let have = orders.filter(o => o.tea === t.id).length;
+    for (let i = 0; i < n && have < g.need + 1; i++) if (orders[i].tea !== t.id) { orders[i].tea = t.id; have++; }
+    g.text = '賣出 ' + g.need + ' 杯' + t.name;
+  } else if (type === 'top') {
+    const tops = topsFor(day);
+    const t = tops[(day * 2) % tops.length];
+    g.need = Math.max(2, Math.round(n * 0.3)); g.id = t.id;
+    let have = orders.filter(o => o.tops.includes(t.id)).length;
+    for (let i = n - 1; i >= 0 && have < g.need + 1; i--) {
+      const o = orders[i];
+      if (o.tops.includes(t.id)) continue;
+      if (o.tops.length >= 2) o.tops.pop();
+      o.tops.push(t.id); have++;
+    }
+    g.text = '賣出 ' + g.need + ' 杯加' + t.name + '的飲料';
+  } else if (type === 'combo') {
+    g.need = Math.min(n - 1, 3 + Math.floor(day / 7));
+    g.text = '快速做對，達成 ' + g.need + ' 連擊';
+  } else if (type === 'noangry') {
+    g.text = '沒有客人生氣離開';
+  } else if (type === 'tips') {
+    g.need = Math.round(n * 6 / 5) * 5;
+    g.text = '小費收到 ' + g.need + ' 元';
+  } else {
+    g.need = Math.round(orders.reduce((s, o) => s + priceOf(o), 0) * 0.9 / 10) * 10;
+    g.text = '今天賺到 ' + g.need + ' 元';
+  }
+  return g;
+}
+
+/* ---------- 客人外型 ---------- */
+const SKINS_C = ['#ffe0c4', '#f6cfa6', '#e8b48a', '#c98e62', '#9a6440'];
+const SHIRTS = ['#ff8fb1', '#6cc4ff', '#7bd88f', '#ffb347', '#b49cff', '#ff7a6b', '#4fc9b8', '#f7d14c'];
+const HAIRS = ['#3b2a22', '#5a3a26', '#1f1a1a', '#8a5a2b', '#c9792b'];
+const LOOKS = ['girl', 'boy', 'office', 'man', 'grandpa', 'grandma', 'teen', 'curly', 'cat'];
+function makeLook(day, free) {
+  let kind = KG.pick(LOOKS.slice(0, 8));
+  if ((free || day >= 2) && Math.random() < 0.1) kind = 'cat';
+  return {
+    kind, kid: kind === 'girl' || kind === 'boy',
+    skin: KG.pick(SKINS_C), shirt: KG.pick(SHIRTS), hair: kind === 'grandpa' || kind === 'grandma' ? '#d9d4ce' : KG.pick(HAIRS),
+    acc: KG.pick(['#ff6b9a', '#4aa8ff', '#ffcf3d', '#6fd68a']), glasses: kind === 'man' ? Math.random() < 0.6 : (kind === 'grandpa' || kind === 'grandma')
+  };
+}
+
+/* =====================================================================
+ * 版面
+ * ===================================================================== */
+const L = { slots: 3, slotX: [], btns: [], groups: [] };
+let bgBack = null, bgFront = null;
+
+function layout() {
+  const land = W > H * 1.05;
+  L.land = land;
+  if (!land) {
+    L.hudBottom = Math.min(100, 62 + 34);
+    const ph = clamp(H * 0.34, 236, 300);
+    L.panel = { x: 6, y: H - ph - 6, w: W - 12, h: ph };
+    const avail = L.panel.y - L.hudBottom;
+    L.custTop = L.hudBottom;
+    L.counterY = Math.round(L.hudBottom + avail * 0.53);
+    L.left = { x: 0, w: W };
+    L.workBottom = L.panel.y - 4;
+  } else {
+    const lw = Math.round(clamp(W * 0.47, 290, 640));
+    L.hudBottom = 62;
+    L.panel = { x: lw + 6, y: 64, w: W - lw - 12, h: H - 64 - 6 };
+    L.custTop = 60;
+    L.counterY = Math.round(60 + (H - 60) * 0.55);
+    L.left = { x: 0, w: lw };
+    L.workBottom = H - 4;
+  }
+  const lw = L.left.w;
+  L.slotW = (lw - 8) / L.slots;
+  for (let i = 0; i < L.slots; i++) L.slotX[i] = 4 + L.slotW * (i + 0.5);
+  const ch = L.counterY - L.custTop;
+  L.bw = Math.min(L.slotW - 8, 180);
+  L.bh = clamp(ch * 0.37, 54, 96);
+  L.by = L.custTop + 4;
+  L.k = Math.min((L.counterY - (L.by + L.bh + 14)) / 108, L.slotW / 100, 1.6);
+  // 工作台
+  const wy = L.counterY + 14, wh = L.workBottom - wy;
+  L.work = { y: wy, h: wh };
+  L.cupBottom = L.workBottom - Math.max(20, wh * 0.08);
+  L.cupH = Math.min((L.cupBottom - wy) * 0.8, lw * 0.36);
+  L.cupX = lw * 0.42;
+  L.potR = Math.min(lw * 0.105, wh * 0.28);
+  L.potX = Math.max(L.potR + 8, lw * 0.13);
+  L.potY = L.cupBottom - L.potR * 0.75;
+  L.sealW = L.cupH * 0.64 + 28; L.sealH = L.cupH * 1.3;
+  L.sealX = lw * 0.70;
+  L.trashR = Math.min(lw * 0.06, wh * 0.16, 30);
+  L.trashX = lw - L.trashR - 10;
+  L.trashY = L.cupBottom - L.trashR * 1.05;
+  layoutPanel();
+  bgBack = bgFront = null;
+}
+
+function stationItems() {
+  const day = G ? (G.mode === 'free' ? MAXDAY : G.day) : 1;
+  return {
+    size: SIZES, ice: ICES, sugar: SUGARS, tea: teasFor(day), top: topsFor(day)
+  };
+}
+function layoutPanel() {
+  const P = L.panel, it = stationItems();
+  const rows = [[['size', '① 杯子'], ['ice', '④ 冰塊']], [['tea', '② 倒茶']], [['top', '③ 加料（最多兩種）']], [['sugar', '⑤ 甜度']]];
+  const hdr = clamp(P.h * 0.055, 12, 17);
+  const rowH = Math.min((P.h - 8) / 4, 124);
+  if (L.land && rowH * 4 + 12 < P.h) { const nh = rowH * 4 + 12; P.y += (P.h - nh) / 2; P.h = nh; }
+  const top = P.y + (P.h - rowH * 4) / 2;
+  L.btns = []; L.groups = []; L.hdr = hdr;
+  rows.forEach((row, r) => {
+    const hy = top + r * rowH;
+    const bh = Math.min(rowH - hdr - 9, 92);
+    const by = hy + hdr + 6;
+    let n = 0; row.forEach(g => { n += it[g[0]].length; });
+    const ggap = 16, gap = 5;
+    const avail = P.w - 12 - ggap * (row.length - 1) - gap * (n - row.length);
+    const bw = Math.min(avail / n, bh * 1.45, 118);
+    const tot = bw * n + gap * (n - row.length) + ggap * (row.length - 1);
+    let x = P.x + (P.w - tot) / 2;
+    row.forEach(g => {
+      const items = it[g[0]];
+      L.groups.push({ kind: g[0], label: g[1], x, y: hy + 2, w: items.length * bw + (items.length - 1) * gap });
+      items.forEach((o, i) => {
+        L.btns.push({ kind: g[0], id: o.id, name: o.name, item: o, x, y: by, w: bw, h: bh, row: r, i });
+        x += bw + gap;
+      });
+      x += ggap - gap;
+    });
+  });
+}
+
+
+/* ---------- 背景（預先畫在離屏畫布，換尺寸或買裝飾才重畫） ---------- */
+function makeCanvas() {
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(W * dpr)); c.height = Math.max(1, Math.round(H * dpr));
+  c.getContext('2d').setTransform(dpr, 0, 0, dpr, 0, 0);
+  return c;
+}
+function buildBackgrounds() {
+  bgBack = makeCanvas(); bgFront = makeCanvas();
+  ctxSwap(bgBack.getContext('2d')); paintBack();
+  ctxSwap(bgFront.getContext('2d')); paintFront();
+  ctxSwap(mainCtx);
+}
+function paintWall(x0, y0, w, h) {
+  ctx.fillStyle = '#fff3e3'; ctx.fillRect(x0, y0, w, h);
+  const sw = 26;
+  ctx.fillStyle = '#ffe6cf';
+  for (let x = x0; x < x0 + w; x += sw * 2) ctx.fillRect(x, y0, sw, h);
+  // 小圓點
+  ctx.fillStyle = 'rgba(255,170,150,0.25)';
+  ctx.beginPath();
+  for (let y = y0 + 20, r = 0; y < y0 + h; y += 44, r++) for (let x = x0 + (r % 2 ? 13 : 39); x < x0 + w; x += 52) circ(x, y, 3);
+  ctx.fill();
+}
+function paintAwning(x0, w, y, h) {
+  const n = Math.max(6, Math.round(w / 44)), sw = w / n;
+  for (let i = 0; i < n; i++) {
+    ctx.fillStyle = i % 2 ? '#fffaf2' : '#ff8fa8';
+    ctx.beginPath();
+    ctx.moveTo(x0 + i * sw, y); ctx.lineTo(x0 + (i + 1) * sw, y); ctx.lineTo(x0 + (i + 1) * sw, y + h);
+    ctx.arc(x0 + (i + 0.5) * sw, y + h, sw / 2, 0, Math.PI); ctx.closePath(); ctx.fill();
+  }
+  ctx.fillStyle = 'rgba(120,40,40,0.12)'; ctx.fillRect(x0, y + h * 0.15, w, 3);
+}
+function paintBack() {
+  paintWall(0, 0, W, H);
+  paintAwning(0, W, 0, 18);
+  const lw = L.left.w;
+  // 店後方的窗戶（客人區）
+  const wy = L.custTop + 8, wh = (L.counterY - L.custTop) * 0.55;
+  ctx.fillStyle = 'rgba(160,100,70,0.16)';
+  rr(lw * 0.08, wy + 4, lw * 0.84, wh, 18); ctx.fill();
+  rr(lw * 0.08, wy, lw * 0.84, wh, 18); ctx.fillStyle = '#bfe8ff'; ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.beginPath(); ctx.ellipse(lw * 0.3, wy + wh * 0.35, 30, 11, 0, 0, TAU); ctx.ellipse(lw * 0.36, wy + wh * 0.3, 22, 13, 0, 0, TAU); ctx.ellipse(lw * 0.72, wy + wh * 0.55, 26, 9, 0, 0, TAU); ctx.fill();
+  ctx.fillStyle = '#8fd48a'; rr(lw * 0.08, wy + wh * 0.72, lw * 0.84, wh * 0.28, 0); ctx.save(); rr(lw * 0.08, wy, lw * 0.84, wh, 18); ctx.clip();
+  ctx.fillStyle = '#8fd48a'; ctx.beginPath(); ctx.ellipse(lw * 0.3, wy + wh, lw * 0.35, wh * 0.32, 0, 0, TAU); ctx.ellipse(lw * 0.8, wy + wh * 1.05, lw * 0.3, wh * 0.36, 0, 0, TAU); ctx.fill();
+  ctx.restore();
+  rr(lw * 0.08, wy, lw * 0.84, wh, 18); ctx.lineWidth = 6; ctx.strokeStyle = '#fff'; ctx.stroke();
+  // 腰板
+  const wainY = L.counterY - (L.counterY - L.custTop) * 0.25;
+  ctx.fillStyle = '#f2c9a5'; ctx.fillRect(0, wainY, lw, L.counterY - wainY);
+  ctx.fillStyle = 'rgba(150,80,40,0.12)';
+  for (let x = 0; x < lw; x += 34) ctx.fillRect(x, wainY, 3, L.counterY - wainY);
+  // 裝飾
+  const D = Save.data.decor, k = clamp(L.k, 0.6, 1.3);
+  if (D.lantern) {
+    const ly = 26, n = Math.max(3, Math.round(lw / 110));
+    ctx.strokeStyle = '#8a5a3c'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(0, ly - 6);
+    ctx.quadraticCurveTo(lw / 2, ly + 14, lw, ly - 6); ctx.stroke();
+    for (let i = 0; i < n; i++) {
+      const t = (i + 0.5) / n, x = lw * t, y = ly - 6 + 4 * (1 - Math.pow(2 * t - 1, 2)) * 10 / 2 + 6;
+      drawDecor('lantern', x, y + 10 * k, 12 * k, ['#ff6b6b', '#ffcf3d', '#6fd68a', '#6cc4ff'][i % 4]);
+    }
+  }
+  if (D.neon) drawDecor('neon', lw * 0.5, wy + wh * 0.42, 22 * k);
+  if (D.chime) drawDecor('chime', lw * 0.93, L.custTop + 22, 14 * k);
+  if (D.plant) drawDecor('plant', 26 * k, L.counterY - 4, 22 * k);
+  if (D.bench) drawDecor('bench', lw - 46 * k, L.counterY - 2, 22 * k);
+}
+function paintFront() {
+  const lw = L.left.w, cy = L.counterY;
+  // 工作台
+  const wb = L.land ? H : L.panel.y + 4;
+  ctx.fillStyle = '#fbe9d8'; ctx.fillRect(0, cy, lw, wb - cy);
+  // 磁磚
+  ctx.strokeStyle = 'rgba(200,150,120,0.22)'; ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (let y = cy + 14 + 24; y < wb; y += 24) { ctx.moveTo(0, y); ctx.lineTo(lw, y); }
+  for (let y = cy + 14, r = 0; y < wb; y += 24, r++) for (let x = (r % 2) * 20; x < lw; x += 40) { ctx.moveTo(x, y); ctx.lineTo(x, y + 24); }
+  ctx.stroke();
+  // 檯面
+  const ty = L.cupBottom;
+  ctx.fillStyle = '#e6b88f'; ctx.fillRect(0, ty, lw, wb - ty);
+  ctx.fillStyle = '#f3cfa8'; ctx.fillRect(0, ty, lw, 5);
+  // 櫃檯邊
+  ctx.fillStyle = '#c47a4a'; ctx.fillRect(0, cy - 2, lw, 16);
+  ctx.fillStyle = '#ff8fa8'; ctx.fillRect(0, cy + 3, lw, 5);
+  ctx.fillStyle = '#e09a68'; ctx.fillRect(0, cy - 2, lw, 3);
+  // 招牌小牌
+  const sw = Math.min(150, lw * 0.36), sh = 22;
+  rr(lw / 2 - sw / 2, cy - 6, sw, sh, 11); ctx.fillStyle = '#fffaf2'; ctx.fill(); ctx.strokeStyle = '#c47a4a'; ctx.lineWidth = 2.5; ctx.stroke();
+  txt('珍奶小店', lw / 2, cy + 5, 14, '#d4537a', { shadow: false });
+  // 操作面板
+  const P = L.panel;
+  if (L.land) { paintWall(lw, 0, W - lw, H); paintAwning(lw, W - lw, 0, 18); }
+  rr(P.x - 2, P.y + 4, P.w + 4, P.h, 20); ctx.fillStyle = 'rgba(120,60,30,0.25)'; ctx.fill();
+  rr(P.x - 2, P.y - 2, P.w + 4, P.h + 2, 20); ctx.fillStyle = '#a8673c'; ctx.fill();
+  rr(P.x + 3, P.y + 3, P.w - 6, P.h - 8, 16); ctx.fillStyle = '#fff6ea'; ctx.fill();
+  ctx.fillStyle = 'rgba(255,190,160,0.18)';
+  for (let x = P.x + 10; x < P.x + P.w - 10; x += 24) ctx.fillRect(x, P.y + 3, 12, P.h - 8);
+}
+
+/* ---------- 裝飾小圖 ---------- */
+function drawDecor(id, x, y, s, col) {
+  ctx.save(); ctx.translate(x, y);
+  if (id === 'plant') {
+    ctx.fillStyle = '#4caf6a';
+    for (let i = -2; i <= 2; i++) { ctx.save(); ctx.rotate(i * 0.38); ctx.beginPath(); ctx.ellipse(0, -s * 1.15, s * 0.32, s * 0.85, 0, 0, TAU); ctx.fill(); ctx.restore(); }
+    ctx.fillStyle = '#6fd68a'; ctx.beginPath(); ctx.ellipse(-s * 0.1, -s * 1.3, s * 0.2, s * 0.6, -0.2, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#e07a4f'; ctx.beginPath(); ctx.moveTo(-s * 0.6, -s * 0.55); ctx.lineTo(s * 0.6, -s * 0.55); ctx.lineTo(s * 0.45, 0); ctx.lineTo(-s * 0.45, 0); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#c45f37'; ctx.fillRect(-s * 0.66, -s * 0.66, s * 1.32, s * 0.18);
+  } else if (id === 'lantern') {
+    ctx.strokeStyle = '#8a5a3c'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(0, -s * 1.2); ctx.lineTo(0, -s * 0.8); ctx.stroke();
+    ctx.fillStyle = col || '#ff6b6b'; ctx.beginPath(); ctx.ellipse(0, 0, s * 0.75, s * 0.85, 0, 0, TAU); ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.15)'; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.ellipse(0, 0, s * 0.35, s * 0.85, 0, 0, TAU); ctx.stroke();
+    ctx.fillStyle = '#ffd34d'; ctx.fillRect(-s * 0.35, -s * 0.95, s * 0.7, s * 0.2); ctx.fillRect(-s * 0.35, s * 0.75, s * 0.7, s * 0.2);
+    ctx.fillStyle = 'rgba(255,255,255,0.45)'; ctx.beginPath(); ctx.ellipse(-s * 0.3, -s * 0.25, s * 0.12, s * 0.3, 0, 0, TAU); ctx.fill();
+  } else if (id === 'neon') {
+    rr(-s * 2.6, -s * 0.9, s * 5.2, s * 1.8, s * 0.5); ctx.fillStyle = 'rgba(70,30,80,0.85)'; ctx.fill();
+    ctx.strokeStyle = '#ff9ccf'; ctx.lineWidth = 2; ctx.stroke();
+    txt('好喝', -s * 1.1, s * 0.05, s * 0.9, '#ffe3f4', { stroke: '#ff5fb0', sw: s * 0.18, shadow: false });
+    ctx.save(); ctx.translate(s * 1.5, 0);
+    ctx.strokeStyle = '#7ff0ff'; ctx.lineWidth = s * 0.12; ctx.lineJoin = 'round';
+    ctx.beginPath(); ctx.moveTo(-s * 0.45, -s * 0.5); ctx.lineTo(s * 0.45, -s * 0.5); ctx.lineTo(s * 0.32, s * 0.6); ctx.lineTo(-s * 0.32, s * 0.6); ctx.closePath(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(s * 0.1, -s * 0.5); ctx.lineTo(s * 0.3, -s * 0.85); ctx.stroke();
+    ctx.restore();
+  } else if (id === 'chime') {
+    ctx.strokeStyle = '#8a5a3c'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(0, -s); ctx.lineTo(0, 0); ctx.moveTo(0, s * 0.6); ctx.lineTo(0, s * 1.6); ctx.stroke();
+    ctx.fillStyle = '#9fe0ff'; ctx.beginPath(); ctx.arc(0, s * 0.6, s * 0.7, Math.PI, 0); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#ff8fb1'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0, s * 0.35, s * 0.25, 0, TAU); ctx.stroke();
+    ctx.fillStyle = '#fff'; rr(-s * 0.25, s * 1.5, s * 0.5, s * 0.8, 3); ctx.fill(); ctx.strokeStyle = '#e0b0c0'; ctx.lineWidth = 1; ctx.stroke();
+  } else if (id === 'bench') {
+    ctx.fillStyle = '#b9773f'; rr(-s * 1.6, -s * 1.1, s * 3.2, s * 0.35, 4); ctx.fill();
+    ctx.fillStyle = '#d99a5c'; rr(-s * 1.7, -s * 0.6, s * 3.4, s * 0.38, 4); ctx.fill();
+    ctx.fillStyle = '#7a4a22'; ctx.fillRect(-s * 1.4, -s * 0.25, s * 0.22, s * 0.25); ctx.fillRect(s * 1.2, -s * 0.25, s * 0.22, s * 0.25);
+    ctx.fillStyle = '#ff8fb1'; rr(-s * 1.2, -s * 0.85, s * 0.9, s * 0.3, 6); ctx.fill();
+  } else if (id === 'sealer') {
+    ctx.fillStyle = '#e9e3ea'; rr(-s * 0.8, -s * 1.1, s * 1.6, s * 0.55, 6); ctx.fill();
+    ctx.fillStyle = '#ff7aa2'; ctx.beginPath(); circ(s * 0.45, -s * 0.83, s * 0.15); ctx.fill();
+    ctx.fillStyle = '#bfb6c4'; ctx.fillRect(-s * 0.6, -s * 0.55, s * 0.18, s * 1.2);
+    ctx.fillStyle = '#d6cfd9'; rr(-s * 0.85, s * 0.55, s * 1.7, s * 0.3, 4); ctx.fill();
+    ctx.fillStyle = 'rgba(200,230,255,0.9)'; ctx.beginPath(); ctx.moveTo(-s * 0.2, -s * 0.3); ctx.lineTo(s * 0.5, -s * 0.3); ctx.lineTo(s * 0.4, s * 0.55); ctx.lineTo(-s * 0.1, s * 0.55); ctx.closePath(); ctx.fill();
+  } else if (id === 'pot') {
+    ctx.fillStyle = '#9aa3b5'; rr(-s * 0.9, -s * 0.5, s * 1.8, s * 1.1, s * 0.35); ctx.fill();
+    ctx.fillStyle = '#3a2418'; ctx.beginPath(); ctx.ellipse(0, -s * 0.5, s * 0.85, s * 0.25, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#5a3a26'; ctx.beginPath(); circ(-s * 0.3, -s * 0.55, s * 0.13); circ(s * 0.2, -s * 0.5, s * 0.13); circ(0, -s * 0.6, s * 0.12); ctx.fill();
+    ctx.fillStyle = '#7d8699'; ctx.fillRect(-s * 1.1, -s * 0.3, s * 0.25, s * 0.15); ctx.fillRect(s * 0.85, -s * 0.3, s * 0.25, s * 0.15);
+  } else if (id === 'jar') {
+    ctx.fillStyle = 'rgba(200,235,255,0.8)'; rr(-s * 0.6, -s * 0.8, s * 1.2, s * 1.6, s * 0.3); ctx.fill();
+    ctx.strokeStyle = '#7fb6d8'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = '#c47a4a'; rr(-s * 0.5, -s * 1.0, s * 1.0, s * 0.3, 4); ctx.fill();
+    coinIcon(-s * 0.2, s * 0.4, s * 0.28); coinIcon(s * 0.22, s * 0.3, s * 0.28); coinIcon(0, s * 0.0, s * 0.28);
+  }
+  ctx.restore();
+}
+
+/* =====================================================================
+ * 繪圖：客人
+ * ===================================================================== */
+function drawFace(c, k, hy, cat) {
+  const m = c.mood;
+  const blink = c.blinkT < 0.12;
+  const ex = 9 * k, ey = hy + 2 * k;
+  ctx.fillStyle = '#3a2418'; ctx.strokeStyle = '#3a2418'; ctx.lineCap = 'round';
+  if (m === 'delight' || blink) {
+    ctx.lineWidth = 2.4 * k;
+    ctx.beginPath();
+    if (m === 'delight') { ctx.arc(-ex, ey + 1.5 * k, 3.6 * k, Math.PI * 1.1, Math.PI * 1.9); ctx.moveTo(ex + 3.4 * k, ey); ctx.arc(ex, ey + 1.5 * k, 3.6 * k, Math.PI * 1.1, Math.PI * 1.9); }
+    else { ctx.moveTo(-ex - 3 * k, ey); ctx.lineTo(-ex + 3 * k, ey); ctx.moveTo(ex - 3 * k, ey); ctx.lineTo(ex + 3 * k, ey); }
+    ctx.stroke();
+  } else {
+    ctx.beginPath(); ctx.ellipse(-ex, ey, 3.3 * k, 3.9 * k, 0, 0, TAU); ctx.ellipse(ex, ey, 3.3 * k, 3.9 * k, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); circ(-ex + 1.1 * k, ey - 1.3 * k, 1.2 * k); circ(ex + 1.1 * k, ey - 1.3 * k, 1.2 * k); ctx.fill();
+  }
+  // 眉毛
+  if (m === 'angry' || m === 'worried' || m === 'sad') {
+    ctx.strokeStyle = '#3a2418'; ctx.lineWidth = 2.2 * k; ctx.beginPath();
+    const s = m === 'angry' ? 1 : -1;
+    ctx.moveTo(-ex - 4 * k, ey - 7 * k - s * 2 * k); ctx.lineTo(-ex + 3 * k, ey - 7 * k + s * 2 * k);
+    ctx.moveTo(ex + 4 * k, ey - 7 * k - s * 2 * k); ctx.lineTo(ex - 3 * k, ey - 7 * k + s * 2 * k);
+    ctx.stroke();
+  }
+  // 臉頰
+  ctx.fillStyle = m === 'angry' ? 'rgba(255,60,60,0.45)' : 'rgba(255,120,140,0.35)';
+  ctx.beginPath(); ctx.ellipse(-16 * k, hy + 9 * k, 4.5 * k, 3 * k, 0, 0, TAU); ctx.ellipse(16 * k, hy + 9 * k, 4.5 * k, 3 * k, 0, 0, TAU); ctx.fill();
+  // 嘴巴
+  const my = hy + 12 * k;
+  ctx.strokeStyle = '#7a3a2a'; ctx.lineWidth = 2.2 * k; ctx.beginPath();
+  if (cat && (m === 'happy' || m === 'ok')) {
+    ctx.arc(-3 * k, my - 2 * k, 3 * k, 0.1, Math.PI - 0.1); ctx.moveTo(6 * k, my - 2 * k); ctx.arc(3 * k, my - 2 * k, 3 * k, 0.1, Math.PI - 0.1); ctx.stroke();
+  } else if (m === 'delight') {
+    ctx.fillStyle = '#c4384f'; ctx.moveTo(-6 * k, my - 2 * k); ctx.quadraticCurveTo(0, my + 9 * k, 6 * k, my - 2 * k); ctx.closePath(); ctx.fill();
+  } else if (m === 'happy') { ctx.arc(0, my - 4 * k, 6 * k, 0.25 * Math.PI, 0.75 * Math.PI); ctx.stroke(); }
+  else if (m === 'ok') { ctx.arc(0, my - 2 * k, 4 * k, 0.3 * Math.PI, 0.7 * Math.PI); ctx.stroke(); }
+  else if (m === 'worried') { ctx.moveTo(-5 * k, my + 1 * k); ctx.quadraticCurveTo(-2 * k, my - 2 * k, 0, my + 1 * k); ctx.quadraticCurveTo(2 * k, my + 3 * k, 5 * k, my); ctx.stroke(); }
+  else { ctx.arc(0, my + 5 * k, 6 * k, 1.25 * Math.PI, 1.75 * Math.PI); ctx.stroke(); }
+}
+function hairCap(k, hy, col) {
+  ctx.fillStyle = col; ctx.beginPath(); ctx.ellipse(0, hy - 4 * k, 27 * k, 24 * k, 0, Math.PI, 0); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); circ(-14 * k, hy - 9 * k, 9 * k); circ(-3 * k, hy - 11 * k, 9 * k); circ(9 * k, hy - 10 * k, 9 * k); circ(19 * k, hy - 7 * k, 8 * k); ctx.fill();
+}
+function drawCustomer(c) {
+  const lk = c.look, kid = lk.kid, cat = lk.kind === 'cat';
+  const k = L.k * (kid ? 0.86 : 1);
+  const walking = c.state === 'in' || c.state === 'out';
+  let y = L.counterY + (kid ? 10 * L.k : 0);
+  y += walking ? -Math.abs(Math.sin(c.anim * 9)) * 6 * k : Math.sin(c.anim * 2.2) * 1.2 * k;
+  let x = c.x;
+  if (c.react) {
+    const rt = c.react.t;
+    if (c.react.kind === 'happy') y -= Math.abs(Math.sin(rt * 11)) * 14 * k * Math.max(0, 1 - rt);
+    else if (c.react.kind === 'angry') x += Math.sin(rt * 55) * 4 * k * Math.max(0, 1 - rt);
+  }
+  ctx.save(); ctx.translate(x, y);
+  const hy = -74 * k;
+  if (cat) {
+    // 橘貓
+    ctx.fillStyle = '#f5a54a'; rr(-26 * k, -46 * k, 52 * k, 60 * k, 22 * k); ctx.fill();
+    ctx.fillStyle = '#fff3e0'; ctx.beginPath(); ctx.ellipse(0, -12 * k, 11 * k, 14 * k, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#f5a54a'; ctx.beginPath(); ctx.moveTo(-24 * k, hy - 8 * k); ctx.lineTo(-20 * k, hy - 34 * k); ctx.lineTo(-4 * k, hy - 20 * k); ctx.closePath();
+    ctx.moveTo(24 * k, hy - 8 * k); ctx.lineTo(20 * k, hy - 34 * k); ctx.lineTo(4 * k, hy - 20 * k); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#ffb3c6'; ctx.beginPath(); ctx.moveTo(-19 * k, hy - 14 * k); ctx.lineTo(-18 * k, hy - 27 * k); ctx.lineTo(-9 * k, hy - 19 * k); ctx.closePath();
+    ctx.moveTo(19 * k, hy - 14 * k); ctx.lineTo(18 * k, hy - 27 * k); ctx.lineTo(9 * k, hy - 19 * k); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#f5a54a'; ctx.beginPath(); ctx.ellipse(0, hy, 28 * k, 25 * k, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#d9822c'; ctx.beginPath(); ctx.moveTo(-6 * k, hy - 24 * k); ctx.lineTo(0, hy - 13 * k); ctx.lineTo(6 * k, hy - 24 * k); ctx.closePath(); ctx.fill();
+    ctx.fillRect(-28 * k, hy - 2 * k, 8 * k, 3 * k); ctx.fillRect(20 * k, hy - 2 * k, 8 * k, 3 * k);
+    ctx.fillStyle = '#fff3e0'; ctx.beginPath(); ctx.ellipse(0, hy + 11 * k, 13 * k, 9 * k, 0, 0, TAU); ctx.fill();
+    drawFace(c, k, hy, true);
+    ctx.fillStyle = '#ff7a9a'; ctx.beginPath(); ctx.moveTo(-3 * k, hy + 6 * k); ctx.lineTo(3 * k, hy + 6 * k); ctx.lineTo(0, hy + 9 * k); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = 'rgba(90,50,30,0.6)'; ctx.lineWidth = 1.2 * k; ctx.beginPath();
+    ctx.moveTo(-12 * k, hy + 9 * k); ctx.lineTo(-30 * k, hy + 6 * k); ctx.moveTo(-12 * k, hy + 12 * k); ctx.lineTo(-30 * k, hy + 14 * k);
+    ctx.moveTo(12 * k, hy + 9 * k); ctx.lineTo(30 * k, hy + 6 * k); ctx.moveTo(12 * k, hy + 12 * k); ctx.lineTo(30 * k, hy + 14 * k); ctx.stroke();
+    // 鈴鐺項圈
+    ctx.fillStyle = lk.acc; ctx.fillRect(-16 * k, hy + 20 * k, 32 * k, 5 * k);
+    ctx.fillStyle = '#ffd34d'; ctx.beginPath(); circ(0, hy + 27 * k, 4 * k); ctx.fill();
+    // 前腳搭在櫃檯
+    ctx.fillStyle = '#f5a54a'; ctx.beginPath(); ctx.ellipse(-14 * k, -2 * k, 8 * k, 6 * k, 0, 0, TAU); ctx.ellipse(14 * k, -2 * k, 8 * k, 6 * k, 0, 0, TAU); ctx.fill();
+    ctx.restore();
+    return;
+  }
+  // 身體
+  ctx.fillStyle = lk.shirt; rr(-30 * k, -46 * k, 60 * k, 62 * k, 22 * k); ctx.fill();
+  ctx.fillStyle = shade(lk.shirt, -30); ctx.beginPath(); ctx.ellipse(-27 * k, -18 * k, 8 * k, 20 * k, 0.25, 0, TAU); ctx.ellipse(27 * k, -18 * k, 8 * k, 20 * k, -0.25, 0, TAU); ctx.fill();
+  ctx.fillStyle = lk.skin; ctx.beginPath(); circ(-22 * k, -3 * k, 6.5 * k); circ(22 * k, -3 * k, 6.5 * k); ctx.fill();
+  if (lk.kind === 'office' || lk.kind === 'man') { ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(-9 * k, -46 * k); ctx.lineTo(0, -32 * k); ctx.lineTo(9 * k, -46 * k); ctx.closePath(); ctx.fill(); }
+  if (lk.kind === 'man') { ctx.fillStyle = lk.acc; ctx.beginPath(); ctx.moveTo(-3 * k, -40 * k); ctx.lineTo(3 * k, -40 * k); ctx.lineTo(4 * k, -20 * k); ctx.lineTo(0, -16 * k); ctx.lineTo(-4 * k, -20 * k); ctx.closePath(); ctx.fill(); }
+  if (lk.kind === 'grandma') { ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.beginPath(); circ(-12 * k, -26 * k, 3 * k); circ(0, -18 * k, 3 * k); circ(12 * k, -28 * k, 3 * k); ctx.fill(); }
+  if (kid) { ctx.fillStyle = 'rgba(255,255,255,0.55)'; ctx.fillRect(-30 * k, -30 * k, 60 * k, 6 * k); }
+  ctx.fillStyle = lk.skin; ctx.fillRect(-7 * k, -52 * k, 14 * k, 8 * k);
+  // 頭髮（後）
+  if (lk.kind === 'office') { ctx.fillStyle = lk.hair; rr(-29 * k, hy - 22 * k, 58 * k, 46 * k, 22 * k); ctx.fill(); }
+  if (lk.kind === 'curly') { ctx.fillStyle = lk.hair; ctx.beginPath(); for (let i = 0; i < 9; i++) { const a = Math.PI * (0.95 + i * 0.137); circ(Math.cos(a) * 26 * k, hy - 2 * k + Math.sin(a) * 24 * k, 10 * k); } circ(-26 * k, hy + 8 * k, 9 * k); circ(26 * k, hy + 8 * k, 9 * k); ctx.fill(); }
+  if (lk.kind === 'girl') {
+    ctx.fillStyle = lk.hair; ctx.beginPath(); circ(-30 * k, hy - 2 * k, 10 * k); circ(30 * k, hy - 2 * k, 10 * k); ctx.fill();
+    ctx.fillStyle = lk.acc; ctx.beginPath(); circ(-24 * k, hy - 10 * k, 4.5 * k); circ(24 * k, hy - 10 * k, 4.5 * k); ctx.fill();
+  }
+  if (lk.kind === 'grandma') { ctx.fillStyle = lk.hair; ctx.beginPath(); circ(0, hy - 28 * k, 11 * k); ctx.fill(); }
+  // 頭
+  ctx.fillStyle = lk.skin; ctx.beginPath(); circ(-25 * k, hy + 3 * k, 5 * k); circ(25 * k, hy + 3 * k, 5 * k); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(0, hy, 25 * k, 24 * k, 0, 0, TAU); ctx.fill();
+  // 頭髮（前）
+  if (lk.kind === 'grandpa') {
+    ctx.fillStyle = lk.hair; ctx.beginPath(); ctx.ellipse(-22 * k, hy - 4 * k, 6 * k, 9 * k, 0.3, 0, TAU); ctx.ellipse(22 * k, hy - 4 * k, 6 * k, 9 * k, -0.3, 0, TAU); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.beginPath(); ctx.ellipse(-8 * k, hy - 16 * k, 7 * k, 3.5 * k, -0.3, 0, TAU); ctx.fill();
+  } else if (lk.kind !== 'curly') hairCap(k, hy, lk.hair);
+  else { ctx.fillStyle = lk.hair; ctx.beginPath(); circ(-12 * k, hy - 16 * k, 9 * k); circ(0, hy - 19 * k, 9 * k); circ(12 * k, hy - 16 * k, 9 * k); ctx.fill(); }
+  if (lk.kind === 'boy') {
+    ctx.fillStyle = lk.acc; ctx.beginPath(); ctx.ellipse(0, hy - 12 * k, 26 * k, 17 * k, 0, Math.PI, 0); ctx.closePath(); ctx.fill();
+    rr(-4 * k, hy - 15 * k, 36 * k, 7 * k, 3 * k); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); circ(0, hy - 27 * k, 3 * k); ctx.fill();
+  }
+  if (lk.kind === 'teen') {
+    ctx.strokeStyle = '#3d3d4f'; ctx.lineWidth = 4 * k; ctx.beginPath(); ctx.arc(0, hy - 2 * k, 28 * k, Math.PI * 1.05, Math.PI * 1.95); ctx.stroke();
+    ctx.fillStyle = lk.acc; rr(-33 * k, hy - 6 * k, 10 * k, 16 * k, 4 * k); ctx.fill(); rr(23 * k, hy - 6 * k, 10 * k, 16 * k, 4 * k); ctx.fill();
+  }
+  drawFace(c, k, hy, false);
+  if (lk.glasses) {
+    ctx.strokeStyle = '#5a4a5a'; ctx.lineWidth = 1.8 * k; ctx.beginPath();
+    circ(-9 * k, hy + 2 * k, 6.5 * k); circ(9 * k, hy + 2 * k, 6.5 * k); ctx.moveTo(-2.5 * k, hy + 1 * k); ctx.lineTo(2.5 * k, hy + 1 * k); ctx.stroke();
+  }
+  if (lk.kind === 'grandpa') {
+    ctx.fillStyle = '#eee8e2'; ctx.beginPath(); ctx.ellipse(-5 * k, hy + 9 * k, 6 * k, 3 * k, 0.2, 0, TAU); ctx.ellipse(5 * k, hy + 9 * k, 6 * k, 3 * k, -0.2, 0, TAU); ctx.fill();
+  }
+  ctx.restore();
+}
+function drawReactIcon(c) {
+  if (!c.react) return;
+  const rt = c.react.t, k = L.k, x = c.x + 26 * k, y = L.counterY - 118 * k - rt * 20 * k;
+  ctx.save(); ctx.globalAlpha = clamp(1.6 - rt, 0, 1);
+  if (c.react.kind === 'happy') { ctx.fillStyle = '#ff5a86'; heartPath(x, y, 12 * k * Ease.outBack(Math.min(1, rt * 3))); ctx.fill(); }
+  else if (c.react.kind === 'angry') {
+    ctx.strokeStyle = '#ff3b3b'; ctx.lineWidth = 3.5 * k; ctx.lineCap = 'round'; ctx.beginPath();
+    for (let i = 0; i < 4; i++) { const a = i * Math.PI / 2 + 0.785; ctx.moveTo(x + Math.cos(a) * 3 * k, y + Math.sin(a) * 3 * k); ctx.quadraticCurveTo(x + Math.cos(a + 0.5) * 10 * k, y + Math.sin(a + 0.5) * 10 * k, x + Math.cos(a) * 12 * k, y + Math.sin(a) * 12 * k); }
+    ctx.stroke();
+  } else {
+    ctx.fillStyle = '#6cc4ff'; ctx.beginPath(); ctx.moveTo(x, y - 10 * k); ctx.quadraticCurveTo(x + 8 * k, y + 2 * k, x, y + 6 * k); ctx.quadraticCurveTo(x - 8 * k, y + 2 * k, x, y - 10 * k); ctx.fill();
+  }
+  ctx.restore();
+}
+
+/* ---------- 訂單泡泡 ---------- */
+function orderLines(o) {
+  const tea = byId(TEAS, o.tea);
+  return [
+    { s: byId(SIZES, o.size).name + ' ' + tea.name, ok: d => d.size === o.size && d.tea === o.tea, dot: tea.col },
+    { s: o.tops.length ? o.tops.map(t => byId(TOPS, t).name).join('＋') : '不加料', ok: d => d.tea && checkOrder(o, Object.assign({}, d, { sealed: true })).wrong.indexOf('tops') < 0 },
+    { s: byId(ICES, o.ice).long + '・' + byId(SUGARS, o.sugar).name, ok: d => d.ice === o.ice && d.sugar === o.sugar }
+  ];
+}
+function drawBubble(c, i) {
+  const t = c.bubbleT;
+  if (c.state !== 'wait' || t <= 0) return;
+  const s = Ease.outBack(Math.min(1, t * 4));
+  const cx = L.slotX[i], bw = L.bw, bh = L.bh, x = cx - bw / 2, y = L.by;
+  const frac = c.pat / c.patMax;
+  ctx.save();
+  let jx = 0;
+  if (G.mode !== 'free' && frac < 0.25) jx = Math.sin(time * 40) * 1.5;
+  ctx.translate(cx + jx, y + bh); ctx.scale(s, s); ctx.translate(-cx, -(y + bh));
+  const focus = G.focus === i;
+  rr(x, y + 3, bw, bh, 14); ctx.fillStyle = 'rgba(110,60,40,0.18)'; ctx.fill();
+  ctx.beginPath(); ctx.moveTo(cx - 8, y + bh - 1); ctx.lineTo(cx, y + bh + 9); ctx.lineTo(cx + 8, y + bh - 1); ctx.closePath();
+  ctx.fillStyle = '#fff'; ctx.fill();
+  rr(x, y, bw, bh, 14); ctx.fillStyle = '#fff'; ctx.fill();
+  ctx.lineWidth = focus ? 3.5 : 2; ctx.strokeStyle = focus ? '#ff8a3d' : '#e9cbb6'; ctx.stroke();
+  const lines = c.lines;
+  const fs = Math.min(15, (bh - 12) / 3.4, bw / 7.2);
+  const lh = (bh - 8) / 3;
+  const d = G.drink;
+  for (let j = 0; j < 3; j++) {
+    const ln = lines[j], ly = y + 4 + lh * (j + 0.5);
+    const done = focus && ln.ok(d);
+    let tx = x + 8;
+    if (ln.dot) {
+      ctx.beginPath(); circ(tx + fs * 0.35, ly, fs * 0.38); ctx.fillStyle = ln.dot; ctx.fill(); ctx.strokeStyle = 'rgba(90,50,30,0.4)'; ctx.lineWidth = 1; ctx.stroke();
+      tx += fs * 0.95;
+    }
+    const f2 = fitSize(ln.s, x + bw - 8 - tx - (done ? fs : 0), fs, '800');
+    txt(ln.s, tx, ly + 1, f2, done ? '#3a9a52' : '#6b3a1f', { align: 'left', weight: '800', shadow: false });
+    if (done) { ctx.strokeStyle = '#3fbf5c'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(x + bw - fs - 4, ly); ctx.lineTo(x + bw - fs * 0.6 - 4, ly + fs * 0.35); ctx.lineTo(x + bw - 6, ly - fs * 0.35); ctx.stroke(); }
+  }
+  ctx.restore();
+  // 耐心條
+  if (G.mode !== 'free') {
+    const pw = bw * 0.7, ph = Math.max(6, L.k * 8), px = cx - pw / 2, py = y + bh + 12;
+    progressBar(px, py, pw, ph, frac, frac > 0.5 ? '#5fd17a' : frac > 0.25 ? '#ffbe3d' : '#ff5a5a');
+  }
+}
+
+/* =====================================================================
+ * 繪圖：杯子
+ * ===================================================================== */
+// 每種配料的小塊位置（固定亂數）
+const PIECES = (() => {
+  let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const out = {};
+  for (const t of TOPS) { const a = []; for (let i = 0; i < 12; i++) a.push([rnd(), rnd(), rnd()]); out[t.id] = a; }
+  out.ice = []; for (let i = 0; i < 4; i++) out.ice.push([rnd(), rnd(), rnd()]);
+  return out;
+})();
+function cupPath(cx, by, h) {
+  const tw = h * 0.33, bw = h * 0.25, top = by - h;
+  ctx.beginPath();
+  ctx.moveTo(cx - tw, top); ctx.lineTo(cx + tw, top);
+  ctx.lineTo(cx + bw, by - 6); ctx.quadraticCurveTo(cx + bw, by, cx + bw - 6, by);
+  ctx.lineTo(cx - bw + 6, by); ctx.quadraticCurveTo(cx - bw, by, cx - bw, by - 6);
+  ctx.closePath();
+}
+function halfW(h, yFromBottom) { return h * 0.25 + (h * 0.08) * (yFromBottom / h); }
+function drawPiece(id, x, y, r, rot) {
+  if (id === 'pearl') {
+    ctx.fillStyle = '#2e1a10'; ctx.beginPath(); circ(x, y, r); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.beginPath(); circ(x - r * 0.35, y - r * 0.35, r * 0.3); ctx.fill();
+  } else if (id === 'coco') {
+    ctx.save(); ctx.translate(x, y); ctx.rotate(rot);
+    ctx.fillStyle = 'rgba(250,250,235,0.85)'; rr(-r, -r, r * 2, r * 2, r * 0.35); ctx.fill();
+    ctx.strokeStyle = 'rgba(200,190,150,0.8)'; ctx.lineWidth = 1; ctx.stroke(); ctx.restore();
+  } else if (id === 'grass') {
+    ctx.save(); ctx.translate(x, y); ctx.rotate(rot);
+    ctx.fillStyle = '#1f1916'; rr(-r * 1.1, -r, r * 2.2, r * 2, r * 0.3); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.18)'; ctx.fillRect(-r * 0.8, -r * 0.7, r * 0.6, r * 0.3); ctx.restore();
+  } else if (id === 'taro') {
+    const cols = ['#b48ad8', '#f3a54a', '#f5e6c8'];
+    ctx.fillStyle = cols[Math.floor(rot * 10) % 3]; ctx.beginPath(); ctx.ellipse(x, y, r * 1.2, r * 0.9, rot, 0, TAU); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.3)'; ctx.beginPath(); circ(x - r * 0.4, y - r * 0.3, r * 0.3); ctx.fill();
+  }
+}
+/** 畫一杯飲料。d: 飲料狀態；h: 大杯的高度 */
+function drawCup(cx, by, hFull, d, ghost) {
+  if (!d.size) {
+    if (ghost) return;
+    ctx.save(); ctx.setLineDash([7, 6]); ctx.strokeStyle = 'rgba(160,100,70,0.45)'; ctx.lineWidth = 2.5;
+    cupPath(cx, by, hFull * 0.92); ctx.stroke(); ctx.restore();
+    txt('空杯位', cx, by - hFull * 0.45, Math.max(12, hFull * 0.11), 'rgba(160,100,70,0.55)', { shadow: false });
+    return;
+  }
+  const pop = d.popT < 0.35 ? Ease.outBack(d.popT / 0.35) : 1;
+  const h = hFull * (d.size === 'M' ? 0.84 : 1);
+  ctx.save();
+  ctx.translate(cx, by); ctx.scale(pop, pop); ctx.translate(-cx, -by);
+  // 陰影
+  ctx.fillStyle = 'rgba(110,60,40,0.18)'; ctx.beginPath(); ctx.ellipse(cx, by + 2, h * 0.3, h * 0.04, 0, 0, TAU); ctx.fill();
+  ctx.save();
+  cupPath(cx, by, h); ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.fill(); ctx.clip();
+  const inner = h * 0.88, fill = d.tea ? d.fill : 0;
+  const lvl = by - inner * fill;
+  const solid = d.tops.filter(t => t !== 'brown' && t !== 'cream');
+  if (d.tea) {
+    const tea = byId(TEAS, d.tea);
+    ctx.fillStyle = tea.col; ctx.fillRect(cx - h * 0.4, lvl, h * 0.8, by - lvl);
+    ctx.fillStyle = 'rgba(255,255,255,0.18)'; ctx.fillRect(cx - h * 0.4, lvl, h * 0.8, Math.min(by - lvl, h * 0.05));
+    ctx.fillStyle = 'rgba(0,0,0,0.06)'; ctx.fillRect(cx + h * 0.1, lvl, h * 0.3, by - lvl);
+  }
+  // 黑糖虎紋
+  const bi = d.tops.indexOf('brown');
+  if (bi >= 0) {
+    const t = clamp(d.topT[bi] / 0.8, 0, 1);
+    ctx.strokeStyle = 'rgba(90,40,10,0.75)'; ctx.lineWidth = Math.max(2, h * 0.025); ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (let s = -1; s <= 1; s += 2) for (let j = 0; j < 4; j++) {
+      const y0 = by - inner * 0.95 + j * inner * 0.2, len = inner * 0.22 * t;
+      const hw = halfW(h, by - y0) - 3;
+      ctx.moveTo(cx + s * hw, y0); ctx.quadraticCurveTo(cx + s * (hw - h * 0.08), y0 + len * 0.5, cx + s * (hw - h * 0.02), y0 + len);
+    }
+    ctx.stroke();
+  }
+  // 固體配料
+  const band = h * 0.15;
+  solid.forEach((id, j) => {
+    const ti = d.tops.indexOf(id), tt = d.topT[ti];
+    const arr = PIECES[id], y0 = by - 4 - band * (j + 1);
+    if (id === 'pudding') {
+      const t = clamp(tt / 0.55, 0, 1), yy = lerp(by - h, y0, Ease.outBounce(t));
+      const hw = halfW(h, by - y0 - band) - 4;
+      ctx.fillStyle = '#f7cf55'; rr(cx - hw, yy, hw * 2, band, 6); ctx.fill();
+      ctx.fillStyle = '#b8742a'; rr(cx - hw, yy, hw * 2, band * 0.3, 6); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.3)'; ctx.fillRect(cx - hw + 4, yy + band * 0.4, hw * 0.5, band * 0.15);
+      return;
+    }
+    const r = id === 'pearl' ? h * 0.034 : id === 'taro' ? h * 0.034 : h * 0.03;
+    const n = id === 'pearl' ? 12 : 8;
+    for (let p = 0; p < n; p++) {
+      const q = arr[p];
+      const ry = y0 + band * (0.25 + 0.6 * q[1]);
+      const hw = halfW(h, by - ry) - r - 3;
+      const rx = cx - hw + q[0] * hw * 2;
+      const t = clamp((tt - q[2] * 0.25) / 0.55, 0, 1);
+      if (t <= 0) continue;
+      drawPiece(id, rx, lerp(by - h - 10, ry, Ease.outBounce(t)), r, q[2] * 6);
+    }
+  });
+  // 冰塊
+  if (d.ice && d.tea) {
+    const n = byId(ICES, d.ice).n, s = h * 0.075;
+    for (let p = 0; p < n; p++) {
+      const q = PIECES.ice[p];
+      const t = clamp((d.iceT - p * 0.07) / 0.45, 0, 1);
+      const ry = lvl + s * (0.6 + q[1] * 1.6), rx = cx + (q[0] - 0.5) * h * 0.36;
+      ctx.save(); ctx.translate(rx, lerp(by - h - 20, ry, Ease.outBack(t))); ctx.rotate(q[2] * 1.2 - 0.6);
+      ctx.fillStyle = 'rgba(235,248,255,0.75)'; rr(-s, -s, s * 2, s * 2, s * 0.35); ctx.fill();
+      ctx.strokeStyle = 'rgba(160,210,240,0.9)'; ctx.lineWidth = 1.2; ctx.stroke();
+      ctx.fillStyle = 'rgba(255,255,255,0.9)'; ctx.fillRect(-s * 0.6, -s * 0.6, s * 0.5, s * 0.25);
+      ctx.restore();
+    }
+  }
+  // 奶蓋
+  const ci = d.tops.indexOf('cream');
+  if (ci >= 0) {
+    const t = clamp(d.topT[ci] / 0.5, 0, 1), chh = h * 0.13 * Ease.outCubic(t);
+    ctx.fillStyle = '#fff6dc';
+    ctx.beginPath(); ctx.moveTo(cx - h * 0.4, lvl - 2);
+    ctx.lineTo(cx + h * 0.4, lvl - 2); ctx.lineTo(cx + h * 0.4, lvl + chh);
+    for (let i = 6; i >= 0; i--) ctx.quadraticCurveTo(cx - h * 0.4 + h * 0.8 * (i + 0.5) / 7, lvl + chh + h * 0.03, cx - h * 0.4 + h * 0.8 * i / 7, lvl + chh);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(240,200,120,0.4)'; ctx.fillRect(cx - h * 0.4, lvl - 2, h * 0.8, h * 0.015);
+  }
+  // 倒茶的水柱
+  if (d.tea && d.fill < 1) {
+    ctx.fillStyle = byId(TEAS, d.tea).col;
+    ctx.fillRect(cx - h * 0.035, by - h - 4, h * 0.07, lvl - (by - h - 4));
+  }
+  ctx.restore();
+  // 杯子外框與反光
+  cupPath(cx, by, h);
+  ctx.strokeStyle = 'rgba(150,110,90,0.55)'; ctx.lineWidth = 2.5; ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  ctx.beginPath(); ctx.moveTo(cx - h * 0.27, by - h * 0.92); ctx.lineTo(cx - h * 0.2, by - h * 0.92); ctx.lineTo(cx - h * 0.15, by - h * 0.12); ctx.lineTo(cx - h * 0.19, by - h * 0.12); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.8)'; rr(cx - h * 0.35, by - h - 3, h * 0.7, 6, 3); ctx.fill();
+  ctx.strokeStyle = 'rgba(150,110,90,0.5)'; ctx.lineWidth = 1.5; ctx.stroke();
+  // 貼紙：冰塊／甜度
+  if (d.ice || d.sugar) {
+    const sw = h * 0.4, sh = h * 0.2, sx = cx - sw / 2, sy = by - h * 0.62;
+    const t = Ease.outBack(clamp(Math.min(d.iceT, d.sugar ? d.sugarT : 9) / 0.3, 0, 1));
+    ctx.save(); ctx.translate(cx, sy + sh / 2); ctx.scale(t, t); ctx.rotate(-0.05); ctx.translate(-cx, -(sy + sh / 2));
+    rr(sx, sy, sw, sh, 6); ctx.fillStyle = '#fffdf6'; ctx.fill(); ctx.strokeStyle = '#ff8fa8'; ctx.lineWidth = 2; ctx.stroke();
+    const fs = sh * 0.36;
+    if (d.ice) txt(byId(ICES, d.ice).long, cx, sy + sh * 0.3, fs, '#3c8fd0', { shadow: false });
+    if (d.sugar) txt(byId(SUGARS, d.sugar).name, cx, sy + sh * 0.72, fs, '#d4537a', { shadow: false });
+    ctx.restore();
+  }
+  // 封膜與吸管
+  if (d.sealed) {
+    ctx.fillStyle = '#ffb3c6'; rr(cx - h * 0.345, by - h - 6, h * 0.69, 9, 4); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); circ(cx, by - h - 2, 3.5); ctx.fill();
+    ctx.save(); ctx.translate(cx + h * 0.08, by - h - 2); ctx.rotate(0.22);
+    ctx.fillStyle = '#ff6b9a'; rr(-h * 0.035, -h * 0.34, h * 0.07, h * 0.36, h * 0.03); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.45)'; ctx.fillRect(-h * 0.02, -h * 0.32, h * 0.018, h * 0.3);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+/* ---------- 工作台上的機器 ---------- */
+function drawPot() {
+  const p = G.pot, x = L.potX, y = L.potY, r = L.potR;
+  const free = G.mode === 'free';
+  const empty = !free && p.n <= 0 && !p.cooking;
+  // 爐子
+  ctx.fillStyle = '#5b5560'; rr(x - r * 1.05, y + r * 0.45, r * 2.1, r * 0.3, 5); ctx.fill();
+  ctx.fillStyle = p.cooking ? '#ff7a3d' : '#3d383f'; ctx.fillRect(x - r * 0.7, y + r * 0.38, r * 1.4, r * 0.08);
+  // 鍋子
+  let wob = p.cooking ? Math.sin(time * 18) * 1.2 : 0;
+  ctx.save(); ctx.translate(x + wob, y);
+  if (empty) { const s = 1 + Math.sin(time * 6) * 0.04; ctx.scale(s, s); }
+  ctx.fillStyle = '#7d8699'; rr(-r * 1.15, -r * 0.35, r * 0.3, r * 0.16, 3); ctx.fill(); rr(r * 0.85, -r * 0.35, r * 0.3, r * 0.16, 3); ctx.fill();
+  ctx.fillStyle = '#b8c0cf'; rr(-r * 0.9, -r * 0.5, r * 1.8, r * 0.95, r * 0.3); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.fillRect(-r * 0.75, -r * 0.35, r * 0.18, r * 0.6);
+  ctx.fillStyle = '#8b93a5'; ctx.beginPath(); ctx.ellipse(0, -r * 0.5, r * 0.9, r * 0.24, 0, 0, TAU); ctx.fill();
+  const lvl = free ? 1 : p.cooking ? 0.6 : p.n / p.cap;
+  ctx.fillStyle = p.cooking ? '#d9c7b4' : '#4a2c1a'; ctx.beginPath(); ctx.ellipse(0, -r * 0.48, r * 0.8, r * 0.19, 0, 0, TAU); ctx.fill();
+  if (lvl > 0) {
+    const n = Math.max(2, Math.round(9 * lvl));
+    ctx.fillStyle = p.cooking ? '#6b4a33' : '#24140b';
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const a = i * 2.4, rx = Math.cos(a) * r * 0.55 * ((i % 3 + 1) / 3), ry = -r * 0.48 + Math.sin(a) * r * 0.12;
+      circ(rx, ry + (p.cooking ? Math.sin(time * 8 + i) * 2 : 0), r * 0.1);
+    }
+    ctx.fill();
+  }
+  ctx.restore();
+  // 標籤
+  const ly = y + r * 0.95;
+  let label, col = '#7a4a32';
+  if (free) label = '珍珠鍋';
+  else if (p.cooking) { label = '攪拌加速！'; col = '#e0632a'; }
+  else if (p.n <= 0) { label = '點我煮珍珠'; col = '#e03a3a'; }
+  else label = '珍珠 ' + p.n + '/' + p.cap;
+  const fs = clamp(r * 0.32, 11, 15);
+  txt(label, x, ly, fitSize(label, r * 2.6, fs), col, { stroke: '#fff', sw: 4, shadow: false });
+  if (p.cooking) {
+    const pr = p.t / p.dur;
+    ctx.lineWidth = 5; ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.beginPath(); ctx.arc(x, y - r * 0.2, r * 1.15, 0, TAU); ctx.stroke();
+    ctx.strokeStyle = '#ff8a3d'; ctx.lineCap = 'round'; ctx.beginPath(); ctx.arc(x, y - r * 0.2, r * 1.15, -Math.PI / 2, -Math.PI / 2 + TAU * pr); ctx.stroke(); ctx.lineCap = 'butt';
+  }
+  if (empty) {
+    const bx = x + r * 0.8, byy = y - r * 0.9;
+    ctx.fillStyle = '#ff4d4d'; ctx.beginPath(); circ(bx, byy, r * 0.3); ctx.fill();
+    txt('!', bx, byy + 1, r * 0.42, '#fff', { shadow: false });
+  }
+}
+function sealGeom() {
+  const x = L.sealX, w = L.sealW, h = L.sealH, by = L.cupBottom;
+  return { x: x - w / 2, y: by - h, w, h, cx: x, by };
+}
+function sealProgress() {
+  const s = G.drink.sealing;
+  return s ? clamp(s.t / s.dur, 0, 1) : 0;
+}
+function drawSealer() {
+  const g = sealGeom(), d = G.drink;
+  const ready = d.sugar && !d.sealed && !d.sealing;
+  const p = sealProgress();
+  // 底座與柱子
+  ctx.fillStyle = 'rgba(110,60,40,0.18)'; ctx.beginPath(); ctx.ellipse(g.cx, g.by + 3, g.w * 0.55, 6, 0, 0, TAU); ctx.fill();
+  ctx.fillStyle = '#d8d0dc'; rr(g.x, g.by - 14, g.w, 16, 6); ctx.fill();
+  ctx.fillStyle = '#c3b8c9'; rr(g.x + 6, g.y + 20, 16, g.h - 30, 6); ctx.fill();
+  // 機頭
+  let press = 0;
+  if (p > 0.3 && p < 0.7) press = Math.sin((p - 0.3) / 0.4 * Math.PI);
+  const headH = g.h * 0.24, hy = g.y;
+  rr(g.x, hy, g.w, headH, 12);
+  ctx.fillStyle = ready ? (Math.sin(time * 6) > 0 ? '#ffe2ec' : '#fff') : '#f3eef5'; ctx.fill();
+  ctx.lineWidth = ready ? 3.5 : 2; ctx.strokeStyle = ready ? '#ff6b9a' : '#c3b8c9'; ctx.stroke();
+  txt('封口', g.cx + 6, hy + headH * 0.5, fitSize('封口', g.w * 0.5, headH * 0.42), ready ? '#e8467c' : '#9c8ea6', { shadow: false });
+  ctx.fillStyle = ready ? '#ff4d7d' : '#d7a3b5'; ctx.beginPath(); circ(g.x + 18, hy + headH * 0.5, headH * 0.18); ctx.fill();
+  // 壓板
+  const plateTop = hy + headH, cupTopY = g.by - L.cupH - 6;
+  const py = lerp(plateTop + 4, cupTopY - 10, press);
+  ctx.fillStyle = '#a99cb0'; ctx.fillRect(g.cx - 4, plateTop, 8, py - plateTop + 2);
+  ctx.fillStyle = '#8c7f94'; rr(g.cx - g.w * 0.32, py, g.w * 0.64, 10, 4); ctx.fill();
+  // 封膜捲
+  ctx.fillStyle = '#ffb3c6'; ctx.beginPath(); circ(g.x + g.w - 12, hy + headH + 14, 8); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.beginPath(); circ(g.x + g.w - 12, hy + headH + 14, 3); ctx.fill();
+}
+function drawTrash() {
+  const x = L.trashX, y = L.trashY, r = L.trashR;
+  const open = G.trashT > 0 ? Math.sin(Math.min(1, G.trashT * 3) * Math.PI) : 0;
+  ctx.fillStyle = 'rgba(110,60,40,0.18)'; ctx.beginPath(); ctx.ellipse(x, y + r * 1.05, r * 0.9, 4, 0, 0, TAU); ctx.fill();
+  ctx.fillStyle = '#8fc9a8'; ctx.beginPath(); ctx.moveTo(x - r * 0.85, y - r * 0.6); ctx.lineTo(x + r * 0.85, y - r * 0.6); ctx.lineTo(x + r * 0.7, y + r); ctx.lineTo(x - r * 0.7, y + r); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = '#5fa07c'; ctx.lineWidth = 2; ctx.beginPath();
+  for (let i = -1; i <= 1; i++) { ctx.moveTo(x + i * r * 0.35, y - r * 0.35); ctx.lineTo(x + i * r * 0.3, y + r * 0.8); }
+  ctx.stroke();
+  ctx.save(); ctx.translate(x - r * 0.9, y - r * 0.62); ctx.rotate(-open * 0.8);
+  ctx.fillStyle = '#6bb38d'; rr(0, -r * 0.22, r * 1.8, r * 0.26, 4); ctx.fill();
+  rr(r * 0.7, -r * 0.42, r * 0.4, r * 0.24, 3); ctx.fill();
+  ctx.restore();
+  txt('丟掉', x, y + r * 1.0 + 9, clamp(r * 0.5, 10, 13), '#5a8a6e', { stroke: '#fff', sw: 3, shadow: false });
+}
+function cupDrawPos() {
+  const d = G.drink, p = sealProgress();
+  let x = L.cupX;
+  if (d.sealing) {
+    const k = p < 0.25 ? Ease.inOutSine(p / 0.25) : p > 0.78 ? 1 - Ease.inOutSine((p - 0.78) / 0.22) : 1;
+    x = lerp(L.cupX, L.sealX, k);
+  }
+  if (G.drag && G.drag.moved) return { x: G.drag.x, y: G.drag.y + L.cupH * 0.5, drag: true };
+  return { x, y: L.cupBottom };
+}
+
+/* ---------- 操作按鈕 ---------- */
+const KIND_COL = { size: '#ffe9d6', tea: '#ffe2e8', top: '#efe3ff', ice: '#ddf2ff', sugar: '#fff2c4' };
+const KIND_LINE = { size: '#e6a77a', tea: '#ee9bb0', top: '#b79be6', ice: '#7fbde6', sugar: '#e3bf4a' };
+function drawStationIcon(b, x, y, s) {
+  const id = b.id;
+  if (b.kind === 'size') {
+    const h = s * (id === 'M' ? 1.5 : 1.9);
+    ctx.save(); cupPath(x, y + h * 0.5, h); ctx.fillStyle = 'rgba(255,255,255,0.8)'; ctx.fill(); ctx.strokeStyle = '#b07a5a'; ctx.lineWidth = 2; ctx.stroke(); ctx.restore();
+    ctx.fillStyle = '#ff6b9a'; ctx.fillRect(x + h * 0.05, y - h * 0.5 - h * 0.25, h * 0.07, h * 0.28);
+  } else if (b.kind === 'tea') {
+    const t = b.item;
+    ctx.fillStyle = shade(t.col, -40); ctx.beginPath(); circ(x, y + 1.5, s * 0.75); ctx.fill();
+    ctx.fillStyle = t.col; ctx.beginPath(); ctx.moveTo(x, y - s * 0.95); ctx.bezierCurveTo(x + s * 0.8, y - s * 0.1, x + s * 0.75, y + s * 0.75, x, y + s * 0.75); ctx.bezierCurveTo(x - s * 0.75, y + s * 0.75, x - s * 0.8, y - s * 0.1, x, y - s * 0.95); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.55)'; ctx.beginPath(); ctx.ellipse(x - s * 0.28, y + s * 0.05, s * 0.12, s * 0.25, 0.3, 0, TAU); ctx.fill();
+    if (t.id === 'fresh') { ctx.strokeStyle = '#d8cbb5'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(x, y - s * 0.95); ctx.bezierCurveTo(x + s * 0.8, y - s * 0.1, x + s * 0.75, y + s * 0.75, x, y + s * 0.75); ctx.bezierCurveTo(x - s * 0.75, y + s * 0.75, x - s * 0.8, y - s * 0.1, x, y - s * 0.95); ctx.stroke(); }
+  } else if (b.kind === 'top') {
+    const r = s * 0.32;
+    if (id === 'pearl' || id === 'coco' || id === 'grass' || id === 'taro') {
+      drawPiece(id, x - r * 1.1, y + r * 0.6, r, 0.13); drawPiece(id, x + r * 1.1, y + r * 0.6, r, 0.21); drawPiece(id, x, y - r * 0.9, r, 0.32);
+    } else if (id === 'pudding') {
+      ctx.fillStyle = '#f7cf55'; ctx.beginPath(); ctx.moveTo(x - s * 0.55, y + s * 0.6); ctx.lineTo(x + s * 0.55, y + s * 0.6); ctx.lineTo(x + s * 0.38, y - s * 0.4); ctx.lineTo(x - s * 0.38, y - s * 0.4); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#b8742a'; ctx.beginPath(); ctx.ellipse(x, y - s * 0.4, s * 0.38, s * 0.14, 0, 0, TAU); ctx.fill();
+    } else if (id === 'brown') {
+      ctx.fillStyle = '#6b3410'; ctx.beginPath(); ctx.moveTo(x, y - s * 0.9); ctx.bezierCurveTo(x + s * 0.65, y, x + s * 0.6, y + s * 0.7, x, y + s * 0.7); ctx.bezierCurveTo(x - s * 0.6, y + s * 0.7, x - s * 0.65, y, x, y - s * 0.9); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.beginPath(); ctx.ellipse(x - s * 0.2, y + s * 0.1, s * 0.08, s * 0.2, 0.3, 0, TAU); ctx.fill();
+    } else if (id === 'cream') {
+      ctx.fillStyle = '#fff6dc'; ctx.strokeStyle = '#e3c88f'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); circ(x - s * 0.35, y + s * 0.25, s * 0.38); circ(x + s * 0.35, y + s * 0.25, s * 0.38); circ(x, y - s * 0.2, s * 0.45); ctx.fill(); ctx.stroke();
+      ctx.beginPath(); circ(x - s * 0.35, y + s * 0.25, s * 0.36); circ(x + s * 0.35, y + s * 0.25, s * 0.36); circ(x, y - s * 0.2, s * 0.43); ctx.fill();
+    }
+  } else if (b.kind === 'ice') {
+    const n = b.item.n === 4 ? 3 : b.item.n === 2 ? 1 : 0, c2 = s * 0.42;
+    if (!n) {
+      ctx.strokeStyle = '#7fbde6'; ctx.lineWidth = 2; rr(x - c2, y - c2, c2 * 2, c2 * 2, 4); ctx.stroke();
+      ctx.strokeStyle = '#ff5a5a'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(x - c2 * 1.3, y + c2 * 1.3); ctx.lineTo(x + c2 * 1.3, y - c2 * 1.3); ctx.stroke();
+    }
+    for (let i = 0; i < n; i++) {
+      const ox = n === 1 ? 0 : (i - 1) * c2 * 1.25, oy = n === 1 ? 0 : (i === 1 ? -c2 * 0.7 : c2 * 0.5);
+      ctx.save(); ctx.translate(x + ox, y + oy); ctx.rotate(0.2 * (i - 1));
+      ctx.fillStyle = '#eaf7ff'; rr(-c2, -c2, c2 * 2, c2 * 2, 4); ctx.fill(); ctx.strokeStyle = '#7fbde6'; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.restore();
+    }
+  } else if (b.kind === 'sugar') {
+    const n = b.item.n, c2 = s * 0.28;
+    if (!n) { ctx.strokeStyle = '#d9b84a'; ctx.setLineDash([3, 3]); ctx.lineWidth = 2; rr(x - c2, y - c2, c2 * 2, c2 * 2, 3); ctx.stroke(); ctx.setLineDash([]); }
+    for (let i = 0; i < n; i++) {
+      const ox = n === 1 ? 0 : ((i % 2) - 0.5) * c2 * 2.2, oy = n <= 2 ? 0 : (i < 2 ? c2 * 1.1 : -c2 * 1.1);
+      ctx.fillStyle = '#fff'; rr(x + ox - c2, y + oy - c2, c2 * 2, c2 * 2, 3); ctx.fill(); ctx.strokeStyle = '#d9b84a'; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+  }
+}
+function stationSelected(b) {
+  const d = G.drink;
+  if (b.kind === 'size') return d.size === b.id;
+  if (b.kind === 'tea') return d.tea === b.id;
+  if (b.kind === 'top') return d.tops.includes(b.id);
+  if (b.kind === 'ice') return d.ice === b.id;
+  if (b.kind === 'sugar') return d.sugar === b.id;
+  return false;
+}
+function stationEnabled(kind) {
+  const d = G.drink;
+  if (d.sealing || d.sealed) return false;
+  if (kind === 'size') return !d.tea;
+  if (kind === 'tea') return !!d.size && !d.tea;
+  if (kind === 'top') return !!d.tea && d.tops.length < 2;
+  if (kind === 'ice') return !!d.tea;
+  if (kind === 'sugar') return !!d.ice;
+  return true;
+}
+function drawStations(hint) {
+  const hf = L.hdr;
+  for (let gi = 0; gi < L.groups.length; gi++) {
+    const g = L.groups[gi], nx = L.groups[gi + 1];
+    const en = stationEnabled(g.kind);
+    const maxW = nx && Math.abs(nx.y - g.y) < 1 ? nx.x - g.x - 8 : L.panel.x + L.panel.w - g.x - 10;
+    txt(g.label, g.x + 2, g.y + hf * 0.62, fitSize(g.label, maxW, hf), en ? '#8a4a2a' : '#c4a594', { align: 'left', shadow: false });
+  }
+  for (const b of L.btns) {
+    const en = stationEnabled(b.kind), sel = stationSelected(b);
+    const pa = btnAnim[b.kind + b.id] || 0;
+    const sc = pa > 0 ? 1 - 0.12 * Math.sin(Math.min(1, pa * 6) * Math.PI) : 1;
+    const isHint = hint && hint.btn === b;
+    const isKb = kbOn && kbIdx >= 0 && L.btns[kbIdx] === b;
+    ctx.save();
+    ctx.translate(b.x + b.w / 2, b.y + b.h / 2); ctx.scale(sc, sc);
+    const x = -b.w / 2, y = -b.h / 2, r = Math.min(14, b.h * 0.25);
+    rr(x, y + 3, b.w, b.h, r); ctx.fillStyle = 'rgba(110,60,40,0.18)'; ctx.fill();
+    rr(x, y, b.w, b.h, r);
+    ctx.fillStyle = sel ? '#fff3a8' : KIND_COL[b.kind]; ctx.fill();
+    ctx.lineWidth = sel ? 3 : 2; ctx.strokeStyle = sel ? '#f0a020' : KIND_LINE[b.kind]; ctx.stroke();
+    if (!en && !sel) { rr(x, y, b.w, b.h, r); ctx.fillStyle = 'rgba(255,250,245,0.55)'; ctx.fill(); }
+    const fs = clamp(Math.min(b.h * 0.24, b.w / 3.1), 10, 17);
+    const is = Math.min(b.w * 0.36, (b.h - fs) * 0.4);
+    ctx.globalAlpha = en || sel ? 1 : 0.5;
+    drawStationIcon(b, 0, y + (b.h - fs) * 0.48, is);
+    txt(b.name, 0, y + b.h - fs * 0.75, fitSize(b.name, b.w - 6, fs), '#6b3a1f', { shadow: false });
+    ctx.globalAlpha = 1;
+    if (sel) { ctx.fillStyle = '#3fbf5c'; ctx.beginPath(); circ(x + b.w - 8, y + 8, 7); ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x + b.w - 11, y + 8); ctx.lineTo(x + b.w - 8.5, y + 10.5); ctx.lineTo(x + b.w - 4.5, y + 5.5); ctx.stroke(); }
+    if (isHint || isKb) {
+      rr(x - 3, y - 3, b.w + 6, b.h + 6, r + 3);
+      ctx.lineWidth = 3.5; ctx.strokeStyle = isKb ? '#3c9ff0' : 'rgba(255,138,61,' + (0.6 + 0.4 * Math.sin(time * 8)) + ')'; ctx.stroke();
+    }
+    ctx.restore();
+    if (isHint) hintArrow(b.x + b.w / 2, b.y - 2);
+  }
+}
+const btnAnim = {};
+function hintArrow(x, y) {
+  const b = Math.abs(Math.sin(time * 5)) * 6;
+  ctx.save(); ctx.translate(x, y - 8 - b);
+  ctx.fillStyle = '#ff8a3d'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(-9, -12); ctx.lineTo(9, -12); ctx.lineTo(0, 0); ctx.closePath(); ctx.stroke(); ctx.fill();
+  ctx.restore();
+}
+
+/* =====================================================================
+ * 遊戲狀態
+ * ===================================================================== */
+let scene = 'title', sceneT = 0, G = null;
+let kbOn = false, kbIdx = -1;
+function newDrink() { return { size: null, tea: null, tops: [], topT: [], ice: null, iceT: 0, sugar: null, sugarT: 0, fill: 0, sealed: false, sealing: null, popT: 9 }; }
+function baseState(mode, day) {
+  const up = Save.data.up;
+  return {
+    mode, day, slots: new Array(L.slots).fill(null), leaving: [], spawnT: 1.0, served: 0, correct: 0, wrong: 0, angry: 0,
+    earned: 0, tips: 0, combo: 0, maxCombo: 0, time: 0, drink: newDrink(), focus: -1, coinShown: 0, flyers: [],
+    pot: { n: POT_CAP[up.pot], cap: POT_CAP[up.pot], cooking: false, t: 0, dur: POT_COOK[up.pot], bt: 0 },
+    phase: 'intro', paused: false, endT: 0, msg: null, trashT: 0, drag: null, hearts: 0,
+    patMul: 1 + 0.08 * decorCount(), sealDur: SEAL_DUR[up.sealer], jar: up.jar, result: null, goalFlash: 0
+  };
+}
+function startDay(day) {
+  day = clamp(day | 0, 1, MAXDAY);
+  const cfg = dayCfg(day);
+  const orders = []; for (let i = 0; i < cfg.n; i++) orders.push(genOrder(day, false));
+  G = baseState('day', day);
+  G.cfg = cfg; G.goal = makeGoal(day, orders); G.total = cfg.n;
+  G.queue = orders.map(o => ({ order: o, look: makeLook(day, false) }));
+  G.hints = day <= 3;
+  G.newTeas = TEAS.filter(t => t.day === day); G.newTops = TOPS.filter(t => t.day === day);
+  scene = 'play'; sceneT = 0;
+  layoutPanel(); bgBack = null;
+  Music.start(SONG_PLAY);
+  return true;
+}
+function startFree() {
+  G = baseState('free', MAXDAY);
+  G.cfg = { n: Infinity, interval: 2.5, patience: 999 };
+  G.goal = null; G.total = Infinity; G.queue = null; G.hints = true; G.phase = 'run';
+  G.pot.n = G.pot.cap = 99;
+  scene = 'play'; sceneT = 0;
+  layoutPanel(); bgBack = null;
+  Music.start(SONG_PLAY);
+  return true;
+}
+function say(s) { G.msg = { s, t: 0 }; }
+
+function freeSlot() {
+  const f = [];
+  for (let i = 0; i < L.slots; i++) if (!G.slots[i]) f.push(i);
+  return f.length ? KG.pick(f) : -1;
+}
+function spawnCustomer() {
+  const i = freeSlot();
+  if (i < 0) return false;
+  let q;
+  if (G.mode === 'free') q = { order: genOrder(MAXDAY, true), look: makeLook(MAXDAY, true) };
+  else q = G.queue.shift();
+  if (!q) return false;
+  const fromLeft = i === 0 ? true : i === L.slots - 1 ? false : Math.random() < 0.5;
+  const lk = q.look;
+  const pm = lk.kind === 'grandpa' || lk.kind === 'grandma' ? 1.15 : lk.kid ? 0.92 : 1;
+  const c = {
+    order: q.order, look: lk, slot: i, x: fromLeft ? -50 : L.left.w + 50, dir: fromLeft ? 1 : -1, state: 'in',
+    patMax: G.cfg.patience * G.patMul * pm, pat: 0, anim: Math.random() * 5, bubbleT: 0, mood: 'happy', react: null,
+    blinkT: 1 + Math.random() * 3, lines: orderLines(q.order), price: priceOf(q.order)
+  };
+  c.pat = c.patMax;
+  G.slots[i] = c;
+  return true;
+}
+function oldestWaiting() {
+  let best = -1, bp = Infinity;
+  for (let i = 0; i < L.slots; i++) { const c = G.slots[i]; if (c && c.state === 'wait' && c.pat / c.patMax < bp) { bp = c.pat / c.patMax; best = i; } }
+  return best;
+}
+function focusSlot() {
+  const f = G.focus;
+  if (f >= 0 && G.slots[f] && G.slots[f].state === 'wait') return f;
+  return oldestWaiting();
+}
+function computeHint() {
+  if (!G.hints || G.phase !== 'run' || G.paused) return null;
+  const fi = focusSlot();
+  if (fi < 0) return null;
+  const o = G.slots[fi].order, d = G.drink;
+  const btn = (kind, id) => ({ btn: L.btns.find(b => b.kind === kind && b.id === id) });
+  if (d.sealing) return null;
+  if (d.sealed) return { cust: fi };
+  if (d.tea && (d.tea !== o.tea || d.size !== o.size || d.tops.some(t => !o.tops.includes(t)))) return { trash: true };
+  if (!d.size || d.size !== o.size) return btn('size', o.size);
+  if (!d.tea) return btn('tea', o.tea);
+  const miss = o.tops.find(t => !d.tops.includes(t));
+  if (miss) {
+    if (miss === 'pearl' && G.mode !== 'free' && G.pot.n <= 0) return { pot: true };
+    return btn('top', miss);
+  }
+  if (d.ice !== o.ice) return btn('ice', o.ice);
+  if (d.sugar !== o.sugar) return btn('sugar', o.sugar);
+  return { sealer: true };
+}
+function nextNeed() {
+  const d = G.drink;
+  if (!d.size) return '先選杯子 ①';
+  if (!d.tea) return '先倒茶 ②';
+  if (!d.ice) return '先選冰塊 ④';
+  if (!d.sugar) return '先選甜度 ⑤';
+  return '';
+}
+
+/* ---------- 玩家動作 ---------- */
+function pressStation(kind, id) {
+  if (!G || G.phase !== 'run' || G.paused) return false;
+  const d = G.drink;
+  btnAnim[kind + id] = 0.001;
+  if (d.sealing || d.sealed) { say('先把這杯送給客人！'); Sfx.no(); return false; }
+  const bi = L.btns.findIndex(b => b.kind === kind && b.id === id);
+  if (kind === 'size') {
+    if (d.tea) { say('倒好茶就不能換杯子，可以丟掉重做'); Sfx.no(); return false; }
+    d.size = id; d.popT = 0; Sfx.cup();
+  } else if (kind === 'tea') {
+    if (!d.size) { say('先選杯子 ①'); Sfx.no(); return false; }
+    if (d.tea) { say('已經倒好茶了'); Sfx.no(); return false; }
+    d.tea = id; d.fill = 0; Sfx.pour();
+  } else if (kind === 'top') {
+    if (!d.tea) { say(nextNeed()); Sfx.no(); return false; }
+    if (d.tops.includes(id)) { say('已經加過了'); Sfx.no(); return false; }
+    if (d.tops.length >= 2) { say('最多加兩種料'); Sfx.no(); return false; }
+    if (id === 'pearl' && G.mode !== 'free') {
+      if (G.pot.n <= 0) { say(G.pot.cooking ? '珍珠還在煮，點鍋子攪拌！' : '珍珠用完了！點鍋子煮珍珠'); Sfx.no(); return false; }
+      G.pot.n--;
+    }
+    d.tops.push(id); d.topT.push(0);
+    if (id === 'brown' || id === 'cream') KG.note(500, 0.3, 'sine', 0.12, 0.05, 300); else Sfx.plop(5);
+  } else if (kind === 'ice') {
+    if (!d.tea) { say(nextNeed()); Sfx.no(); return false; }
+    d.ice = id; d.iceT = 0; Sfx.clink(byId(ICES, id).n || 1);
+  } else if (kind === 'sugar') {
+    if (!d.ice) { say(nextNeed()); Sfx.no(); return false; }
+    d.sugar = id; d.sugarT = 0; Sfx.sugar();
+    fx.burst(L.cupX, L.cupBottom - L.cupH * 0.9, { n: 10, colors: ['#fff', '#fff3a8', '#ffe066'], shape: 'star', size: 4, speed: 120, g: 200 });
+  }
+  if (bi >= 0) Sfx.tap(bi % 7);
+  return true;
+}
+function pressSeal() {
+  if (!G || G.phase !== 'run' || G.paused) return false;
+  const d = G.drink;
+  if (d.sealing) return false;
+  if (d.sealed) { say('封好了！拖到客人那裡吧'); return false; }
+  if (!d.sugar) { say(nextNeed() || '還沒做好喔'); Sfx.no(); return false; }
+  d.sealing = { t: 0, dur: G.sealDur, thunk: false };
+  KG.note(400, 0.15, 'triangle', 0.1, 0, 700);
+  return true;
+}
+function trashDrink() {
+  if (!G || G.phase !== 'run' || G.paused) return false;
+  const d = G.drink;
+  if (d.sealing || !d.size) return false;
+  G.drink = newDrink(); G.trashT = 0.001; G.drag = null;
+  Sfx.trash();
+  fx.burst(L.trashX, L.trashY - L.trashR, { n: 8, colors: ['#bfe8c9', '#fff'], shape: 'circle', size: 5, speed: 140, g: 300 });
+  return true;
+}
+function cookPearls() {
+  if (!G || G.phase !== 'run' || G.paused) return false;
+  const p = G.pot;
+  if (p.cooking) {
+    p.t = Math.min(p.dur, p.t + 0.5); Sfx.bubble();
+    fx.burst(L.potX, L.potY - L.potR * 0.5, { n: 4, colors: ['#ffffff'], shape: 'bubble', size: 4, speed: 80, g: -60, life: 0.6 });
+    return true;
+  }
+  if (G.mode === 'free') { Sfx.bubble(); fx.burst(L.potX, L.potY - L.potR * 0.5, { n: 6, colors: ['#ffffff'], shape: 'bubble', size: 4, speed: 80, g: -60, life: 0.6 }); return true; }
+  if (p.n >= p.cap) { say('珍珠還很多喔！'); return false; }
+  p.cooking = true; p.t = 0;
+  Sfx.pour(); say('煮珍珠中…點鍋子攪拌會更快！');
+  return true;
+}
+function addFlyers(x, y, val) {
+  const n = clamp(Math.ceil(val / 12), 1, 6);
+  let left = val;
+  for (let i = 0; i < n; i++) {
+    const v = i === n - 1 ? left : Math.floor(val / n); left -= v;
+    G.flyers.push({ x: x + (Math.random() - 0.5) * 30, y: y + (Math.random() - 0.5) * 20, sx: x, sy: y, t: -i * 0.08, v });
+  }
+}
+function serve(i) {
+  if (!G || G.phase !== 'run' || G.paused) return false;
+  const c = G.slots[i];
+  if (!c || c.state !== 'wait') return false;
+  const d = G.drink;
+  if (!d.sealed || d.sealing) return false;
+  const res = checkOrder(c.order, d);
+  const free = G.mode === 'free';
+  const frac = free ? 1 : c.pat / c.patMax;
+  G.served++;
+  const cx = L.slotX[i], cy = L.counterY - 90 * L.k;
+  let tip = 0, price = c.price;
+  if (res.ok) {
+    G.correct++;
+    G.combo = frac >= 0.5 ? G.combo + 1 : 1;
+    G.maxCombo = Math.max(G.maxCombo, G.combo);
+    tip = Math.round((3 + price * 0.25 * frac) * (1 + 0.15 * G.jar) * (1 + 0.2 * Math.min(Math.max(G.combo - 1, 0), 5)));
+    c.mood = 'delight'; c.react = { kind: 'happy', t: 0 };
+    Sfx.happy(); Sfx.ding();
+    fx.burst(cx, cy, { n: 12, colors: ['#ff5a86', '#ff8fb1', '#ffd1dc'], shape: 'heart', size: 8, speed: 200, g: -100, up: 60 });
+    fx.text(cx, cy - 40 * L.k, KG.pick(['好好喝！', '謝謝！', '讚啦！', '完美！', '就是這杯！']), { color: '#fff', stroke: '#ff6b9a', size: 18 });
+    if (G.combo >= 2 && !free) { fx.text(L.cupX, L.work.y + 28, G.combo + ' 連擊！', { color: '#fff3a8', stroke: '#e8467c', size: 26, life: 1.2 }); KG.note(880 + G.combo * 60, 0.15, 'square', 0.06, 0.25); }
+    if (G.goal && G.goal.type === 'tea' && c.order.tea === G.goal.id) G.goal.prog++;
+    if (G.goal && G.goal.type === 'top' && c.order.tops.includes(G.goal.id)) G.goal.prog++;
+  } else if (free) {
+    c.mood = 'delight'; c.react = { kind: 'happy', t: 0 };
+    Sfx.happy(); Sfx.ding();
+    fx.text(cx, cy - 40 * L.k, KG.pick(['也很好喝！', '哇，新口味！', '謝謝你！']), { color: '#fff', stroke: '#ff6b9a', size: 18 });
+    fx.burst(cx, cy, { n: 8, colors: ['#ff5a86', '#ff8fb1'], shape: 'heart', size: 8, speed: 180, g: -100 });
+  } else {
+    G.wrong++; G.combo = 0;
+    c.mood = 'sad'; c.react = { kind: 'sad', t: 0 };
+    Sfx.no(); KG.note(330, 0.25, 'triangle', 0.12, 0.1, 260);
+    fx.text(cx, cy - 40 * L.k, '咦？不是這杯…', { color: '#fff', stroke: '#5a7ab0', size: 16 });
+  }
+  if (free) { G.hearts++; Save.data.freeServed++; }
+  else {
+    G.earned += price + tip; G.tips += tip;
+    addFlyers(cx, cy, price + tip);
+    fx.text(cx, cy - 12 * L.k, '+' + (price + tip) + (tip ? '（小費 ' + tip + '）' : ''), { color: '#ffe066', stroke: '#8a5a12', size: 16, vy: -50, life: 1.4 });
+  }
+  G.drink = newDrink(); G.drag = null;
+  G.slots[i] = null; G.leaving.push(c);
+  if (G.focus === i) G.focus = -1;
+  G.spawnT = Math.max(G.spawnT, 1.3);
+  checkGoalLive();
+  return true;
+}
+function customerLeavesAngry(i) {
+  const c = G.slots[i];
+  c.mood = 'angry'; c.react = { kind: 'angry', t: 0 };
+  G.angry++; G.combo = 0;
+  Sfx.angry(); shake(5, 0.25);
+  fx.text(L.slotX[i], L.counterY - 100 * L.k, '等太久了啦！', { color: '#fff', stroke: '#d43b3b', size: 17 });
+  G.slots[i] = null; G.leaving.push(c);
+  if (G.focus === i) G.focus = -1;
+  G.spawnT = Math.max(G.spawnT, 1.3);
+}
+function goalProgress() {
+  const g = G.goal;
+  if (!g) return [0, 1];
+  if (g.type === 'earn') return [G.earned, g.need];
+  if (g.type === 'tips') return [G.tips, g.need];
+  if (g.type === 'combo') return [G.maxCombo, g.need];
+  if (g.type === 'noangry') return [G.angry ? 0 : 1, 1];
+  return [g.prog, g.need];
+}
+function checkGoalLive() {
+  const g = G.goal;
+  if (!g || g.done || g.type === 'noangry') return;
+  const p = goalProgress();
+  if (p[0] >= p[1]) {
+    g.done = true; G.goalFlash = 1.5;
+    KG.sound('sparkle'); fx.text(W / 2, L.custTop + 40, '今日目標達成！', { color: '#fff3a8', stroke: '#3a9a52', size: 24, life: 1.6, vy: -30 });
+  }
+}
+function finishDay() {
+  const g = G.goal;
+  if (g.type === 'noangry') g.done = G.angry === 0;
+  const ratio = G.correct / G.total;
+  let stars = ratio >= 0.8 ? 2 : ratio >= 0.5 ? 1 : 0;
+  if (stars >= 1 && g.done) stars++;
+  stars = Math.min(3, stars);
+  const bonus = g.done ? 20 + G.day * 4 : 0;
+  const S = Save.data;
+  S.coins += G.earned + bonus;
+  if (!(S.stars[G.day - 1] >= stars)) S.stars[G.day - 1] = stars;
+  S.bestIncome = Math.max(S.bestIncome, G.earned);
+  Save.save();
+  KG.best(SLUG, Save.totalStars());
+  const best = KG.best(SLUG + '-day' + G.day, G.earned);
+  G.phase = 'result';
+  G.result = { stars, ratio, bonus, best, t: 0, shown: 0, panel: { s: 0 } };
+  tween(G.result.panel, { s: 1 }, 0.5, 'outBack');
+  if (stars > 0) { KG.sound('win'); KG.confetti(); } else KG.sound('lose');
+}
+
+/* ---------- 每格更新 ---------- */
+function updatePlay(dt) {
+  const d = G.drink;
+  d.popT += dt;
+  if (d.tea && d.fill < 1) d.fill = Math.min(1, d.fill + dt * 1.7);
+  for (let i = 0; i < d.topT.length; i++) d.topT[i] += dt;
+  d.iceT += dt; d.sugarT += dt;
+  for (const k in btnAnim) { if (btnAnim[k] > 0) { btnAnim[k] += dt; if (btnAnim[k] > 0.3) btnAnim[k] = 0; } }
+  if (G.trashT > 0) { G.trashT += dt; if (G.trashT > 0.5) G.trashT = 0; }
+  if (G.msg) { G.msg.t += dt; if (G.msg.t > 2.2) G.msg = null; }
+  if (G.goalFlash > 0) G.goalFlash -= dt;
+  // 顧客動畫（暫停或開頭也會動）
+  const all = G.slots.concat(G.leaving);
+  for (const c of all) {
+    if (!c) continue;
+    c.anim += dt; c.blinkT -= dt; if (c.blinkT < 0) c.blinkT = 2 + Math.random() * 3;
+  }
+  if (G.phase === 'result') { updateResult(dt); return; }
+  if (G.phase !== 'run' && G.phase !== 'ending') return;
+  if (G.paused) return;
+  G.time += dt;
+  // 封口
+  if (d.sealing) {
+    const s = d.sealing; s.t += dt;
+    const p = s.t / s.dur;
+    if (!s.thunk && p >= 0.5) {
+      s.thunk = true; d.sealed = true; Sfx.thunk(); shake(3, 0.12); KG.vibrate(25);
+      fx.burst(L.sealX, L.cupBottom - L.cupH - 4, { n: 10, colors: ['#ffb3c6', '#fff', '#ffe066'], shape: 'star', size: 5, speed: 160, g: 200 });
+    }
+    if (p >= 1) { d.sealing = null; KG.note(1175, 0.12, 'sine', 0.12); }
+  }
+  // 珍珠鍋
+  const p = G.pot;
+  if (p.cooking) {
+    p.t += dt; p.bt -= dt;
+    if (p.bt <= 0) { p.bt = 0.35 + Math.random() * 0.3; Sfx.bubble(); fx.burst(L.potX + (Math.random() - 0.5) * L.potR, L.potY - L.potR * 0.6, { n: 1, colors: ['#ffffff'], shape: 'steam', size: L.potR * 0.25, speed: 30, g: -80, life: 1 }); }
+    if (p.t >= p.dur) {
+      p.cooking = false; p.n = p.cap; p.t = 0;
+      KG.sound('sparkle'); say('珍珠煮好了！');
+      fx.burst(L.potX, L.potY - L.potR * 0.5, { n: 12, colors: ['#ffe066', '#fff', '#5a3a26'], shape: 'star', size: 5, speed: 180, g: 200 });
+    }
+  }
+  // 來客
+  if (G.phase === 'run') {
+    const more = G.mode === 'free' || G.queue.length > 0;
+    if (more) {
+      G.spawnT -= dt;
+      if (G.spawnT <= 0 && freeSlot() >= 0) {
+        spawnCustomer();
+        G.spawnT = G.mode === 'free' ? 2.5 : G.cfg.interval * (0.85 + Math.random() * 0.3);
+      }
+    }
+  }
+  const sp = Math.max(260, L.left.w * 0.9);
+  for (let i = 0; i < L.slots; i++) {
+    const c = G.slots[i];
+    if (!c) continue;
+    if (c.state === 'in') {
+      const tx = L.slotX[i];
+      c.x += c.dir * sp * dt;
+      if ((c.dir > 0 && c.x >= tx) || (c.dir < 0 && c.x <= tx)) { c.x = tx; c.state = 'wait'; c.bubbleT = 0.001; Sfx.bell(); }
+    } else if (c.state === 'wait') {
+      c.bubbleT += dt;
+      if (G.mode !== 'free') {
+        c.pat -= dt;
+        const f = c.pat / c.patMax;
+        c.mood = f > 0.6 ? 'happy' : f > 0.3 ? 'ok' : 'worried';
+        if (c.pat <= 0) customerLeavesAngry(i);
+      }
+    }
+  }
+  for (let j = G.leaving.length - 1; j >= 0; j--) {
+    const c = G.leaving[j];
+    if (c.react) {
+      c.react.t += dt;
+      if (c.react.t > 1.0) { c.state = 'out'; c.react = null; c.dir = c.x < L.left.w / 2 ? -1 : 1; }
+    } else {
+      c.x += c.dir * sp * dt;
+      if (c.x < -80 || c.x > L.left.w + 80) G.leaving.splice(j, 1);
+    }
+  }
+  // 飛向錢包的金幣
+  const tx = L.coinPill ? L.coinPill.x : W / 2, ty = L.coinPill ? L.coinPill.y : 30;
+  for (let j = G.flyers.length - 1; j >= 0; j--) {
+    const f = G.flyers[j];
+    f.t += dt * 1.6;
+    if (f.t >= 1) { G.coinShown += f.v; G.flyers.splice(j, 1); Sfx.coin(); }
+  }
+  checkGoalLive();
+  // 收店
+  if (G.mode === 'day') {
+    if (G.phase === 'run' && G.queue.length === 0 && G.slots.every(s => !s) && G.leaving.length === 0) { G.phase = 'ending'; G.endT = 1.0; }
+    if (G.phase === 'ending') { G.endT -= dt; if (G.endT <= 0) { G.coinShown = G.earned; G.flyers.length = 0; finishDay(); } }
+  }
+}
+function updateResult(dt) {
+  const R = G.result;
+  R.t += dt;
+  while (R.shown < 3 && R.t > 0.6 + R.shown * 0.38) {
+    if (R.shown < R.stars) {
+      KG.note(660 * Math.pow(1.26, R.shown), 0.25, 'triangle', 0.2);
+      const pp = resultStarPos(R.shown);
+      fx.burst(pp[0], pp[1], { n: 14, colors: ['#ffe066', '#fff', '#ffb02e'], speed: 240, g: 300, size: 6 });
+    }
+    R.shown++;
+  }
+}
+
+/* =====================================================================
+ * 畫面：遊戲中
+ * ===================================================================== */
+function hudLayout(items) {
+  // items: [{w}] → 自動排成一或兩列
+  const left = 66, right = W - 120;
+  let x = left, y = 12, row = 0;
+  const tot = items.reduce((s, it) => s + it.w + 8, -8);
+  if (tot <= right - left) x = left + (right - left - tot) / 2;
+  for (const it of items) {
+    if (x + it.w > (row === 0 ? right : W - 10) && row === 0) { row = 1; y = 62; x = 10; }
+    it.x = x; it.y = y; x += it.w + 8;
+  }
+  if (row === 1) {
+    const r1 = items.filter(it => it.y === 62);
+    const w1 = r1.reduce((s, it) => s + it.w + 8, -8);
+    let xx = (W - w1) / 2;
+    for (const it of r1) { it.x = xx; xx += it.w + 8; }
+  }
+}
+function drawHUD() {
+  const h = 34;
+  let fs = 15, items;
+  for (; fs >= 10; fs--) {
+    items = hudItems(fs);
+    hudLayout(items);
+    if (items.every(it => it.x >= 8 && it.x + it.w <= W - 8 && (it.y < 60 || true))) break;
+  }
+  drawHudItems(items, fs, h);
+}
+function hudItems(fs) {
+  const items = [];
+  ctx.font = '900 ' + fs + 'px ' + FONT;
+  const mk = (s, col, icon) => ({ s, col, icon, w: ctx.measureText(s).width + fs * 1.6 + (icon ? 22 : 0) });
+  if (G.mode === 'day') {
+    items.push(mk('第 ' + G.day + ' 天', '#ff8fa8'));
+    items.push(mk('客人 ' + (G.served + G.angry) + '/' + G.total, '#6cc4ff'));
+    const gp = goalProgress(), g = G.goal;
+    const gs = (g.done ? '✓ ' : '') + g.text + (g.type === 'noangry' ? '' : '（' + Math.min(gp[0], gp[1]) + '/' + gp[1] + '）');
+    items.push(mk(gs, g.done ? '#3fbf5c' : '#f0a020'));
+    items.push(mk(String(G.coinShown), '#f0b52a', 'coin'));
+  } else {
+    items.push(mk('自由模式', '#ff8fa8'));
+    items.push(mk('做了 ' + G.served + ' 杯', '#ff6b9a', 'heart'));
+  }
+  return items;
+}
+function drawHudItems(items, fs, h) {
+  for (const it of items) {
+    let s = 1;
+    if (it.icon === 'coin' && G.flyers.length) s = 1 + 0.06 * Math.sin(time * 30);
+    if (it.col === '#3fbf5c' && G.goalFlash > 0) s = 1 + 0.08 * Math.sin(time * 20);
+    ctx.save(); ctx.translate(it.x + it.w / 2, it.y + h / 2); ctx.scale(s, s); ctx.translate(-(it.x + it.w / 2), -(it.y + h / 2));
+    pill(it.x, it.y, it.w, h, it.col);
+    let tx = it.x + fs * 0.8;
+    if (it.icon === 'coin') { coinIcon(tx + 8, it.y + h / 2, 9); tx += 22; L.coinPill = { x: it.x + 20, y: it.y + h / 2 }; }
+    if (it.icon === 'heart') { ctx.fillStyle = '#ff5a86'; heartPath(tx + 8, it.y + h / 2 + 3, 9); ctx.fill(); tx += 22; }
+    txt(it.s, tx, it.y + h / 2 + 1, fs, '#6b3a1f', { align: 'left', shadow: false });
+    ctx.restore();
+  }
+  // 暫停鈕
+  button('pause', W - 114, 10, 48, 48, { icon: 'pause', color: 'white', radius: 24, onClick: () => setPaused(true) });
+}
+function setPaused(p) {
+  if (!G || G.phase === 'result') return;
+  G.paused = p;
+}
+function drawPlay() {
+  if (!bgBack) buildBackgrounds();
+  let sx = 0, sy = 0;
+  if (shakeT > 0) { const k = shakeAmt * Math.min(1, shakeT * 4); sx = (Math.random() * 2 - 1) * k; sy = (Math.random() * 2 - 1) * k; }
+  ctx.save(); ctx.translate(sx, sy);
+  ctx.drawImage(bgBack, 0, 0, W, H);
+  // 客人
+  for (const c of G.leaving) drawCustomer(c);
+  for (let i = 0; i < L.slots; i++) if (G.slots[i]) drawCustomer(G.slots[i]);
+  ctx.drawImage(bgFront, 0, 0, W, H);
+  const hint = computeHint();
+  for (let i = 0; i < L.slots; i++) if (G.slots[i]) drawBubble(G.slots[i], i);
+  for (const c of G.leaving) drawReactIcon(c);
+  // 指示：可以送餐
+  const d = G.drink;
+  if (d.sealed && !d.sealing) {
+    for (let i = 0; i < L.slots; i++) {
+      const c = G.slots[i];
+      if (!c || c.state !== 'wait') continue;
+      if (hint && hint.cust === i) hintArrow(L.slotX[i], L.by - 2);
+    }
+  }
+  // 工作台
+  drawPot();
+  drawTrash();
+  drawSealer();
+  const cp = cupDrawPos();
+  if (!cp.drag) drawCup(cp.x, cp.y, L.cupH, d);
+  else drawCup(L.cupX, L.cupBottom, L.cupH, newDrinkGhost);
+  if (d.sealed && !d.sealing && !cp.drag) {
+    const a = 0.5 + 0.5 * Math.sin(time * 6);
+    txt('拖給客人', L.cupX, L.cupBottom - L.cupH - L.cupH * 0.42, clamp(L.cupH * 0.13, 12, 18), '#fff', { stroke: 'rgba(232,70,124,' + (0.6 + 0.4 * a) + ')', sw: 5 });
+  }
+  if (hint && hint.sealer) hintArrow(L.sealX, L.cupBottom - L.sealH - 2);
+  if (hint && hint.pot) hintArrow(L.potX, L.potY - L.potR * 1.2);
+  if (hint && hint.trash) hintArrow(L.trashX, L.trashY - L.trashR * 1.3);
+  if (G.combo >= 2 && G.mode === 'day') {
+    const s = '連擊 x' + G.combo;
+    pill(8, L.work.y + 4, 92, 28, '#e8467c');
+    txt(s, 54, L.work.y + 19, 14, '#e8467c', { shadow: false });
+  }
+  drawStations(hint);
+  ctx.restore();
+  fx.draw();
+  if (cp.drag) drawCup(cp.x, cp.y, L.cupH, d);
+  // 飛行金幣
+  if (G.flyers.length && L.coinPill) {
+    for (const f of G.flyers) {
+      if (f.t < 0) continue;
+      const t = Ease.inCubic(f.t), x = lerp(f.x, L.coinPill.x, t), y = lerp(f.y, L.coinPill.y, t) - Math.sin(f.t * Math.PI) * 60;
+      coinIcon(x, y, 10);
+    }
+  }
+  // 訊息
+  if (G.msg) {
+    const a = clamp((2.2 - G.msg.t) * 3, 0, 1), s = G.msg.t < 0.2 ? Ease.outBack(G.msg.t / 0.2) : 1;
+    ctx.save(); ctx.globalAlpha = a;
+    const fs = clamp(L.left.w * 0.045, 14, 20);
+    ctx.font = '900 ' + fs + 'px ' + FONT;
+    const w = Math.min(L.left.w - 16, ctx.measureText(G.msg.s).width + 30), x = L.left.w / 2, y = L.work.y + 2 + fs;
+    ctx.translate(x, y); ctx.scale(s, s);
+    rr(-w / 2, -fs, w, fs * 2, fs); ctx.fillStyle = 'rgba(90,45,30,0.85)'; ctx.fill();
+    txt(G.msg.s, 0, 1, fitSize(G.msg.s, w - 20, fs), '#fff', { shadow: false });
+    ctx.restore();
+  }
+  drawHUD();
+  if (G.phase === 'intro') drawIntro();
+  else if (G.phase === 'result') drawResult();
+  else if (G.paused) drawPause();
+}
+const newDrinkGhost = newDrink();
+
+/* ---------- 卡片 ---------- */
+function card(x, y, w, h, col, title) {
+  ctx.fillStyle = 'rgba(70,35,20,0.45)'; ctx.fillRect(0, 0, W, H);
+  rr(x, y + 8, w, h, 26); ctx.fillStyle = 'rgba(80,40,20,0.3)'; ctx.fill();
+  rr(x, y, w, h, 26); ctx.fillStyle = '#fffaf2'; ctx.fill();
+  ctx.lineWidth = 6; ctx.strokeStyle = col; ctx.stroke();
+  rr(x + 9, y + 9, w - 18, h - 18, 19); ctx.lineWidth = 2; ctx.setLineDash([7, 7]); ctx.strokeStyle = rgba('#ffb3c6', 0.9); ctx.stroke(); ctx.setLineDash([]);
+  if (title) {
+    const bw = Math.min(w * 0.82, 300), bh = 46, by = y - bh * 0.45;
+    rr(x + w / 2 - bw / 2, by + 4, bw, bh, 14); ctx.fillStyle = shade(col, -60); ctx.fill();
+    rr(x + w / 2 - bw / 2, by, bw, bh, 14); ctx.fillStyle = col; ctx.fill();
+    txt(title, x + w / 2, by + bh / 2 + 1, fitSize(title, bw - 24, 24), '#fff', { stroke: shade(col, -70), sw: 6 });
+  }
+}
+function cardGeom(maxW, maxH) {
+  const w = Math.min(W - 24, maxW), h = Math.min(H - 70, maxH);
+  return { x: (W - w) / 2, y: Math.max(50, (H - h) / 2 + 14), w, h };
+}
+function drawIntro() {
+  const c = cardGeom(420, 470);
+  card(c.x, c.y, c.w, c.h, '#ff8fa8', '第 ' + G.day + ' 天');
+  const cx = W / 2, sm = c.h < 380;
+  let y = c.y + (sm ? 46 : 54);
+  const fs = sm ? 14 : 17;
+  txt('今天有 ' + G.total + ' 位客人', cx, y, fs, '#6b3a1f', { shadow: false }); y += fs * 1.7;
+  rr(c.x + 24, y - fs, c.w - 48, fs * 2.1, fs); ctx.fillStyle = '#fff1c9'; ctx.fill();
+  txt('目標：' + G.goal.text, cx, y + 1, fitSize('目標：' + G.goal.text, c.w - 64, fs), '#b06a00', { shadow: false }); y += fs * 2.2;
+  const news = G.newTeas.map(t => ({ kind: 'tea', item: t, id: t.id, name: t.name })).concat(G.newTops.map(t => ({ kind: 'top', item: t, id: t.id, name: t.name })));
+  if (news.length) {
+    txt('新材料！', cx, y, fs, '#e8467c', { shadow: false }); y += fs * 0.6;
+    const s = sm ? 34 : 46;
+    news.forEach((n, i) => {
+      const nx = cx + (i - (news.length - 1) / 2) * Math.min(s * 2.4, (c.w - 50) / news.length);
+      const sc = 1 + Math.sin(time * 4 + i) * 0.05;
+      ctx.save(); ctx.translate(nx, y + s * 0.7); ctx.scale(sc, sc);
+      ctx.fillStyle = n.kind === 'tea' ? KIND_COL.tea : KIND_COL.top; ctx.beginPath(); circ(0, 0, s * 0.7); ctx.fill();
+      drawStationIcon(n, 0, 0, s * 0.4);
+      ctx.restore();
+      txt(n.name, nx, y + s * 1.6, fs, '#6b3a1f', { shadow: false });
+    });
+    y += s * 2.1;
+  }
+  const tips = G.day === 1 ? ['照順序點：杯子→茶→料→冰→糖', '再按「封口」，拖給客人就完成！'] :
+    G.day === 2 ? ['點一下客人可以選他當目標', '泡泡裡變綠色就是做對的部分'] :
+    G.day === 3 ? ['珍珠用完要點鍋子煮，攪拌更快！', '快又正確可以拿到連擊小費'] : [];
+  for (const t of tips) { txt(t, cx, y, fitSize(t, c.w - 40, fs * 0.92), '#8a5a3c', { weight: '800', shadow: false }); y += fs * 1.5; }
+  const bh = sm ? 48 : 56, bw = Math.min(220, c.w - 60);
+  button('go', cx - bw / 2, c.y + c.h - bh - (sm ? 18 : 26), bw, bh, { label: '開店！', color: 'green', pulse: true, onClick: () => { G.phase = 'run'; KG.sound('pop'); Sfx.bell(); } });
+}
+function drawPause() {
+  const c = cardGeom(360, 330);
+  card(c.x, c.y, c.w, c.h, '#6cc4ff', '休息一下');
+  const bw = Math.min(240, c.w - 60), bh = Math.min(52, (c.h - 70) / 3.6), cx = W / 2;
+  let y = c.y + 42;
+  if (G.goal) { txt('目標：' + G.goal.text, cx, y, fitSize('目標：' + G.goal.text, c.w - 40, 15), '#8a5a3c', { shadow: false }); }
+  y += 24;
+  const gap = (c.y + c.h - 20 - y - bh * 3) / 2;
+  button('resume', cx - bw / 2, y, bw, bh, { label: '繼續', icon: 'play', color: 'green', onClick: () => setPaused(false) }); y += bh + gap;
+  if (G.mode === 'day') button('restart', cx - bw / 2, y, bw, bh, { label: '重新開始', icon: 'replay', color: 'yellow', onClick: () => startDay(G.day) });
+  else button('hints', cx - bw / 2, y, bw, bh, { label: G.hints ? '提示：開' : '提示：關', color: 'yellow', onClick: () => { G.hints = !G.hints; } });
+  y += bh + gap;
+  button('quit', cx - bw / 2, y, bw, bh, { label: '回選單', icon: 'menu', color: 'blue', onClick: () => goScene(G.mode === 'day' ? 'days' : 'title') });
+}
+function resultGeom() { return cardGeom(430, 480); }
+function resultStarPos(i) {
+  const c = resultGeom();
+  const s = c.h < 380 ? 0.75 : 1;
+  return [W / 2 + (i - 1) * 74 * s, c.y + 62 * s - (i === 1 ? 12 * s : 0)];
+}
+function drawResult() {
+  const R = G.result, c = resultGeom();
+  const s = R.panel.s;
+  ctx.save();
+  ctx.translate(W / 2, c.y + c.h / 2); ctx.scale(s, s); ctx.translate(-W / 2, -(c.y + c.h / 2));
+  const title = R.stars > 0 ? (G.day === MAXDAY ? '恭喜完成 30 天！' : '打烊囉！') : '再試一次吧！';
+  card(c.x, c.y, c.w, c.h, R.stars > 0 ? '#ffb02e' : '#b49cff', title);
+  const sm = c.h < 380, ss = sm ? 0.75 : 1;
+  for (let i = 0; i < 3; i++) {
+    const p = resultStarPos(i), on = i < R.shown && i < R.stars;
+    let k = 1;
+    if (on) { const tt = R.t - (0.6 + i * 0.38); k = tt < 0.4 ? Ease.outElastic(clamp(tt / 0.4, 0, 1)) : 1 + Math.sin(time * 3 + i) * 0.03; }
+    glossyStar(p[0], p[1], (i === 1 ? 34 : 28) * ss * (on ? k : 1), on);
+  }
+  const fs = sm ? 13 : 16, cx = W / 2;
+  let y = c.y + (sm ? 104 : 128);
+  const lines = [
+    '做對 ' + G.correct + ' 杯・做錯 ' + G.wrong + ' 杯・生氣離開 ' + G.angry + ' 位',
+    '收入 ' + G.earned + ' 元（小費 ' + G.tips + '）・最高連擊 ' + G.maxCombo,
+    (G.goal.done ? '✓ 目標達成：' : '✗ 目標沒達成：') + G.goal.text,
+    G.goal.done ? '目標獎金 +' + R.bonus + ' 元' : '做對 80% 再達成目標就有 3 顆星',
+    '錢包：' + Save.data.coins + ' 元'
+  ];
+  lines.forEach((l, i) => {
+    const col = i === 2 ? (G.goal.done ? '#3a9a52' : '#b0503a') : i === 4 ? '#b06a00' : '#6b3a1f';
+    txt(l, cx, y, fitSize(l, c.w - 36, fs), col, { shadow: false, weight: '800' }); y += fs * (sm ? 1.55 : 1.75);
+  });
+  const bh = sm ? 46 : 54, by = c.y + c.h - bh - (sm ? 16 : 24);
+  const ready = R.t > 0.5;
+  const btns = [];
+  btns.push({ id: 'rmenu', icon: 'menu', color: 'blue', cb: () => goScene('days') });
+  btns.push({ id: 'rretry', icon: 'replay', color: 'yellow', cb: () => startDay(G.day) });
+  if (R.stars > 0 && G.day < MAXDAY) btns.push({ id: 'rnext', label: '下一天', color: 'green', wide: true, cb: () => startDay(G.day + 1) });
+  btns.push({ id: 'rshop', label: '商店', color: 'pink', wide: true, cb: () => goScene('shop') });
+  const unit = bh * 1.15, wide = Math.min(118, (c.w - 40 - unit * 2) / 2 - 10), gap = 8;
+  const tot = btns.reduce((a, b) => a + (b.wide ? wide : unit), 0) + gap * (btns.length - 1);
+  let bx = cx - tot / 2;
+  for (const b of btns) {
+    const bw = b.wide ? wide : unit;
+    button(b.id, bx, by, bw, bh, { icon: b.icon, label: b.label, color: b.color, pulse: b.id === 'rnext', disabled: !ready, onClick: b.cb });
+    bx += bw + gap;
+  }
+  ctx.restore();
+}
+
+/* =====================================================================
+ * 畫面：標題、選天、商店
+ * ===================================================================== */
+const demoDrink = Object.assign(newDrink(), { size: 'L', tea: 'milk', tops: ['pearl'], topT: [9], ice: 'less', iceT: 9, sugar: 'half', sugarT: 9, fill: 1, sealed: true });
+function menuBg() {
+  if (!bgBack) buildBackgrounds();
+  ctx.drawImage(bgBack, 0, 0, W, H);
+  ctx.fillStyle = 'rgba(255,240,225,0.55)'; ctx.fillRect(0, 0, W, H);
+}
+function goScene(s) {
+  scene = s; sceneT = 0;
+  if (s !== 'play') { G = null; Music.start(SONG_MENU); }
+  shopScroll = 0;
+}
+function drawTitle() {
+  menuBg();
+  const land = W > H * 1.05;
+  const ty = land ? H * 0.2 : H * 0.15;
+  const ls = Math.min(W / 6.5, land ? H * 0.17 : 74);
+  logo('珍奶小店', W / 2, ty, ls, ['#ff7aa2', '#ffb347', '#8fcf6a', '#6cc4ff'], '#6b3a1f');
+  txt('開一家可愛的手搖飲料店！', W / 2, ty + ls * 0.85, Math.min(18, W / 22), '#8a4a2a', { shadow: false });
+  const cupH = land ? H * 0.36 : Math.min(H * 0.3, W * 0.52);
+  const cx = land ? W * 0.27 : W / 2 - cupH * 0.12, cyb = land ? H * 0.86 : ty + ls * 1.1 + cupH * 1.4;
+  // 貓咪客人站在櫃檯後
+  const cat = titleCat; cat.anim = time; cat.blinkT = (time % 3.3) < 0.12 ? 0 : 1;
+  const saveK = L.k, saveY = L.counterY;
+  L.k = cupH / 150; L.counterY = cyb - cupH * 0.12;
+  cat.x = cx + cupH * 0.62; drawCustomer(cat);
+  L.k = saveK; L.counterY = saveY;
+  const ctop = cyb - cupH * 0.12, cl = land ? 0 : 0, cw2 = land ? W * 0.55 : W;
+  ctx.fillStyle = '#c47a4a'; ctx.fillRect(cl, ctop, cw2, 14);
+  ctx.fillStyle = '#ff8fa8'; ctx.fillRect(cl, ctop + 5, cw2, 4);
+  ctx.fillStyle = '#f3cfa8'; ctx.fillRect(cl, ctop + 14, cw2, cyb - ctop + 6);
+  ctx.fillStyle = '#e6b88f'; ctx.fillRect(cl, cyb + 6, cw2, 10);
+  ctx.save(); ctx.translate(cx, cyb); ctx.rotate(Math.sin(time * 1.6) * 0.04); ctx.translate(-cx, -cyb);
+  drawCup(cx, cyb - Math.abs(Math.sin(time * 2)) * 6, cupH, demoDrink);
+  ctx.restore();
+  const bw = Math.min(280, W - 60), bh = 60;
+  const bx = land ? W * 0.62 - bw / 2 + 20 : W / 2 - bw / 2;
+  let by = land ? H * 0.42 : Math.min(H - 190, cyb + 50);
+  button('play', bx, by, bw, bh, { label: '開店營業', icon: 'play', color: 'green', pulse: true, onClick: () => goScene('days') });
+  by += bh + 18;
+  button('free', bx, by, bw, bh, { label: '自由模式', color: 'blue', onClick: () => startFree() });
+  by += bh + 22;
+  txt('星星 ' + Save.totalStars() + '/90 ・ 錢包 ' + Save.data.coins + ' 元', bx + bw / 2, by, 15, '#8a4a2a', { shadow: false });
+}
+const titleCat = { look: { kind: 'cat', kid: false, acc: '#ff6b9a' }, mood: 'happy', anim: 0, blinkT: 1, state: 'wait', x: 0, react: null };
+function drawDays() {
+  menuBg();
+  const land = W > H * 1.05;
+  txt('選擇營業日', W / 2, 34, Math.min(28, W / 13), '#fff', { stroke: '#e8467c', sw: 7 });
+  const tot = Save.totalStars();
+  ctx.font = '900 15px ' + FONT;
+  const s1 = '星星 ' + tot + '/90', s2 = Save.data.coins + ' 元';
+  const w1 = ctx.measureText(s1).width + 48, w2 = ctx.measureText(s2).width + 48;
+  const py = 64, px = W / 2 - (w1 + w2 + 10) / 2;
+  pill(px, py, w1, 32, '#ffb02e'); glossyStar(px + 18, py + 16, 10, true); txt(s1, px + 32, py + 17, 15, '#6b3a1f', { align: 'left', shadow: false });
+  pill(px + w1 + 10, py, w2, 32, '#f0b52a'); coinIcon(px + w1 + 28, py + 16, 9); txt(s2, px + w1 + 42, py + 17, 15, '#6b3a1f', { align: 'left', shadow: false });
+  const cols = land ? 10 : 5, rows = Math.ceil(MAXDAY / cols);
+  const top = 106, bottom = H - 80;
+  const gap = land ? 8 : 10;
+  let cw = Math.min(96, (W - 24 - gap * (cols - 1)) / cols);
+  let ch = Math.min(cw * 1.05, (bottom - top - gap * (rows - 1)) / rows);
+  cw = Math.min(cw, ch * 1.3);
+  const gx = (W - (cols * cw + gap * (cols - 1))) / 2, gy = top + Math.max(0, (bottom - top - rows * ch - gap * (rows - 1)) / 2);
+  const unl = Save.unlockedDay(), stars = Save.data.stars;
+  for (let i = 0; i < MAXDAY; i++) {
+    const x = gx + (i % cols) * (cw + gap), y = gy + Math.floor(i / cols) * (ch + gap);
+    const locked = i + 1 > unl;
+    const ap = Ease.outBack(clamp(sceneT * 5 - i * 0.06, 0, 1));
+    if (ap <= 0) continue;
+    ctx.save(); ctx.translate(x + cw / 2, y + ch / 2); ctx.scale(ap, ap); ctx.translate(-(x + cw / 2), -(y + ch / 2));
+    button('d' + i, x, y, cw, ch, { label: '', color: locked ? 'white' : (i + 1 === unl ? 'pink' : 'orange'), radius: 14, disabled: locked, pulse: i + 1 === unl, onClick: () => startDay(i + 1) });
+    if (locked) drawIcon('lock', x + cw / 2, y + ch * 0.45, Math.min(cw, ch) * 0.34, '#c4a594');
+    else {
+      txt(String(i + 1), x + cw / 2, y + ch * 0.4, ch * 0.36, '#fff', { stroke: 'rgba(110,50,30,0.5)', sw: ch * 0.07 });
+      for (let k = 0; k < 3; k++) glossyStar(x + cw / 2 + (k - 1) * cw * 0.27, y + ch * 0.8, Math.min(cw, ch) * 0.11, k < (stars[i] || 0));
+    }
+    ctx.restore();
+  }
+  const bw = Math.min(150, (W - 40) / 2), bh = 52, by = H - bh - 16;
+  button('back', W / 2 - bw - 8, by, bw, bh, { label: '返回', icon: 'back', color: 'white', onClick: () => goScene('title') });
+  button('shop', W / 2 + 8, by, bw, bh, { label: '升級商店', color: 'yellow', onClick: () => goScene('shop') });
+}
+let shopScroll = 0;
+function upLevel(u) { return u.kind === 'lv' ? Save.data.up[u.id] : (Save.data.decor[u.id] ? 1 : 0); }
+function upMax(u) { return u.kind === 'lv' ? u.max : 1; }
+function buyUpgrade(id) {
+  const u = UPGRADES.find(x => x.id === id);
+  if (!u) return false;
+  const lv = upLevel(u);
+  if (lv >= upMax(u)) return false;
+  const cost = u.cost[lv];
+  if (Save.data.coins < cost) { Sfx.no(); KG.toast('錢還不夠喔！還差 ' + (cost - Save.data.coins) + ' 元'); return false; }
+  Save.data.coins -= cost;
+  if (u.kind === 'lv') Save.data.up[u.id]++; else Save.data.decor[u.id] = true;
+  Save.save();
+  KG.sound('coin'); Sfx.ding();
+  bgBack = null;
+  return true;
+}
+function drawShop() {
+  menuBg();
+  txt('升級商店', W / 2, 34, Math.min(28, W / 13), '#fff', { stroke: '#f0a020', sw: 7 });
+  const s2 = Save.data.coins + ' 元';
+  ctx.font = '900 16px ' + FONT;
+  const w2 = ctx.measureText(s2).width + 50;
+  pill(W / 2 - w2 / 2, 62, w2, 32, '#f0b52a'); coinIcon(W / 2 - w2 / 2 + 18, 78, 9); txt(s2, W / 2 - w2 / 2 + 32, 79, 16, '#6b3a1f', { align: 'left', shadow: false });
+  const land = W > H * 1.05;
+  const cols = land || W > 700 ? 2 : 1, n = UPGRADES.length, rows = Math.ceil(n / cols);
+  const top = 104, bottom = H - 80, gap = 8;
+  const cw = Math.min(420, (W - 20 - gap * (cols - 1)) / cols);
+  const ch = clamp((bottom - top - gap * (rows - 1)) / rows, 46, 84);
+  const gx = (W - (cols * cw + gap * (cols - 1))) / 2;
+  for (let i = 0; i < n; i++) {
+    const u = UPGRADES[i], x = gx + (i % cols) * (cw + gap), y = top + Math.floor(i / cols) * (ch + gap);
+    rr(x, y + 3, cw, ch, 14); ctx.fillStyle = 'rgba(110,60,40,0.18)'; ctx.fill();
+    rr(x, y, cw, ch, 14); ctx.fillStyle = '#fffaf2'; ctx.fill(); ctx.strokeStyle = u.kind === 'lv' ? '#ffb02e' : '#8fcf6a'; ctx.lineWidth = 2.5; ctx.stroke();
+    const is = ch * 0.3;
+    ctx.fillStyle = u.kind === 'lv' ? '#fff1c9' : '#e6f7dc'; ctx.beginPath(); circ(x + ch * 0.5, y + ch / 2, ch * 0.38); ctx.fill();
+    const isc = u.id === 'neon' ? 0.45 : u.id === 'plant' ? 0.7 : u.id === 'bench' ? 0.6 : u.id === 'chime' ? 0.75 : 1;
+    drawDecor(u.id, x + ch * 0.5, y + ch * 0.55 + (u.id === 'plant' || u.id === 'bench' ? is * 0.55 : u.id === 'chime' ? -is * 0.5 : 0), is * isc, '#ff6b6b');
+    const lv = upLevel(u), mx = upMax(u);
+    const tx = x + ch + 2, bw = Math.min(96, cw * 0.28);
+    const nfs = clamp(ch * 0.24, 12, 17);
+    txt(u.name, tx, y + ch * 0.32, fitSize(u.name, cw - ch - bw - 20, nfs), '#6b3a1f', { align: 'left', shadow: false });
+    txt(u.desc, tx, y + ch * 0.62, fitSize(u.desc, cw - ch - bw - 20, nfs * 0.78), '#9a6a4a', { align: 'left', shadow: false, weight: '700' });
+    if (mx > 1) for (let k = 0; k < mx; k++) { ctx.beginPath(); circ(tx + 6 + k * 14, y + ch * 0.85, 4.5); ctx.fillStyle = k < lv ? '#ffb02e' : '#ead8c8'; ctx.fill(); }
+    const done = lv >= mx;
+    const cost = done ? 0 : u.cost[lv];
+    button('up' + u.id, x + cw - bw - 8, y + (ch - Math.min(44, ch - 12)) / 2, bw, Math.min(44, ch - 12), {
+      label: done ? (u.kind === 'lv' ? '滿級' : '已擁有') : '$' + cost, color: done ? 'white' : Save.data.coins >= cost ? 'green' : 'white',
+      size: 15, disabled: done, onClick: () => buyUpgrade(u.id)
+    });
+  }
+  const bw = Math.min(150, (W - 40) / 2), bh = 52, by = H - bh - 16;
+  button('back2', W / 2 - bw - 8, by, bw, bh, { label: '返回', icon: 'back', color: 'white', onClick: () => goScene('days') });
+  button('play2', W / 2 + 8, by, bw, bh, { label: '去營業', icon: 'play', color: 'green', onClick: () => startDay(Math.min(Save.unlockedDay(), MAXDAY)) });
+}
+
+/* =====================================================================
+ * 輸入
+ * ===================================================================== */
+function toLocal(e) {
+  const r = cv.getBoundingClientRect();
+  return [(e.clientX - r.left) * W / (r.width || 1), (e.clientY - r.top) * H / (r.height || 1)];
+}
+function stationAt(x, y) {
+  let best = null, bd = 30 * 30;
+  for (const b of L.btns) {
+    if (x >= b.x - 3 && x <= b.x + b.w + 3 && y >= b.y - 3 && y <= b.y + b.h + 3) return b;
+    const dx = Math.max(b.x - x, 0, x - b.x - b.w), dy = Math.max(b.y - y, 0, y - b.y - b.h);
+    const dd = dx * dx + dy * dy;
+    if (dd < bd) { bd = dd; best = b; }
+  }
+  return best;
+}
+function slotAt(x, y, loose) {
+  if (x > L.left.w) return -1;
+  if (y < L.custTop - 10 || y > L.counterY + (loose ? 50 : 8)) return -1;
+  let best = -1, bd = Infinity;
+  for (let i = 0; i < L.slots; i++) {
+    const c = G.slots[i];
+    if (!c || c.state !== 'wait') continue;
+    const d = Math.abs(x - L.slotX[i]);
+    if (d < bd && d < L.slotW * (loose ? 0.8 : 0.55)) { bd = d; best = i; }
+  }
+  return best;
+}
+function cupHit(x, y) {
+  return Math.abs(x - L.cupX) < L.cupH * 0.45 && y > L.cupBottom - L.cupH * 1.35 && y < L.cupBottom + 12;
+}
+function playDown(x, y) {
+  if (G.phase !== 'run' || G.paused) return;
+  const d = G.drink;
+  // 操作台
+  const P = L.panel;
+  if (x >= P.x - 4 && x <= P.x + P.w + 4 && y >= P.y - 4 && y <= P.y + P.h + 4) {
+    const b = stationAt(x, y);
+    if (b) pressStation(b.kind, b.id);
+    return;
+  }
+  if (d.sealed && !d.sealing && cupHit(x, y)) { G.drag = { x, y, sx: x, sy: y, moved: false }; KG.note(700, 0.06, 'sine', 0.12); return; }
+  const g = sealGeom();
+  if (x >= g.x - 10 && x <= g.x + g.w + 10 && y >= g.y - 10 && y <= g.by + 14) { pressSeal(); return; }
+  if (Math.hypot(x - L.potX, y - (L.potY - L.potR * 0.2)) < L.potR * 1.45) { cookPearls(); return; }
+  if (Math.hypot(x - L.trashX, y - L.trashY) < L.trashR * 1.7) { trashDrink(); return; }
+  if (!d.sealed && cupHit(x, y)) { if (!d.size) say('先選杯子 ①'); else if (!d.sugar) say(nextNeed()); return; }
+  const si = slotAt(x, y, false);
+  if (si >= 0) {
+    if (d.sealed && !d.sealing) serve(si);
+    else { G.focus = si; KG.note(900, 0.06, 'sine', 0.1); }
+  }
+}
+function playMove(x, y) {
+  const dr = G && G.drag;
+  if (!dr) return;
+  dr.x = x; dr.y = y;
+  if (!dr.moved && Math.hypot(x - dr.sx, y - dr.sy) > 12) dr.moved = true;
+}
+function playUp(x, y) {
+  const dr = G && G.drag;
+  if (!dr) return;
+  G.drag = null;
+  if (dr.moved) {
+    const si = slotAt(x, y, true);
+    if (si >= 0) serve(si);
+    else { Sfx.no(); say('拖到客人身上就能送出'); }
+  } else {
+    // 點一下杯子：自動送給點這杯的客人
+    let si = -1;
+    for (let i = 0; i < L.slots; i++) { const c = G.slots[i]; if (c && c.state === 'wait' && checkOrder(c.order, G.drink).ok) { si = i; break; } }
+    if (si >= 0) serve(si);
+    else say('沒有人點這杯…拖給客人或丟掉重做');
+  }
+}
+cv.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  kbOn = false;
+  const [x, y] = toLocal(e);
+  const b = hitBtn(x, y);
+  if (b) { pressed = { id: b.id, pid: e.pointerId }; KG.note(880, 0.05, 'sine', 0.12); return; }
+  if (scene === 'play' && G) { try { cv.setPointerCapture(e.pointerId); } catch (er) { /* 忽略 */ } playDown(x, y); }
+});
+cv.addEventListener('pointermove', (e) => { if (scene === 'play' && G) { const [x, y] = toLocal(e); playMove(x, y); } });
+function endPointer(e, cancel) {
+  const [x, y] = toLocal(e);
+  if (pressed && pressed.pid === e.pointerId) {
+    const b = hitBtn(x, y), id = pressed.id;
+    pressed = null;
+    if (!cancel && b && b.id === id && b.onClick) { KG.sound('pop'); b.onClick(); }
+    return;
+  }
+  if (scene === 'play' && G) { if (cancel) G.drag = null; else playUp(x, y); }
+}
+cv.addEventListener('pointerup', (e) => endPointer(e, false));
+cv.addEventListener('pointercancel', (e) => endPointer(e, true));
+cv.addEventListener('contextmenu', (e) => e.preventDefault());
+
+window.addEventListener('keydown', (e) => {
+  const k = e.key;
+  if (scene === 'play' && G) {
+    if (G.phase === 'intro' && (k === 'Enter' || k === ' ')) { G.phase = 'run'; Sfx.bell(); e.preventDefault(); return; }
+    if (G.phase === 'result') {
+      if (k === 'Enter' || k === ' ') { if (G.result.t > 0.5) { if (G.result.stars > 0 && G.day < MAXDAY) startDay(G.day + 1); else startDay(G.day); } e.preventDefault(); }
+      return;
+    }
+    if (k === 'Escape' || k === 'p' || k === 'P') { setPaused(!G.paused); e.preventDefault(); return; }
+    if (G.paused) { if (k === 'Enter') setPaused(false); return; }
+    if (G.phase !== 'run') return;
+    if (k.startsWith('Arrow')) {
+      e.preventDefault();
+      if (!kbOn || kbIdx < 0) { kbOn = true; kbIdx = 0; return; }
+      kbOn = true;
+      const cur = L.btns[kbIdx];
+      if (k === 'ArrowLeft') kbIdx = Math.max(0, kbIdx - 1);
+      else if (k === 'ArrowRight') kbIdx = Math.min(L.btns.length - 1, kbIdx + 1);
+      else {
+        const tr = cur.row + (k === 'ArrowDown' ? 1 : -1);
+        let best = -1, bd = Infinity;
+        L.btns.forEach((b, i) => { if (b.row === tr) { const dd = Math.abs(b.x + b.w / 2 - cur.x - cur.w / 2); if (dd < bd) { bd = dd; best = i; } } });
+        if (best >= 0) kbIdx = best;
+      }
+      return;
+    }
+    if ((k === 'Enter') && kbOn && kbIdx >= 0) { const b = L.btns[kbIdx]; pressStation(b.kind, b.id); e.preventDefault(); return; }
+    if (k === ' ' || k === 's' || k === 'S') { pressSeal(); e.preventDefault(); return; }
+    if (k === 'Backspace' || k === 'Delete' || k === 'x' || k === 'X') { trashDrink(); e.preventDefault(); return; }
+    if (k === 'c' || k === 'C') { cookPearls(); return; }
+    if (k >= '1' && k <= '3') {
+      const i = +k - 1;
+      if (G.drink.sealed && !G.drink.sealing) serve(i); else if (G.slots[i]) G.focus = i;
+    }
+    return;
+  }
+  if (k === 'Enter' || k === ' ') {
+    if (scene === 'title') goScene('days');
+    else if (scene === 'days') startDay(Save.unlockedDay());
+    else if (scene === 'shop') goScene('days');
+    e.preventDefault();
+  } else if (k === 'Escape') {
+    if (scene === 'days') goScene('title'); else if (scene === 'shop') goScene('days');
+  }
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { Music.next = 0.2; if (G && scene === 'play' && G.phase === 'run') G.paused = true; }
+});
+
+/* =====================================================================
+ * 主迴圈
+ * ===================================================================== */
+function resizeCanvas() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const r = cv.getBoundingClientRect();
+  W = Math.round(r.width) || innerWidth; H = Math.round(r.height) || innerHeight;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  U = clamp(Math.min(W / 400, H / 700), 0.75, 1.4);
+  layout();
+  if (G) for (let i = 0; i < L.slots; i++) { const c = G.slots[i]; if (c && c.state !== 'in') c.x = L.slotX[i]; }
+}
+window.addEventListener('resize', resizeCanvas);
+window.addEventListener('orientationchange', () => setTimeout(resizeCanvas, 150));
+if (window.visualViewport) window.visualViewport.addEventListener('resize', resizeCanvas);
+
+function tick(dt) {
+  sceneT += dt;
+  if (shakeT > 0) shakeT -= dt;
+  updateTweens(dt);
+  fx.update(dt);
+  if (scene === 'play' && G) updatePlay(dt);
+}
+let lastFrame = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, Math.max(0, (now - lastFrame) / 1000));
+  lastFrame = now;
+  time += dt;
+  if (!document.hidden) {
+    tick(dt);
+    Music.update(dt);
+    btnReg = [];
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    if (scene === 'title') drawTitle();
+    else if (scene === 'days') drawDays();
+    else if (scene === 'shop') drawShop();
+    else if (scene === 'play' && G) drawPlay();
+    if (scene !== 'play') fx.draw();
+  }
+  requestAnimationFrame(frame);
+}
+
+/* ---------- 測試用接口 ---------- */
+window.__bt = {
+  state() {
+    const o = { scene, coins: Save.data.coins, stars: Save.data.stars.slice(), up: Object.assign({}, Save.data.up), decor: Object.assign({}, Save.data.decor) };
+    if (G) Object.assign(o, {
+      mode: G.mode, day: G.day, phase: G.phase, paused: G.paused, served: G.served, correct: G.correct, wrong: G.wrong, angry: G.angry,
+      earned: G.earned, tips: G.tips, combo: G.combo, maxCombo: G.maxCombo, total: G.total, queue: G.queue ? G.queue.length : null,
+      goal: G.goal ? { type: G.goal.type, text: G.goal.text, done: G.goal.done, prog: goalProgress() } : null,
+      pot: { n: G.pot.n, cap: G.pot.cap, cooking: G.pot.cooking },
+      drink: { size: G.drink.size, tea: G.drink.tea, tops: G.drink.tops.slice(), ice: G.drink.ice, sugar: G.drink.sugar, sealed: G.drink.sealed, sealing: !!G.drink.sealing },
+      customers: G.slots.map(c => c ? { state: c.state, order: JSON.parse(JSON.stringify(c.order)), pat: c.pat, patMax: c.patMax, kind: c.look.kind } : null),
+      result: G.result ? { stars: G.result.stars } : null
+    });
+    return o;
+  },
+  start(day) { startDay(day); G.phase = 'run'; return true; },
+  startFree() { return startFree(); },
+  scene(s) { goScene(s); return scene; },
+  press: pressStation, seal: pressSeal, trash: trashDrink, cook: cookPearls, serve, buy: buyUpgrade,
+  /** 依訂單一步步做飲料並開始封口；回傳是否成功 */
+  make(order) {
+    if (!G || G.phase !== 'run') return false;
+    if (G.drink.size) trashDrink();
+    if (!pressStation('size', order.size)) return false;
+    if (!pressStation('tea', order.tea)) return false;
+    for (const t of order.tops) if (!pressStation('top', t)) return false;
+    if (!pressStation('ice', order.ice)) return false;
+    if (!pressStation('sugar', order.sugar)) return false;
+    return pressSeal();
+  },
+  step(n) { for (let i = 0; i < (n || 1); i++) tick(1 / 60); return this.state(); },
+  check: checkOrder, price: priceOf, gen: genOrder, dayCfg, makeGoal,
+  setCoins(v) { Save.data.coins = v; Save.save(); },
+  reset() { KG.store.set(SLUG + ':save', null); Save.load(); },
+  layout() { return { land: L.land, panel: L.panel, btns: L.btns.map(b => ({ kind: b.kind, id: b.id, x: b.x, y: b.y, w: b.w, h: b.h })), cup: { x: L.cupX, bottom: L.cupBottom, h: L.cupH }, seal: sealGeom(), pot: { x: L.potX, y: L.potY, r: L.potR }, trash: { x: L.trashX, y: L.trashY, r: L.trashR }, slotX: L.slotX.slice(), counterY: L.counterY, custTop: L.custTop, by: L.by, bh: L.bh }; },
+  btns() { return btnReg.map(b => ({ id: b.id, x: b.x, y: b.y, w: b.w, h: b.h, disabled: !!b.disabled })); },
+  finish() { if (G && G.mode === 'day') { G.queue.length = 0; G.slots.fill(null); G.leaving.length = 0; } }
+};
+
+resizeCanvas();
+Music.start(SONG_MENU);
+requestAnimationFrame((t) => { lastFrame = t; frame(t); });
+</script>
+</body>
+</html>

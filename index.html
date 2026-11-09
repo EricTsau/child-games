@@ -491,6 +491,49 @@
   .ios-tip button { font-family: var(--kg-font); border: none; cursor: pointer; }
   .ios-tip .go { background: #3fb25d; color: #fff; font-weight: 900; font-size: 15px; padding: 9px 14px; border-radius: 999px; }
   .ios-tip .x { background: none; font-size: 22px; color: #9a8fa5; padding: 4px; }
+  /* ---------- 檢查更新 ---------- */
+  .hbtns { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 8px 10px; margin-top: 12px; }
+  .hbtns .install { margin-top: 0; }
+  .update {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--kg-font);
+    font-size: 15px;
+    font-weight: 800;
+    color: #2f6f9a;
+    background: rgba(255, 255, 255, 0.92);
+    border: 2px solid #fff;
+    border-radius: 999px;
+    padding: 6px 14px 6px 10px;
+    box-shadow: 0 3px 0 rgba(74, 59, 82, 0.12);
+    cursor: pointer;
+  }
+  .update[hidden] { display: none; }
+  .update svg { width: 20px; height: 20px; flex: none; }
+  .update.spin svg { animation: spin 0.9s linear infinite; }
+  .update:active { transform: translateY(2px); box-shadow: none; }
+  .upd-bar {
+    position: fixed;
+    left: 50%;
+    bottom: calc(14px + env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+    z-index: 9450;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 10px 10px 18px;
+    border-radius: 999px;
+    background: #4a3b52;
+    color: #fff;
+    font-weight: 800;
+    font-size: 16px;
+    white-space: nowrap;
+    box-shadow: 0 10px 30px rgba(40, 30, 60, 0.35);
+    animation: kg-pop 0.35s cubic-bezier(0.2, 1.6, 0.4, 1);
+  }
+  .upd-bar[hidden] { display: none; }
+  .upd-bar button { font-family: var(--kg-font); font-size: 15px; font-weight: 900; border: none; border-radius: 999px; padding: 8px 16px; background: #3fb25d; color: #fff; cursor: pointer; }
   @media (prefers-reduced-motion: reduce) {
     .cloud, .sun, .logo span, .game, .install { animation: none; }
   }
@@ -542,10 +585,16 @@
   <div class="logo-wrap">
     <h1 class="logo" id="logo" aria-label="小朋友遊戲樂園"></h1>
     <div class="sub">86 個好玩的小遊戲・手機、平板、電腦都能玩</div>
+    <div class="hbtns">
     <button class="install" id="installBtn" type="button" hidden>
       <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="1.5" width="14" height="21" rx="3" fill="#fff"/><rect x="7" y="4" width="10" height="14" rx="1" fill="#bdeccd"/><path d="M12 6v7m-3-3 3 3 3-3" stroke="#2b9a57" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="20" r="1" fill="#2b9a57"/></svg>
       <span>安裝成 App</span>
     </button>
+    <button class="update" id="updateBtn" type="button" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66" stroke="#2f93cf" stroke-width="2.6" fill="none" stroke-linecap="round"/><path d="M20 4v5h-5" stroke="#2f93cf" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>檢查更新</span>
+    </button>
+    </div>
   </div>
 </header>
 
@@ -588,6 +637,11 @@
   <div class="t"><b>把遊戲樂園放到主畫面</b>之後在主畫面點圖示就能直接玩，不用再開瀏覽器</div>
   <button class="go" id="iosTipGo" type="button">教我</button>
   <button class="x" id="iosTipX" type="button" aria-label="關閉">✕</button>
+</div>
+
+<div class="upd-bar" id="updBar" hidden role="status">
+  <span>有新版本了！</span>
+  <button type="button">立即更新</button>
 </div>
 
 <script src="assets/common.js"></script>
@@ -1057,6 +1111,61 @@
         });
       }).catch(function () {});
     }
+  })();
+
+  /* ---------- 檢查更新：安裝成 App 後，按一下就換成網站上的最新版 ---------- */
+  (function () {
+    if (!('serviceWorker' in navigator) || location.protocol === 'file:' || !window.caches) return;
+    var btn = document.getElementById('updateBtn');
+    var bar = document.getElementById('updBar');
+    var MARK = new URL('__updated', location.href).href;
+    btn.hidden = false;
+
+    // Service Worker 在背景發現新版時會留下記號，這裡看到就跳出提示
+    function checkMark() { caches.match(MARK).then(function (r) { if (r) bar.hidden = false; }).catch(function () {}); }
+    navigator.serviceWorker.addEventListener('message', function (e) { if (e.data && e.data.type === 'updated') bar.hidden = false; });
+    setTimeout(checkMark, 2500);
+    setTimeout(checkMark, 8000);
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) checkMark(); });
+
+    function reloadFresh() {
+      caches.keys().then(function (ks) {
+        return Promise.all(ks.map(function (k) { return caches.open(k).then(function (c) { return c.delete(MARK); }); }));
+      }).catch(function () {}).then(function () { location.reload(); });
+    }
+    bar.querySelector('button').addEventListener('click', function () { KG.sound('click'); reloadFresh(); });
+
+    var busy = false;
+    btn.addEventListener('click', function () {
+      if (busy) return;
+      busy = true;
+      KG.sound('click');
+      var label = btn.querySelector('span');
+      label.textContent = '檢查中…';
+      btn.classList.add('spin');
+      var timer = 0;
+      function done(msg, reload) {
+        clearTimeout(timer);
+        busy = false;
+        btn.classList.remove('spin');
+        label.textContent = '檢查更新';
+        KG.toast(msg);
+        if (reload) setTimeout(reloadFresh, 900);
+      }
+      if (navigator.onLine === false) { done('沒有網路，連上網路後再試一次'); return; }
+      navigator.serviceWorker.ready.then(function (reg) {
+        if (!reg.active) { done('更新功能還沒準備好，請稍後再試'); return; }
+        var ch = new MessageChannel();
+        timer = setTimeout(function () { done('網路有點慢，請稍後再試一次'); }, 90000);
+        ch.port1.onmessage = function (e) {
+          var r = e.data || {};
+          if (!r.checked && r.failed) done('沒有網路，連上網路後再試一次');
+          else if (r.changed) done('找到新版本，正在更新…', true);
+          else done('已經是最新版本了！');
+        };
+        reg.active.postMessage({ type: 'refresh' }, [ch.port2]);
+      }).catch(function () { done('更新失敗，請稍後再試'); });
+    });
   })();
 </script>
 </body>

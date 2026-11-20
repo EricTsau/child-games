@@ -1,0 +1,2648 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>認識錢幣</title>
+<link rel="stylesheet" href="../../assets/common.css">
+<style>
+  html, body { height: 100%; overflow: hidden; background: #fff3dc; overscroll-behavior: none; }
+  #game {
+    position: fixed; inset: 0; display: block;
+    width: 100vw; height: 100vh; height: 100dvh;
+    touch-action: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" aria-label="認識錢幣"></canvas>
+<script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+ * 認識錢幣：給小朋友認識新臺幣（1、5、10、50 元硬幣，100、500、1000 元紙鈔）
+ * 認識錢幣頁＋五個小遊戲（數一數、湊湊看、開店囉、比比看、存錢筒），每個 6 關。
+ * 所有圖案都用程式畫（不是真的鈔票圖樣），聲音用 kg-music.js 合成。
+ * ===================================================================== */
+const SLUG = 'money-shop';
+const cv = document.getElementById('game');
+let ctx = cv.getContext('2d');
+const FONT = '"Baloo 2","PingFang TC","Noto Sans TC","Microsoft JhengHei","Heiti TC",system-ui,sans-serif';
+let W = 0, H = 0, dpr = 1, U = 1, UO = 1, time = 0;
+
+/* ---------- 數學與緩動 ---------- */
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const TAU = Math.PI * 2;
+const Ease = {
+  outCubic: t => 1 - Math.pow(1 - t, 3),
+  inOutSine: t => -(Math.cos(Math.PI * t) - 1) / 2,
+  outBack: t => { const c = 1.70158, c3 = c + 1; return 1 + c3 * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); },
+  outElastic: t => (t === 0 || t === 1) ? t : Math.pow(2, -10 * t) * Math.sin((t * 10 - 0.75) * (TAU / 3)) + 1
+};
+const sum = a => { let s = 0; for (const v of a) s += v; return s; };
+const inRect = (x, y, r, pad) => r && x >= r.x - (pad || 0) && x <= r.x + r.w + (pad || 0) && y >= r.y - (pad || 0) && y <= r.y + r.h + (pad || 0);
+
+/* ---------- 補間動畫 ---------- */
+let tweens = [];
+function tween(obj, to, dur, ease, delay, done) {
+  const tw = { obj, to, from: null, dur: dur || 0.3, ease: typeof ease === 'function' ? ease : (Ease[ease] || Ease.outCubic), t: -(delay || 0), done };
+  tweens.push(tw);
+  return tw;
+}
+function updateTweens(dt) {
+  if (!tweens.length) return;
+  const list = tweens.slice();
+  for (const tw of list) {
+    tw.t += dt;
+    if (tw.t < 0) continue;
+    if (!tw.from) { tw.from = {}; for (const k in tw.to) tw.from[k] = tw.obj[k]; }
+    const p = Math.min(1, tw.t / tw.dur), e = tw.ease(p);
+    for (const k in tw.to) tw.obj[k] = tw.from[k] + (tw.to[k] - tw.from[k]) * e;
+    if (p >= 1) { const i = tweens.indexOf(tw); if (i >= 0) tweens.splice(i, 1); if (tw.done) tw.done(); }
+  }
+}
+
+/* ---------- 畫面震動 ---------- */
+let shakeT = 0, shakeAmt = 0;
+function shake(amt, dur) { shakeAmt = amt; shakeT = Math.max(shakeT, dur || 0.25); }
+
+/* ---------- 繪圖小工具 ---------- */
+function circ(x, y, r) { ctx.moveTo(x + r, y); ctx.arc(x, y, r, 0, TAU); }
+function rr(x, y, w, h, r) {
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+function starPath(x, y, R, r, rot) {
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const a = (rot || 0) + i * Math.PI / 5 - Math.PI / 2, rad = i % 2 ? r : R;
+    ctx.lineTo(x + Math.cos(a) * rad, y + Math.sin(a) * rad);
+  }
+  ctx.closePath();
+}
+function heartPath(x, y, s) {
+  ctx.beginPath();
+  ctx.moveTo(x, y + s * 0.35);
+  ctx.bezierCurveTo(x - s * 1.1, y - s * 0.35, x - s * 0.55, y - s * 1.05, x, y - s * 0.45);
+  ctx.bezierCurveTo(x + s * 0.55, y - s * 1.05, x + s * 1.1, y - s * 0.35, x, y + s * 0.35);
+  ctx.closePath();
+}
+function shade(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  const f = v => clamp(v + amt, 0, 255);
+  return 'rgb(' + f(n >> 16) + ',' + f((n >> 8) & 255) + ',' + f(n & 255) + ')';
+}
+function rgba(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return 'rgba(' + (n >> 16) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+}
+function glossyStar(x, y, R, on, rot) {
+  ctx.save();
+  ctx.lineJoin = 'round';
+  if (on) {
+    ctx.fillStyle = 'rgba(160,90,0,0.25)'; starPath(x, y + R * 0.12, R, R * 0.5, rot); ctx.fill();
+    const g = ctx.createRadialGradient(x - R * 0.3, y - R * 0.4, R * 0.1, x, y, R * 1.1);
+    g.addColorStop(0, '#fffbd0'); g.addColorStop(0.45, '#ffd93d'); g.addColorStop(1, '#f39a0c');
+    ctx.fillStyle = g; ctx.strokeStyle = '#c9700a'; ctx.lineWidth = Math.max(1.5, R * 0.12);
+    starPath(x, y, R, R * 0.5, rot); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.75)';
+    ctx.beginPath(); ctx.ellipse(x - R * 0.25, y - R * 0.3, R * 0.22, R * 0.12, -0.6, 0, TAU); ctx.fill();
+  } else {
+    ctx.fillStyle = 'rgba(90,70,110,0.22)'; ctx.strokeStyle = 'rgba(90,70,110,0.35)'; ctx.lineWidth = Math.max(1.5, R * 0.1);
+    starPath(x, y, R, R * 0.5, rot); ctx.fill(); ctx.stroke();
+  }
+  ctx.restore();
+}
+/** 有外框與陰影的字 */
+function txt(s, x, y, size, fill, o) {
+  o = o || {};
+  ctx.save();
+  ctx.font = (o.weight || '900') + ' ' + size + 'px ' + FONT;
+  ctx.textAlign = o.align || 'center';
+  ctx.textBaseline = o.base || 'middle';
+  ctx.lineJoin = 'round';
+  if (o.shadow !== false) {
+    ctx.fillStyle = o.shadow || 'rgba(60,30,70,0.28)';
+    if (o.stroke) { ctx.strokeStyle = ctx.fillStyle; ctx.lineWidth = o.sw || size * 0.22; ctx.strokeText(s, x, y + size * 0.09); }
+    ctx.fillText(s, x, y + size * 0.09);
+  }
+  if (o.stroke) { ctx.strokeStyle = o.stroke; ctx.lineWidth = o.sw || size * 0.22; ctx.strokeText(s, x, y); }
+  ctx.fillStyle = fill; ctx.fillText(s, x, y);
+  ctx.restore();
+}
+/** 量字：超過寬度就縮小 */
+function fitSize(s, maxW, size, weight) {
+  ctx.font = (weight || '900') + ' ' + size + 'px ' + FONT;
+  const w = ctx.measureText(s).width;
+  return w > maxW ? Math.max(9, size * maxW / w) : size;
+}
+const PUNCT = '，。！？、：）」';
+function wrapLines(s, maxW, size, weight) {
+  ctx.font = (weight || '800') + ' ' + size + 'px ' + FONT;
+  const lines = []; let cur = '';
+  for (const ch of s) {
+    const t = cur + ch;
+    if (ctx.measureText(t).width > maxW && cur && PUNCT.indexOf(ch) < 0) { lines.push(cur); cur = ch; } else cur = t;
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+/** 遊戲標題字：每個字會彈跳 */
+function logo(s, cx, cy, size, colors, outline) {
+  ctx.save();
+  ctx.font = '900 ' + size + 'px ' + FONT;
+  ctx.textBaseline = 'middle'; ctx.textAlign = 'center'; ctx.lineJoin = 'round';
+  const chars = [...s];
+  const widths = chars.map(c => ctx.measureText(c).width * 1.04);
+  const total = widths.reduce((a, b) => a + b, 0);
+  let x = cx - total / 2;
+  chars.forEach((c, i) => {
+    const w = widths[i];
+    const bob = Math.sin(time * 3 + i * 0.7) * size * 0.06;
+    const rot = Math.sin(time * 2.2 + i) * 0.06;
+    ctx.save();
+    ctx.translate(x + w / 2, cy + bob); ctx.rotate(rot);
+    ctx.strokeStyle = 'rgba(60,30,70,0.3)'; ctx.lineWidth = size * 0.36;
+    ctx.strokeText(c, 0, size * 0.1);
+    ctx.strokeStyle = outline || '#6b3a12'; ctx.lineWidth = size * 0.34; ctx.strokeText(c, 0, 0);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = size * 0.17; ctx.strokeText(c, 0, 0);
+    const col = colors[i % colors.length];
+    const g = ctx.createLinearGradient(0, -size / 2, 0, size / 2);
+    g.addColorStop(0, shade(col, 70)); g.addColorStop(0.5, col); g.addColorStop(1, shade(col, -35));
+    ctx.fillStyle = g; ctx.fillText(c, 0, 0);
+    ctx.globalAlpha = 0.55; ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.ellipse(-w * 0.18, -size * 0.25, size * 0.1, size * 0.05, -0.5, 0, TAU); ctx.fill();
+    ctx.restore();
+    x += w;
+  });
+  ctx.restore();
+}
+function hudPanel(x, y, w, h, col, r) {
+  rr(x, y + 4, w, h, r == null ? h / 2 : r); ctx.fillStyle = 'rgba(60,30,70,0.18)'; ctx.fill();
+  rr(x, y, w, h, r == null ? h / 2 : r);
+  ctx.fillStyle = '#fffdf8'; ctx.fill();
+  ctx.strokeStyle = col; ctx.lineWidth = 3; ctx.stroke();
+}
+function progressBar(x, y, w, h, p, col) {
+  rr(x, y + 3, w, h, h / 2); ctx.fillStyle = 'rgba(60,30,70,0.2)'; ctx.fill();
+  rr(x, y, w, h, h / 2); ctx.fillStyle = '#fff'; ctx.fill();
+  ctx.strokeStyle = shade(col, -60); ctx.lineWidth = 2.5; ctx.stroke();
+  if (p > 0) {
+    const pw = Math.max(h - 6, (w - 6) * clamp(p, 0, 1));
+    rr(x + 3, y + 3, pw, h - 6, (h - 6) / 2);
+    ctx.fillStyle = col; ctx.fill();
+    rr(x + 3 + h * 0.3, y + 4.5, Math.max(0, pw - h * 0.6), (h - 6) * 0.3, 3); ctx.fillStyle = 'rgba(255,255,255,0.55)'; ctx.fill();
+  }
+}
+/** 把東西畫進離屏畫布 */
+function paintTo(canvas, fn) {
+  const old = ctx;
+  ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  try { fn(); } finally { ctx = old; }
+}
+
+/* ---------- 粒子（有上限） ---------- */
+const MAX_FX = 220;
+class FX {
+  constructor() { this.list = []; }
+  burst(x, y, o) {
+    o = o || {};
+    const n = Math.min(o.n || 14, MAX_FX - this.list.length), cols = o.colors || ['#ffe066', '#ff8fb1', '#7bd88f', '#6cc4ff', '#ffffff'];
+    for (let i = 0; i < n; i++) {
+      const a = o.dir != null ? o.dir + (Math.random() - 0.5) * (o.spread || 1.2) : Math.random() * TAU;
+      const sp = (o.speed || 220) * (0.4 + Math.random() * 0.8);
+      this.list.push({
+        x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - (o.up || 0),
+        life: (o.life || 0.8) * (0.7 + Math.random() * 0.5), max: o.life || 0.8,
+        size: (o.size || 7) * (0.6 + Math.random() * 0.7), color: cols[i % cols.length],
+        shape: o.shape || 'star', rot: Math.random() * TAU, vr: (Math.random() - 0.5) * 8,
+        g: o.g == null ? 500 : o.g, drag: o.drag == null ? 0.97 : o.drag
+      });
+    }
+  }
+  text(x, y, s, o) {
+    o = o || {};
+    if (this.list.length >= MAX_FX) return;
+    this.list.push({ shape: 'text', x, y, vx: 0, vy: o.vy || -70, s, color: o.color || '#fff', size: o.size || 26,
+      stroke: o.stroke || '#6b3a12', life: o.life || 1, max: o.life || 1, g: 0, drag: 1, rot: 0, vr: 0, pop: 0 });
+  }
+  ring(x, y, color, r, life) {
+    if (this.list.length >= MAX_FX) return;
+    this.list.push({ shape: 'ring', x, y, vx: 0, vy: 0, color: color || '#fff', size: r || 40, life: life || 0.5, max: life || 0.5, g: 0, drag: 1, rot: 0, vr: 0 });
+  }
+  update(dt) {
+    const L = this.list;
+    let j = 0;
+    for (let i = 0; i < L.length; i++) {
+      const p = L[i];
+      p.life -= dt;
+      if (p.life <= 0) continue;
+      p.vy += p.g * dt;
+      const d = Math.pow(p.drag, dt * 60);
+      p.vx *= d; p.vy *= d;
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      p.rot += p.vr * dt;
+      if (p.pop != null) p.pop += dt;
+      L[j++] = p;
+    }
+    L.length = j;
+  }
+  draw() {
+    for (const p of this.list) {
+      const a = clamp(p.life / p.max, 0, 1);
+      ctx.save();
+      ctx.globalAlpha = p.shape === 'text' ? Math.min(1, a * 2) : Math.min(1, a * 1.6);
+      ctx.translate(p.x, p.y); ctx.rotate(p.rot);
+      const s = p.size;
+      if (p.shape === 'star') { ctx.fillStyle = p.color; starPath(0, 0, s, s * 0.45, 0); ctx.fill(); }
+      else if (p.shape === 'sparkle') {
+        ctx.fillStyle = p.color; ctx.beginPath();
+        ctx.moveTo(0, -s); ctx.quadraticCurveTo(0, 0, s, 0); ctx.quadraticCurveTo(0, 0, 0, s); ctx.quadraticCurveTo(0, 0, -s, 0); ctx.quadraticCurveTo(0, 0, 0, -s); ctx.fill();
+      }
+      else if (p.shape === 'heart') { ctx.fillStyle = p.color; heartPath(0, 0, s); ctx.fill(); }
+      else if (p.shape === 'circle') { ctx.fillStyle = p.color; ctx.beginPath(); circ(0, 0, s * a + 1); ctx.fill(); }
+      else if (p.shape === 'ring') { const k = 1 - a; ctx.strokeStyle = p.color; ctx.lineWidth = 6 * a + 1; ctx.beginPath(); circ(0, 0, s * (0.3 + k)); ctx.stroke(); }
+      else if (p.shape === 'text') {
+        const sc = p.pop < 0.25 ? Ease.outBack(p.pop / 0.25) : 1;
+        ctx.scale(sc, sc);
+        txt(p.s, 0, 0, p.size, p.color, { stroke: p.stroke, sw: p.size * 0.28 });
+      }
+      ctx.restore();
+    }
+  }
+}
+const fx = new FX();
+
+/* ---------- 按鈕（每一格畫面重新登記） ---------- */
+let btnReg = [], pressed = null;
+const BTN = {
+  green: ['#a6f59c', '#3fbf5c', '#24873e'], pink: ['#ffb3cc', '#f45f93', '#b8366a'], blue: ['#a8e0ff', '#3c9ff0', '#22659e'],
+  yellow: ['#fff09a', '#f8b921', '#b57c0b'], purple: ['#dcc6ff', '#9b6ff2', '#5f3fae'], orange: ['#ffd0a0', '#ff8a3d', '#c1561a'],
+  white: ['#ffffff', '#f3e9f7', '#b9a2c8']
+};
+function drawIcon(name, x, y, s, col) {
+  ctx.save(); ctx.translate(x, y);
+  ctx.fillStyle = col || '#fff'; ctx.strokeStyle = col || '#fff';
+  ctx.lineWidth = s * 0.2; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  if (name === 'play') { ctx.beginPath(); ctx.moveTo(-s * 0.35, -s * 0.5); ctx.lineTo(s * 0.5, 0); ctx.lineTo(-s * 0.35, s * 0.5); ctx.closePath(); ctx.fill(); ctx.stroke(); }
+  else if (name === 'next' || name === 'prev') {
+    if (name === 'prev') ctx.scale(-1, 1);
+    ctx.beginPath(); ctx.moveTo(-s * 0.15, -s * 0.42); ctx.lineTo(s * 0.3, 0); ctx.lineTo(-s * 0.15, s * 0.42); ctx.stroke();
+  }
+  else if (name === 'back') {
+    ctx.beginPath(); ctx.moveTo(s * 0.42, 0); ctx.lineTo(-s * 0.38, 0); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-s * 0.05, -s * 0.36); ctx.lineTo(-s * 0.42, 0); ctx.lineTo(-s * 0.05, s * 0.36); ctx.stroke();
+  }
+  else if (name === 'pause') { rr(-s * 0.36, -s * 0.4, s * 0.24, s * 0.8, s * 0.08); ctx.fill(); rr(s * 0.12, -s * 0.4, s * 0.24, s * 0.8, s * 0.08); ctx.fill(); }
+  else if (name === 'close') { ctx.beginPath(); ctx.moveTo(-s * 0.32, -s * 0.32); ctx.lineTo(s * 0.32, s * 0.32); ctx.moveTo(s * 0.32, -s * 0.32); ctx.lineTo(-s * 0.32, s * 0.32); ctx.stroke(); }
+  else if (name === 'replay') {
+    ctx.beginPath(); ctx.arc(0, 0, s * 0.42, -Math.PI * 0.3, Math.PI * 1.35); ctx.stroke();
+    const a = -Math.PI * 0.3, ex = Math.cos(a) * s * 0.42, ey = Math.sin(a) * s * 0.42;
+    ctx.beginPath(); ctx.moveTo(ex + s * 0.2, ey - s * 0.05); ctx.lineTo(ex - s * 0.02, ey + s * 0.25); ctx.lineTo(ex - s * 0.25, ey - s * 0.12); ctx.closePath(); ctx.fill();
+  }
+  else if (name === 'menu') { for (let i = -1; i <= 1; i += 2) for (let j = -1; j <= 1; j += 2) { rr(i * s * 0.25 - s * 0.17, j * s * 0.25 - s * 0.17, s * 0.34, s * 0.34, s * 0.08); ctx.fill(); } }
+  else if (name === 'lock') {
+    ctx.lineWidth = s * 0.16; ctx.beginPath(); ctx.arc(0, -s * 0.12, s * 0.26, Math.PI, 0); ctx.stroke();
+    rr(-s * 0.38, -s * 0.12, s * 0.76, s * 0.6, s * 0.12); ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.beginPath(); circ(0, s * 0.15, s * 0.08); ctx.fill();
+  }
+  else if (name === 'speaker') {
+    ctx.beginPath(); ctx.moveTo(-s * 0.45, -s * 0.16); ctx.lineTo(-s * 0.22, -s * 0.16); ctx.lineTo(s * 0.05, -s * 0.4); ctx.lineTo(s * 0.05, s * 0.4); ctx.lineTo(-s * 0.22, s * 0.16); ctx.lineTo(-s * 0.45, s * 0.16); ctx.closePath(); ctx.fill();
+    ctx.lineWidth = s * 0.1;
+    ctx.beginPath(); ctx.arc(s * 0.12, 0, s * 0.22, -0.9, 0.9); ctx.stroke();
+    ctx.beginPath(); ctx.arc(s * 0.12, 0, s * 0.4, -0.9, 0.9); ctx.stroke();
+  }
+  ctx.restore();
+}
+/** 立體按鈕。opts: {label, icon, color, onClick, size, pulse, disabled, radius} */
+function button(id, x, y, w, h, opts) {
+  btnReg.push({ id, x, y, w, h, onClick: opts.onClick, disabled: opts.disabled });
+  const pal = BTN[opts.color || 'green'];
+  const isDown = pressed && pressed.id === id;
+  let s = isDown ? 0.93 : 1;
+  if (opts.pulse && !isDown) s *= 1 + Math.sin(time * 5) * 0.035;
+  const lip = Math.max(4, Math.min(8, h * 0.1));
+  ctx.save();
+  ctx.translate(x + w / 2, y + h / 2); ctx.scale(s, s);
+  if (opts.disabled) ctx.globalAlpha = opts.dimAlpha || 0.5;
+  const r = opts.radius == null ? h / 2 : opts.radius;
+  const yo = isDown ? lip * 0.6 : 0;
+  rr(-w / 2, -h / 2 + lip + 3, w, h, r); ctx.fillStyle = 'rgba(60,30,70,0.2)'; ctx.fill();
+  rr(-w / 2, -h / 2 + lip, w, h, r); ctx.fillStyle = pal[2]; ctx.fill();
+  rr(-w / 2, -h / 2 + yo, w, h, r);
+  const g = ctx.createLinearGradient(0, -h / 2, 0, h / 2);
+  g.addColorStop(0, pal[0]); g.addColorStop(0.55, pal[1]); g.addColorStop(1, shade(pal[1], -15));
+  ctx.fillStyle = g; ctx.fill();
+  ctx.strokeStyle = pal[2]; ctx.lineWidth = Math.max(2, Math.min(4, h * 0.05)); ctx.stroke();
+  rr(-w / 2 + Math.min(h, w) * 0.2, -h / 2 + yo + h * 0.08, w - Math.min(h, w) * 0.4, Math.min(h * 0.28, 22), Math.min(h * 0.14, 11));
+  ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.fill();
+  const fs = opts.size || h * 0.42;
+  const tc = opts.color === 'white' ? '#6a4a7a' : '#fff';
+  if (opts.icon && opts.label) {
+    ctx.font = '900 ' + fs + 'px ' + FONT;
+    const tw = ctx.measureText(opts.label).width;
+    const tot = fs * 1.15 + tw;
+    drawIcon(opts.icon, -tot / 2 + fs * 0.45, yo, fs * 0.9, tc);
+    txt(opts.label, -tot / 2 + fs * 1.15 + tw / 2, yo + 1, fs, tc, { stroke: pal[2], sw: fs * 0.2, shadow: false });
+  } else if (opts.icon) drawIcon(opts.icon, 0, yo, fs * 1.1, tc);
+  else if (opts.label != null && opts.label !== '') {
+    const f2 = fitSize(opts.label, w * 0.86, fs);
+    txt(opts.label, 0, yo + 1, f2, tc, { stroke: pal[2], sw: f2 * 0.2, shadow: false });
+  }
+  ctx.restore();
+  return yo;
+}
+/** 圓形小按鈕（返回、暫停），和共用的 🏠/🔊 同風格 */
+function fab(id, cx, cy, icon, onClick) {
+  const r = 24;
+  btnReg.push({ id, x: cx - r, y: cy - r, w: r * 2, h: r * 2, onClick });
+  const down = pressed && pressed.id === id;
+  ctx.save(); ctx.translate(cx, cy); if (down) ctx.scale(0.9, 0.9);
+  ctx.fillStyle = 'rgba(74,59,82,0.18)'; ctx.beginPath(); ctx.arc(0, 6, r, 0, TAU); ctx.fill();
+  const g = ctx.createLinearGradient(0, -r, 0, r); g.addColorStop(0, '#fff'); g.addColorStop(1, '#ffe9f1');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke();
+  drawIcon(icon, 0, 0, 22, '#6a4a7a');
+  ctx.restore();
+}
+function hitBtn(x, y) {
+  for (let i = btnReg.length - 1; i >= 0; i--) {
+    const b = btnReg[i];
+    if (!b.disabled && x >= b.x - 4 && x <= b.x + b.w + 4 && y >= b.y - 4 && y <= b.y + b.h + 8) return b;
+  }
+  return null;
+}
+/** 沒點中：吸附到附近（24px 內）的按鈕（遊戲物件沒接手時才用） */
+function hitBtnNear(x, y) {
+  let best = null, bd = 24;
+  for (const b of btnReg) {
+    if (b.disabled) continue;
+    const dx = Math.max(b.x - x, 0, x - (b.x + b.w)), dy = Math.max(b.y - y, 0, y - (b.y + b.h));
+    const d = Math.hypot(dx, dy);
+    if (d < bd) { bd = d; best = b; }
+  }
+  return best;
+}
+
+/* =====================================================================
+ * 存檔
+ * ===================================================================== */
+const Save = {
+  get(k, d) { return KG.store.get(SLUG + ':' + k, d); },
+  set(k, v) { KG.store.set(SLUG + ':' + k, v); }
+};
+function starsOf(act) { return Save.get('stars:' + act, []); }
+function setStars(act, lv, n) { const a = starsOf(act); if (!(a[lv] >= n)) { a[lv] = n; Save.set('stars:' + act, a); } return a; }
+function totalStars(act) { return starsOf(act).reduce((s, v) => s + (v || 0), 0); }
+let skill = Save.get('skill', {});
+function getSkill(a) { return skill[a] == null ? 0.3 : skill[a]; }
+function bumpSkill(a, d) { skill[a] = clamp(getSkill(a) + d, 0, 1); Save.set('skill', skill); }
+
+/* =====================================================================
+ * 聲音：音樂、音效、語音（說話時把音樂壓低）
+ * ===================================================================== */
+const HAS_MUSIC = !!(KG.music && KG.sfx);
+const MUSIC_BASE = 0.3;
+let sfxOn = Save.get('sfx', true) !== false;
+let voiceOn = Save.get('voice', true) !== false;
+const lastPlay = {};
+function sfx(name, o) {
+  if (!sfxOn || !HAS_MUSIC || KG.isMuted()) return;
+  const now = performance.now();
+  if (lastPlay[name] && now - lastPlay[name] < 40) return;
+  lastPlay[name] = now;
+  const opts = { pitch: ((o && o.pitch) || 1) * (1 + (Math.random() * 2 - 1) * 0.04) };
+  if (o && o.vol != null) opts.vol = o.vol;
+  if (o && o.pan) opts.pan = clamp(o.pan, -0.8, 0.8);
+  KG.sfx.play(name, opts);
+}
+const panOf = x => (x / Math.max(1, W) * 2 - 1) * 0.5;
+/** 錢的聲音：硬幣大小不同、音高不同；紙鈔是紙聲 */
+function moneySound(v, x, soft) {
+  const pan = x == null ? 0 : panOf(x);
+  const vol = soft ? 0.6 : 1;
+  if (v >= 100) { sfx('paper', { pan, vol, pitch: v === 1000 ? 0.9 : v === 500 ? 0.95 : 1 }); sfx('billsnap', { pan, vol: vol * 0.8 }); return; }
+  const p = { 1: 1.32, 5: 1.13, 10: 0.95, 50: 0.74 }[v] || 1;
+  sfx('clink', { pitch: p, pan, vol });
+  if (v >= 10) sfx('clinkLow', { pitch: p, pan, vol });
+}
+function jingle(def) { if (sfxOn && HAS_MUSIC) return KG.music.jingle(def); return 0; }
+
+let duckOn = false, duckStart = 0, duckMax = 0, lastSaid = '';
+function duck(on) {
+  if (on === duckOn) return;
+  duckOn = on;
+  if (HAS_MUSIC) KG.music.setVolume(on ? MUSIC_BASE * 0.3 : MUSIC_BASE);
+}
+/** 用中文念出來，說話時音樂變小聲 */
+function say(text) {
+  lastSaid = text;
+  if (!voiceOn || KG.isMuted() || !window.speechSynthesis) return;
+  KG.say(text, 0.92);
+  duck(true);
+  duckStart = performance.now();
+  duckMax = duckStart + 1800 + [...text].length * 300;
+}
+function updateDuck() {
+  if (!duckOn) return;
+  const now = performance.now(), ss = window.speechSynthesis;
+  const talking = ss && (ss.speaking || ss.pending);
+  if ((now - duckStart > 450 && !talking) || now > duckMax) duck(false);
+}
+
+if (HAS_MUSIC) {
+  KG.music.setVolume(MUSIC_BASE);
+  const S = KG.sfx;
+  // 硬幣「叮」：幾個不和諧泛音＋一點高頻刮擦，第二下是彈起來
+  S.define('clink', (p, s) => {
+    const f = 2000 * p;
+    s.tone(f, 0.2, { vol: 0.09 }); s.tone(f * 1.51, 0.14, { vol: 0.05 }); s.tone(f * 2.23, 0.08, { vol: 0.025 });
+    s.noise(0.025, { vol: 0.08, freq: 6500, type: 'highpass' });
+    s.tone(f * 1.01, 0.12, { vol: 0.05, delay: 0.075 }); s.tone(f * 1.5, 0.08, { vol: 0.025, delay: 0.075 });
+  });
+  // 大硬幣多一個比較低、比較厚的聲音
+  S.define('clinkLow', (p, s) => { s.tone(760 * p, 0.16, { vol: 0.08, type: 'triangle' }); s.noise(0.05, { vol: 0.06, freq: 1400 * p, q: 3 }); });
+  S.define('paper', (p, s) => { s.noise(0.16, { vol: 0.13, freq: 2300 * p, sweep: 4600 * p, q: 0.7 }); s.noise(0.06, { vol: 0.08, freq: 4800 * p, q: 1.2, delay: 0.08, type: 'highpass' }); });
+  S.define('billsnap', (p, s) => { s.noise(0.035, { vol: 0.22, freq: 3000 * p, q: 1.4, delay: 0.1 }); s.tone(260 * p, 0.05, { vol: 0.05, type: 'triangle', delay: 0.1 }); });
+  S.define('grab', (p, s) => { s.tone(520 * p, 0.08, { type: 'triangle', vol: 0.11, slide: 820 * p }); s.noise(0.03, { vol: 0.05, freq: 3000, q: 2 }); });
+  S.define('plop', (p, s) => { s.tone(330 * p, 0.1, { vol: 0.16, slide: 190 * p }); s.noise(0.05, { vol: 0.08, freq: 900 * p, type: 'lowpass' }); });
+  S.define('back', (p, s) => { s.tone(700 * p, 0.12, { type: 'triangle', vol: 0.09, slide: 420 * p }); s.noise(0.12, { vol: 0.05, freq: 1800, sweep: 700, q: 1 }); });
+  S.define('kaching', (p, s) => {
+    s.noise(0.1, { vol: 0.12, freq: 1200, sweep: 380, q: 1.6 });
+    s.tone(140 * p, 0.09, { vol: 0.14, slide: 90 });
+    s.tone(1760 * p, 0.9, { vol: 0.1, delay: 0.09 }); s.tone(1760 * 2.76 * p, 0.25, { vol: 0.02, delay: 0.09 });
+    s.tone(2637 * p, 0.75, { vol: 0.07, delay: 0.16 });
+    for (let i = 0; i < 5; i++) s.tone((2300 + i * 210) * p, 0.07, { vol: 0.035, delay: 0.24 + i * 0.045 });
+  });
+  S.define('chirp', (p, s) => { s.tone(880 * p, 0.09, { type: 'triangle', vol: 0.1, slide: 1450 * p }); s.tone(1050 * p, 0.12, { type: 'triangle', vol: 0.1, slide: 1750 * p, delay: 0.11 }); });
+  S.define('boop', (p, s) => { s.tone(392 * p, 0.16, { vol: 0.17, slide: 350 * p }); s.tone(330 * p, 0.24, { vol: 0.14, delay: 0.14, slide: 294 * p }); });
+  S.define('dingdong', (p, s) => { s.tone(1319 * p, 0.6, { vol: 0.08 }); s.tone(1319 * 2 * p, 0.2, { vol: 0.015 }); s.tone(1047 * p, 0.8, { vol: 0.08, delay: 0.3 }); s.tone(1047 * 2 * p, 0.25, { vol: 0.015, delay: 0.3 }); });
+  S.define('starding', (p, s) => { s.tone(1047 * p, 0.55, { vol: 0.11 }); s.tone(1047 * 2.76 * p, 0.18, { vol: 0.02 }); s.tone(2093 * p, 0.3, { vol: 0.04, delay: 0.03 }); });
+  S.define('piggy', (p, s) => { s.tone(1900 * p, 0.06, { vol: 0.06 }); s.tone(180 * p, 0.2, { vol: 0.18, slide: 110 * p, delay: 0.05 }); s.noise(0.07, { vol: 0.06, freq: 600, type: 'lowpass', delay: 0.05 }); });
+  S.define('oink', (p, s) => { s.tone(300 * p, 0.12, { type: 'triangle', vol: 0.12, slide: 230 * p }); s.tone(330 * p, 0.12, { type: 'triangle', vol: 0.1, slide: 250 * p, delay: 0.15 }); });
+  S.define('step', (p, s) => { s.noise(0.04, { vol: 0.07, freq: 500 * p, type: 'lowpass' }); });
+  S.define('poof', (p, s) => { s.noise(0.22, { vol: 0.1, freq: 900 * p, sweep: 300, q: 0.8 }); });
+}
+
+/* ---------- 音樂（F 大調、108 bpm、烏克麗麗＋鐵琴、輕貝斯、拍手） ---------- */
+const SONG_TITLE = {
+  bpm: 108, steps: 16, swing: 0.1,
+  chords: ['F', 'Bb', 'F', 'C', 'Dm', 'Bb', 'C', 'F'],
+  tracks: [
+    { inst: 'kick', pat: 'x.......x.......', vol: 0.45 },
+    { inst: 'clap', pat: '....x.......x...', vol: 0.4 },
+    { inst: 'shaker', pat: '..o...o...o...o.', vol: 0.6 },
+    { inst: 'bass', chord: 'R.....R.5.......', vol: 0.6 },
+    { inst: 'pluck', chord: 'R...R.R...R.R.R.', oct: 4, vol: 0.42 },
+    { inst: 'pluck', chord: '3...3.3...3.3.3.', oct: 4, vol: 0.38 },
+    { inst: 'pluck', chord: '5...5.5...5.5.5.', oct: 4, vol: 0.38 },
+    { inst: 'bell', vol: 1.0, seq: [
+      'C5 - A4 - C5 D5 C5 A4',
+      'Bb4 - D5 - F5 - D5 -',
+      'C5 - A4 F4 A4 C5 F5 -',
+      'E5 - - D5 C5 - . .',
+      'D5 - F5 - A5 - F5 D5',
+      'F5 - D5 Bb4 D5 - F5 -',
+      'G5 - E5 C5 D5 E5 G5 -',
+      'F5 - - - A4 - C5 -'
+    ] }
+  ]
+};
+const SONG_SHOP = {
+  bpm: 108, steps: 16, swing: 0.1,
+  chords: ['F', 'Dm', 'Gm', 'C', 'F', 'Dm', 'Bb', 'C7'],
+  layers: { top: false },
+  tracks: [
+    { inst: 'kick', pat: 'x.......x.x.....', vol: 0.45 },
+    { inst: 'clap', pat: '....x.......x...', vol: 0.42 },
+    { inst: 'hat', pat: 'o.o.o.o.o.o.o.o.', vol: 0.4 },
+    { inst: 'ohat', pat: '..x...x...x...x.', vol: 0.45, layer: 'top' },
+    { inst: 'bass', chord: ['R.....R.5...R...', 'R.....R.5...8...'], vol: 0.6 },
+    { inst: 'pluck', chord: 'R...R.R...R.R.R.', oct: 4, vol: 0.4 },
+    { inst: 'pluck', chord: '3...3.3...3.3.3.', oct: 4, vol: 0.36 },
+    { inst: 'pluck', chord: '5...5.5...5.5.5.', oct: 4, vol: 0.36 },
+    { inst: 'marimba', arp: 'up', rate: 4, oct: 5, span: 1, vol: 0.4, layer: 'top' },
+    { inst: 'bell', vol: 1.0, seq: [
+      'A4 C5 F5 - E5 F5 G5 -',
+      'A5 - F5 - D5 - . .',
+      'Bb4 D5 G5 - F5 - D5 -',
+      'E5 - C5 D5 E5 G5 - .',
+      'A4 C5 F5 - E5 F5 A5 -',
+      'F5 - D5 - A4 - D5 F5',
+      'F5 - D5 - Bb4 C5 D5 F5',
+      'E5 - G5 - E5 D5 C5 -'
+    ] }
+  ]
+};
+// 認識錢幣頁：比較安靜的版本（同一個和弦進行，慢一點，拇指琴＋柔和長音）
+const SONG_CALM = {
+  bpm: 84, steps: 16, swing: 0.06,
+  chords: ['F', 'Bb', 'F', 'C', 'Dm', 'Bb', 'C', 'F'],
+  tracks: [
+    { inst: 'shaker', pat: 'o.......o.......', vol: 0.4 },
+    { inst: 'pad', chord: 'hold', oct: 4, vol: 0.6 },
+    { inst: 'bass', chord: 'R.......5.......', vol: 0.45 },
+    { inst: 'kalimba', arp: 'updown', rate: 4, oct: 4, span: 1, vol: 0.6 },
+    { inst: 'bell', vol: 0.75, seq: SONG_TITLE.tracks[7].seq }
+  ]
+};
+function playSong(s) { if (HAS_MUSIC) KG.music.play(s); }
+
+/* =====================================================================
+ * 錢的圖（程式畫的原創樣式，只保留顏色、大小、面額）
+ * ===================================================================== */
+const DEN = [1, 5, 10, 50, 100, 500, 1000];
+const isBill = v => v >= 100;
+const MINFO = {
+  1: { name: '一元', rel: 0.68, cols: ['#ffe2b0', '#e0a25a', '#ad6a2c', '#7a4518'], ink: '#5e3210',
+    fact: '銅色的小硬幣，是最小的錢。', say: '這是一元硬幣。它是銅色的，是最小的錢喔！', ex: null },
+  5: { name: '五元', rel: 0.78, cols: ['#ffffff', '#e3e8ec', '#aeb7bf', '#7f8992'], ink: '#46505b',
+    fact: '銀色的。5 個一元可以換 1 個五元。', say: '這是五元硬幣，銀色的。五個一元，可以換一個五元喔！', ex: [1, 5] },
+  10: { name: '十元', rel: 0.9, cols: ['#fbfdff', '#d5dde5', '#9aa6b2', '#6c7884'], ink: '#3d4855',
+    fact: '銀色的，比五元大一點。2 個五元換 1 個十元。', say: '這是十元硬幣，也是銀色的，比五元大一點。兩個五元，可以換一個十元。', ex: [5, 2] },
+  50: { name: '五十元', rel: 1.0, cols: ['#fff6c4', '#f6d04d', '#d9a514', '#9b7208'], ink: '#6e4a00',
+    fact: '金色的，是最大的硬幣！5 個十元換 1 個五十元。', say: '這是五十元硬幣，金色的，是最大的硬幣！五個十元，可以換一個五十元。', ex: [10, 5] },
+  100: { name: '一百元', rel: 1.0, base: '#e5555c', dark: '#a02f38', light: '#ffd6d4',
+    fact: '紅色的紙鈔。2 個五十元換 1 張一百元。', say: '這是一百元，紅色的紙鈔。兩個五十元，可以換一張一百元。', ex: [50, 2] },
+  500: { name: '五百元', rel: 1.04, base: '#b47a48', dark: '#6e4320', light: '#f6e2c9',
+    fact: '咖啡色的紙鈔。5 張一百元換 1 張五百元。', say: '這是五百元，咖啡色的紙鈔。五張一百元，可以換一張五百元。', ex: [100, 5] },
+  1000: { name: '一千元', rel: 1.08, base: '#4a8ddb', dark: '#20559c', light: '#d8e9ff',
+    fact: '藍色的紙鈔，是最大的錢！2 張五百元換 1 張一千元。', say: '這是一千元，藍色的紙鈔，是最大的錢！兩張五百元，可以換一張一千元。', ex: [500, 2] }
+};
+function moneyDims(v, M) {
+  const m = MINFO[v];
+  if (!isBill(v)) { const r = M * m.rel; return { w: 2 * r, h: 2 * r, r }; }
+  const w = M * 3.3 * m.rel;
+  return { w, h: w * 0.5, r: w * 0.5 };
+}
+function paintCoin(v, cx, cy, r) {
+  const m = MINFO[v], c = m.cols;
+  ctx.fillStyle = 'rgba(70,40,20,0.28)'; ctx.beginPath(); ctx.arc(cx + r * 0.05, cy + r * 0.12, r, 0, TAU); ctx.fill();
+  ctx.fillStyle = c[3]; ctx.beginPath(); ctx.arc(cx, cy + r * 0.05, r, 0, TAU); ctx.fill();
+  let g = ctx.createLinearGradient(cx - r, cy - r, cx + r, cy + r); g.addColorStop(0, c[1]); g.addColorStop(1, c[2]);
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.fill();
+  // 齒邊
+  ctx.strokeStyle = rgba(c[3], 0.45); ctx.lineWidth = Math.max(0.8, r * 0.035); ctx.beginPath();
+  const nT = Math.round(26 + r * 0.6);
+  for (let i = 0; i < nT; i++) { const a = i / nT * TAU; ctx.moveTo(cx + Math.cos(a) * r * 0.89, cy + Math.sin(a) * r * 0.89); ctx.lineTo(cx + Math.cos(a) * r * 0.985, cy + Math.sin(a) * r * 0.985); }
+  ctx.stroke();
+  g = ctx.createRadialGradient(cx - r * 0.3, cy - r * 0.35, r * 0.05, cx, cy, r * 0.9);
+  g.addColorStop(0, c[0]); g.addColorStop(0.55, c[1]); g.addColorStop(1, c[2]);
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, r * 0.86, 0, TAU); ctx.fill();
+  ctx.strokeStyle = rgba(c[3], 0.6); ctx.lineWidth = Math.max(1, r * 0.045); ctx.stroke();
+  // 浮雕小圖案（原創）
+  ctx.save(); ctx.globalAlpha = 0.2; ctx.fillStyle = c[3]; ctx.strokeStyle = c[3];
+  if (v === 1) { for (let i = 0; i < 5; i++) { const a = i / 5 * TAU - Math.PI / 2; ctx.beginPath(); ctx.arc(cx + Math.cos(a) * r * 0.42, cy + Math.sin(a) * r * 0.42, r * 0.26, 0, TAU); ctx.fill(); } }
+  else if (v === 5) { ctx.lineWidth = r * 0.06; for (let i = 0; i < 2; i++) { ctx.beginPath(); ctx.ellipse(cx + (i ? 1 : -1) * r * 0.45, cy + r * 0.25, r * 0.3, r * 0.12, (i ? -1 : 1) * 0.7, 0, TAU); ctx.fill(); } }
+  else if (v === 10) { ctx.globalAlpha = 0.35; for (let i = 0; i < 28; i++) { const a = i / 28 * TAU; ctx.beginPath(); ctx.arc(cx + Math.cos(a) * r * 0.74, cy + Math.sin(a) * r * 0.74, r * 0.035, 0, TAU); ctx.fill(); } }
+  else { for (let i = 0; i < 16; i++) { const a = i / 16 * TAU; ctx.beginPath(); ctx.moveTo(cx + Math.cos(a - 0.08) * r * 0.55, cy + Math.sin(a - 0.08) * r * 0.55); ctx.lineTo(cx + Math.cos(a) * r * 0.8, cy + Math.sin(a) * r * 0.8); ctx.lineTo(cx + Math.cos(a + 0.08) * r * 0.55, cy + Math.sin(a + 0.08) * r * 0.55); ctx.fill(); } }
+  ctx.restore();
+  // 數字（浮雕感）
+  const s = String(v), fs = r * (s.length === 1 ? 0.95 : 0.76);
+  ctx.font = '900 ' + fs + 'px ' + FONT; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const ny = cy - r * 0.08;
+  ctx.fillStyle = 'rgba(255,255,255,0.75)'; ctx.fillText(s, cx - r * 0.025, ny - r * 0.03);
+  ctx.fillStyle = rgba(c[3], 0.9); ctx.fillText(s, cx + r * 0.03, ny + r * 0.035);
+  ctx.fillStyle = m.ink; ctx.fillText(s, cx, ny);
+  ctx.font = '800 ' + (r * 0.27) + 'px ' + FONT; ctx.fillStyle = m.ink; ctx.fillText('元', cx, cy + r * 0.56);
+  ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.beginPath(); ctx.ellipse(cx - r * 0.4, cy - r * 0.45, r * 0.28, r * 0.12, -0.7, 0, TAU); ctx.fill();
+}
+function paintBill(v, cx, cy, w) {
+  const m = MINFO[v], h = w * 0.5, x = cx - w / 2, y = cy - h / 2, r = h * 0.1;
+  rr(x + w * 0.015, y + h * 0.07, w, h, r); ctx.fillStyle = 'rgba(60,30,20,0.25)'; ctx.fill();
+  rr(x, y, w, h, r);
+  let g = ctx.createLinearGradient(x, y, x + w, y + h);
+  g.addColorStop(0, shade(m.base, 45)); g.addColorStop(0.45, m.base); g.addColorStop(1, shade(m.base, -22));
+  ctx.fillStyle = g; ctx.fill();
+  ctx.strokeStyle = m.dark; ctx.lineWidth = Math.max(1, h * 0.03); ctx.stroke();
+  // 細波紋
+  ctx.save(); rr(x + h * 0.07, y + h * 0.07, w - h * 0.14, h - h * 0.14, r * 0.6); ctx.clip();
+  ctx.strokeStyle = 'rgba(255,255,255,0.16)'; ctx.lineWidth = Math.max(0.6, h * 0.012);
+  for (let k = 0; k < 8; k++) {
+    ctx.beginPath();
+    for (let i = 0; i <= 36; i++) { const px = x + w * i / 36, py = y + h * (0.1 + k * 0.115) + Math.sin(i * 0.55 + k * 0.9) * h * 0.04; if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py); }
+    ctx.stroke();
+  }
+  ctx.restore();
+  rr(x + h * 0.07, y + h * 0.07, w - h * 0.14, h - h * 0.14, r * 0.6); ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = Math.max(1, h * 0.025); ctx.stroke();
+  // 右邊圓章與原創小圖
+  const mx = x + w * 0.75, my = cy, mr = h * 0.31;
+  ctx.fillStyle = m.light; ctx.beginPath(); ctx.arc(mx, my, mr, 0, TAU); ctx.fill();
+  ctx.strokeStyle = rgba('#ffffff', 0.8); ctx.lineWidth = h * 0.025; ctx.stroke();
+  billMotif(v, mx, my, mr * 0.78);
+  // 面額
+  const s = String(v);
+  const fs = h * (s.length > 3 ? 0.34 : 0.42), nx = x + w * 0.35;
+  ctx.font = '900 ' + fs + 'px ' + FONT; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+  ctx.strokeStyle = m.dark; ctx.lineWidth = h * 0.08; ctx.strokeText(s, nx, cy - h * 0.06);
+  ctx.fillStyle = '#fff'; ctx.fillText(s, nx, cy - h * 0.06);
+  ctx.font = '900 ' + (h * 0.17) + 'px ' + FONT;
+  ctx.lineWidth = h * 0.05; ctx.strokeText('元', nx, cy + h * 0.27); ctx.fillText('元', nx, cy + h * 0.27);
+  ctx.font = '800 ' + (h * 0.12) + 'px ' + FONT; ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.fillText(s, x + w - h * 0.32, y + h * 0.17); ctx.fillText(s, x + h * 0.32, y + h - h * 0.17);
+  ctx.fillStyle = 'rgba(255,255,255,0.18)'; rr(x + h * 0.1, y + h * 0.06, w * 0.5, h * 0.12, h * 0.06); ctx.fill();
+}
+function billMotif(v, x, y, s) {
+  ctx.save(); ctx.translate(x, y); ctx.lineJoin = 'round';
+  if (v === 100) { // 小花
+    for (let i = 0; i < 5; i++) { const a = i / 5 * TAU - Math.PI / 2; ctx.fillStyle = '#ff9fb2'; ctx.beginPath(); ctx.arc(Math.cos(a) * s * 0.42, Math.sin(a) * s * 0.42, s * 0.36, 0, TAU); ctx.fill(); }
+    ctx.fillStyle = '#ffd34d'; ctx.beginPath(); ctx.arc(0, 0, s * 0.26, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#e6a400'; for (let i = 0; i < 5; i++) { const a = i / 5 * TAU; ctx.beginPath(); ctx.arc(Math.cos(a) * s * 0.12, Math.sin(a) * s * 0.12, s * 0.05, 0, TAU); ctx.fill(); }
+  } else if (v === 500) { // 山和太陽
+    ctx.fillStyle = '#ffc94d'; ctx.beginPath(); ctx.arc(s * 0.35, -s * 0.35, s * 0.25, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#8a5a30'; ctx.beginPath(); ctx.moveTo(-s * 0.95, s * 0.6); ctx.lineTo(-s * 0.25, -s * 0.35); ctx.lineTo(s * 0.35, s * 0.6); ctx.fill();
+    ctx.fillStyle = '#a8743f'; ctx.beginPath(); ctx.moveTo(-s * 0.2, s * 0.6); ctx.lineTo(s * 0.4, -s * 0.05); ctx.lineTo(s * 0.95, s * 0.6); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(-s * 0.25, -s * 0.35); ctx.lineTo(-s * 0.4, -s * 0.18); ctx.lineTo(-s * 0.1, -s * 0.18); ctx.fill();
+  } else { // 小鳥
+    ctx.fillStyle = '#2f6fc0'; ctx.beginPath(); ctx.ellipse(0, s * 0.08, s * 0.55, s * 0.45, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#7fb6f0'; ctx.beginPath(); ctx.ellipse(-s * 0.12, s * 0.15, s * 0.32, s * 0.2, -0.4, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#ffb02e'; ctx.beginPath(); ctx.moveTo(s * 0.5, -s * 0.02); ctx.lineTo(s * 0.8, s * 0.06); ctx.lineTo(s * 0.5, s * 0.16); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(s * 0.25, -s * 0.08, s * 0.11, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#123'; ctx.beginPath(); ctx.arc(s * 0.27, -s * 0.08, s * 0.06, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#2f6fc0'; ctx.beginPath(); ctx.moveTo(-s * 0.5, -s * 0.05); ctx.lineTo(-s * 0.95, -s * 0.3); ctx.lineTo(-s * 0.8, s * 0.15); ctx.fill();
+  }
+  ctx.restore();
+}
+const spriteCache = new Map();
+function moneySprite(v, M) {
+  M = Math.max(4, Math.round(M));
+  const key = v + '_' + M;
+  let sp = spriteCache.get(key);
+  if (sp) return sp;
+  if (spriteCache.size > 140) spriteCache.clear();
+  const d = moneyDims(v, M), pad = Math.ceil(M * 0.22) + 2;
+  const c = document.createElement('canvas');
+  const cw = d.w + pad * 2, ch = d.h + pad * 2;
+  c.width = Math.ceil(cw * dpr); c.height = Math.ceil(ch * dpr);
+  paintTo(c, () => { if (isBill(v)) paintBill(v, cw / 2, ch / 2, d.w); else paintCoin(v, cw / 2, ch / 2, d.r); });
+  sp = { c, w: cw, h: ch };
+  spriteCache.set(key, sp);
+  return sp;
+}
+function drawMoney(v, x, y, M, rot, sc, alpha) {
+  const sp = moneySprite(v, M), s = sc == null ? 1 : sc;
+  if (s <= 0.01) return;
+  const pa = ctx.globalAlpha;
+  if (alpha != null) ctx.globalAlpha = pa * clamp(alpha, 0, 1);
+  if (rot) { ctx.save(); ctx.translate(x, y); ctx.rotate(rot); ctx.drawImage(sp.c, -sp.w * s / 2, -sp.h * s / 2, sp.w * s, sp.h * s); ctx.restore(); }
+  else ctx.drawImage(sp.c, x - sp.w * s / 2, y - sp.h * s / 2, sp.w * s, sp.h * s);
+  ctx.globalAlpha = pa;
+}
+/** 發光提示圈（不用 shadowBlur） */
+function hintRing(x, y, w, h, isB) {
+  const k = 0.5 + 0.5 * Math.sin(time * 7);
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,214,61,' + (0.55 + 0.45 * k) + ')'; ctx.lineWidth = 5 + k * 3;
+  if (isB) { rr(x - w / 2 - 6 - k * 3, y - h / 2 - 6 - k * 3, w + 12 + k * 6, h + 12 + k * 6, 10); ctx.stroke(); }
+  else { ctx.beginPath(); circ(x, y, w / 2 + 5 + k * 4); ctx.stroke(); }
+  // 跳動的箭頭
+  const ay = y - h / 2 - 16 - Math.abs(Math.sin(time * 6)) * 10;
+  ctx.fillStyle = '#ff6b9a'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(x - 11, ay - 14); ctx.lineTo(x + 11, ay - 14); ctx.lineTo(x, ay); ctx.closePath(); ctx.stroke(); ctx.fill();
+  ctx.restore();
+}
+
+/* =====================================================================
+ * 角色與物品
+ * ===================================================================== */
+const ANIMALS = {
+  cat: { name: '小貓', face: '#ffc27a', dark: '#e3913f', inner: '#ffb3c0', shirt: '#6cc4ff' },
+  bunny: { name: '小兔子', face: '#fffaf5', dark: '#e3d2c8', inner: '#ffb3c8', shirt: '#ff8fb1' },
+  bear: { name: '小熊', face: '#c48a5a', dark: '#8f5b33', inner: '#ecc8a4', shirt: '#7bd88f' },
+  panda: { name: '熊貓', face: '#ffffff', dark: '#2f2f3a', inner: '#2f2f3a', shirt: '#ffd65c' },
+  dog: { name: '小狗', face: '#f1d3a3', dark: '#a8703f', inner: '#ffb3c0', shirt: '#b49cff' }
+};
+const ANIMAL_KEYS = Object.keys(ANIMALS);
+function drawAnimal(kind, x, y, s, o) {
+  o = o || {};
+  const A = ANIMALS[kind], ol = 'rgba(70,40,50,0.55)', lw = Math.max(1.5, s * 0.06);
+  ctx.save(); ctx.translate(x, y); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  if (!o.noBody) {
+    rr(-s * 0.85, s * 0.62, s * 1.7, s * 1.7, s * 0.6); ctx.fillStyle = A.shirt; ctx.fill(); ctx.strokeStyle = ol; ctx.lineWidth = lw; ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.35)'; rr(-s * 0.55, s * 0.72, s * 1.1, s * 0.22, s * 0.11); ctx.fill();
+    ctx.fillStyle = A.face; ctx.strokeStyle = ol;
+    for (const sx of [-1, 1]) { ctx.beginPath(); ctx.ellipse(sx * s * 0.62, s * 1.5 + (o.wave && sx > 0 ? -Math.abs(Math.sin(time * 9)) * s * 0.3 : 0), s * 0.24, s * 0.2, 0, 0, TAU); ctx.fill(); ctx.stroke(); }
+  }
+  // 耳朵（後面）
+  ctx.fillStyle = kind === 'panda' ? A.dark : A.face; ctx.strokeStyle = ol; ctx.lineWidth = lw;
+  if (kind === 'cat') {
+    for (const sx of [-1, 1]) {
+      ctx.beginPath(); ctx.moveTo(sx * s * 0.85, -s * 0.2); ctx.lineTo(sx * s * 0.75, -s * 1.05); ctx.lineTo(sx * s * 0.2, -s * 0.75); ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = A.inner; ctx.beginPath(); ctx.moveTo(sx * s * 0.72, -s * 0.35); ctx.lineTo(sx * s * 0.68, -s * 0.85); ctx.lineTo(sx * s * 0.35, -s * 0.68); ctx.closePath(); ctx.fill(); ctx.fillStyle = A.face;
+    }
+  } else if (kind === 'bunny') {
+    for (const sx of [-1, 1]) {
+      ctx.save(); ctx.translate(sx * s * 0.38, -s * 0.85); ctx.rotate(sx * 0.18 + Math.sin(time * 2 + sx) * 0.05);
+      ctx.beginPath(); ctx.ellipse(0, -s * 0.45, s * 0.22, s * 0.62, 0, 0, TAU); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = A.inner; ctx.beginPath(); ctx.ellipse(0, -s * 0.42, s * 0.11, s * 0.45, 0, 0, TAU); ctx.fill(); ctx.fillStyle = A.face;
+      ctx.restore();
+    }
+  } else if (kind === 'bear' || kind === 'panda') {
+    for (const sx of [-1, 1]) {
+      ctx.beginPath(); ctx.arc(sx * s * 0.7, -s * 0.7, s * 0.3, 0, TAU); ctx.fill(); ctx.stroke();
+      if (kind === 'bear') { ctx.fillStyle = A.inner; ctx.beginPath(); ctx.arc(sx * s * 0.7, -s * 0.7, s * 0.15, 0, TAU); ctx.fill(); ctx.fillStyle = A.face; }
+    }
+  }
+  // 頭
+  ctx.fillStyle = A.face; ctx.beginPath(); ctx.ellipse(0, 0, s, s * 0.92, 0, 0, TAU); ctx.fill(); ctx.stroke();
+  if (kind === 'cat') { ctx.strokeStyle = A.dark; ctx.lineWidth = lw * 1.4; for (const dx of [-0.2, 0, 0.2]) { ctx.beginPath(); ctx.moveTo(dx * s, -s * 0.88); ctx.lineTo(dx * s * 0.9, -s * 0.62); ctx.stroke(); } }
+  if (kind === 'dog') {
+    ctx.fillStyle = A.dark;
+    for (const sx of [-1, 1]) { ctx.save(); ctx.translate(sx * s * 0.82, -s * 0.35); ctx.rotate(sx * -0.35 + Math.sin(time * 3) * 0.04 * sx); ctx.beginPath(); ctx.ellipse(0, s * 0.3, s * 0.24, s * 0.55, 0, 0, TAU); ctx.fill(); ctx.strokeStyle = ol; ctx.stroke(); ctx.restore(); }
+    ctx.fillStyle = A.dark; ctx.globalAlpha = 0.5; ctx.beginPath(); ctx.ellipse(s * 0.38, -s * 0.2, s * 0.24, s * 0.2, 0, 0, TAU); ctx.fill(); ctx.globalAlpha = 1;
+  }
+  if (kind === 'panda') { ctx.fillStyle = A.dark; for (const sx of [-1, 1]) { ctx.beginPath(); ctx.ellipse(sx * s * 0.36, -s * 0.05, s * 0.22, s * 0.28, sx * -0.5, 0, TAU); ctx.fill(); } }
+  // 嘴巴區
+  if (kind === 'bear' || kind === 'dog') { ctx.fillStyle = kind === 'bear' ? A.inner : '#fff6e8'; ctx.beginPath(); ctx.ellipse(0, s * 0.35, s * 0.38, s * 0.28, 0, 0, TAU); ctx.fill(); }
+  // 眼睛
+  const happy = o.mood === 'happy', blink = !happy && (Math.sin(time * 1.3 + x * 0.01) > 0.985);
+  const eyeC = kind === 'panda' ? '#fff' : '#3a2530';
+  for (const sx of [-1, 1]) {
+    const ex = sx * s * 0.36, ey = -s * 0.05;
+    if (happy || blink) {
+      ctx.strokeStyle = eyeC; ctx.lineWidth = s * 0.09; ctx.beginPath();
+      if (happy) ctx.arc(ex, ey + s * 0.06, s * 0.13, Math.PI * 1.15, Math.PI * 1.85); else { ctx.moveTo(ex - s * 0.12, ey); ctx.lineTo(ex + s * 0.12, ey); }
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = kind === 'panda' ? '#1b1b22' : eyeC; ctx.beginPath(); ctx.ellipse(ex, ey, s * 0.12, s * 0.15, 0, 0, TAU); ctx.fill();
+      if (kind === 'panda') { ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(ex, ey, s * 0.1, 0, TAU); ctx.fill(); ctx.fillStyle = '#1b1b22'; ctx.beginPath(); ctx.arc(ex, ey + s * 0.02, s * 0.065, 0, TAU); ctx.fill(); }
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(ex + s * 0.04, ey - s * 0.05, s * 0.045, 0, TAU); ctx.fill();
+    }
+  }
+  // 腮紅
+  ctx.fillStyle = 'rgba(255,120,150,0.35)'; for (const sx of [-1, 1]) { ctx.beginPath(); ctx.ellipse(sx * s * 0.6, s * 0.25, s * 0.15, s * 0.09, 0, 0, TAU); ctx.fill(); }
+  // 鼻子嘴巴
+  ctx.fillStyle = kind === 'cat' || kind === 'bunny' ? '#ff8fa8' : '#3a2530';
+  ctx.beginPath(); ctx.ellipse(0, s * 0.22, s * 0.1, s * 0.07, 0, 0, TAU); ctx.fill();
+  ctx.strokeStyle = '#3a2530'; ctx.lineWidth = s * 0.06;
+  if (happy) {
+    ctx.fillStyle = '#ff6f8f'; ctx.beginPath(); ctx.moveTo(-s * 0.18, s * 0.34); ctx.quadraticCurveTo(0, s * 0.68, s * 0.18, s * 0.34); ctx.closePath(); ctx.fill(); ctx.stroke();
+  } else if (o.mood === 'think') {
+    ctx.beginPath(); ctx.arc(0, s * 0.42, s * 0.07, 0, TAU); ctx.stroke();
+  } else {
+    ctx.beginPath(); ctx.arc(-s * 0.09, s * 0.3, s * 0.09, 0.2, Math.PI - 0.2); ctx.arc(s * 0.09, s * 0.3, s * 0.09, 0.2, Math.PI - 0.2); ctx.stroke();
+  }
+  if (kind === 'cat') { ctx.strokeStyle = 'rgba(60,40,40,0.45)'; ctx.lineWidth = s * 0.03; for (const sx of [-1, 1]) for (const dy of [-0.04, 0.08]) { ctx.beginPath(); ctx.moveTo(sx * s * 0.45, s * (0.22 + dy)); ctx.lineTo(sx * s * 0.95, s * (0.16 + dy * 1.6)); ctx.stroke(); } }
+  ctx.restore();
+}
+
+const ITEMS = [
+  { k: 'apple', name: '蘋果' }, { k: 'lolly', name: '棒棒糖' }, { k: 'icecream', name: '冰淇淋' }, { k: 'ball', name: '皮球' },
+  { k: 'juice', name: '果汁' }, { k: 'cookie', name: '餅乾' }, { k: 'car', name: '玩具車' }, { k: 'book', name: '故事書' },
+  { k: 'teddy', name: '泰迪熊' }, { k: 'cake', name: '蛋糕' }
+];
+let lastItem = '';
+function pickItem() { let it; do { it = KG.pick(ITEMS); } while (it.k === lastItem); lastItem = it.k; return it; }
+function drawItem(k, x, y, s) {
+  ctx.save(); ctx.translate(x, y); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  const ol = '#5a3d4a', lw = Math.max(1.5, s * 0.06);
+  ctx.strokeStyle = ol; ctx.lineWidth = lw;
+  if (k === 'apple') {
+    ctx.fillStyle = '#ef4b4b'; ctx.beginPath(); ctx.arc(-s * 0.3, s * 0.08, s * 0.58, 0, TAU); ctx.arc(s * 0.3, s * 0.08, s * 0.58, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(0, -s * 0.35); ctx.bezierCurveTo(-s * 1.1, -s * 0.75, -s * 1.1, s * 0.9, 0, s * 0.7); ctx.bezierCurveTo(s * 1.1, s * 0.9, s * 1.1, -s * 0.75, 0, -s * 0.35); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = '#7a4a22'; ctx.lineWidth = lw * 1.4; ctx.beginPath(); ctx.moveTo(0, -s * 0.35); ctx.lineTo(s * 0.08, -s * 0.7); ctx.stroke();
+    ctx.fillStyle = '#5cc463'; ctx.strokeStyle = ol; ctx.lineWidth = lw; ctx.beginPath(); ctx.ellipse(s * 0.3, -s * 0.62, s * 0.24, s * 0.12, -0.5, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.beginPath(); ctx.ellipse(-s * 0.4, -s * 0.05, s * 0.12, s * 0.22, 0.3, 0, TAU); ctx.fill();
+  } else if (k === 'lolly') {
+    ctx.fillStyle = '#fff'; rr(-s * 0.06, 0, s * 0.12, s * 0.95, s * 0.05); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#ff7eb0'; ctx.beginPath(); ctx.arc(0, -s * 0.2, s * 0.62, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = s * 0.12; ctx.beginPath();
+    for (let a = 0; a < 12; a += 0.25) { const r = s * 0.05 * a; const px = Math.cos(a) * r, py = -s * 0.2 + Math.sin(a) * r; if (a) ctx.lineTo(px, py); else ctx.moveTo(px, py); }
+    ctx.stroke();
+  } else if (k === 'icecream') {
+    ctx.fillStyle = '#f2b866'; ctx.beginPath(); ctx.moveTo(-s * 0.45, -s * 0.05); ctx.lineTo(s * 0.45, -s * 0.05); ctx.lineTo(0, s * 0.95); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = 'rgba(150,90,30,0.5)'; ctx.lineWidth = lw * 0.8; ctx.beginPath(); ctx.moveTo(-s * 0.3, s * 0.1); ctx.lineTo(s * 0.12, s * 0.65); ctx.moveTo(s * 0.3, s * 0.1); ctx.lineTo(-s * 0.12, s * 0.65); ctx.stroke();
+    ctx.strokeStyle = ol; ctx.lineWidth = lw;
+    ctx.fillStyle = '#8ee0c0'; ctx.beginPath(); ctx.arc(0, -s * 0.15, s * 0.45, Math.PI, 0); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#ffa3c4'; ctx.beginPath(); ctx.arc(0, -s * 0.48, s * 0.38, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#e8364f'; ctx.beginPath(); ctx.arc(s * 0.05, -s * 0.9, s * 0.12, 0, TAU); ctx.fill();
+  } else if (k === 'ball') {
+    const cols = ['#ff5c6c', '#ffd34d', '#4fb0f0', '#fff'];
+    for (let i = 0; i < 6; i++) { ctx.fillStyle = cols[i % 4]; ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, s * 0.8, i * TAU / 6, (i + 1) * TAU / 6); ctx.closePath(); ctx.fill(); }
+    ctx.beginPath(); ctx.arc(0, 0, s * 0.8, 0, TAU); ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(0, 0, s * 0.15, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.45)'; ctx.beginPath(); ctx.ellipse(-s * 0.35, -s * 0.4, s * 0.2, s * 0.1, -0.6, 0, TAU); ctx.fill();
+  } else if (k === 'juice') {
+    ctx.strokeStyle = '#555'; ctx.lineWidth = lw * 1.4; ctx.beginPath(); ctx.moveTo(s * 0.15, -s * 0.6); ctx.lineTo(s * 0.3, -s * 1.0); ctx.stroke();
+    ctx.strokeStyle = ol; ctx.lineWidth = lw;
+    ctx.fillStyle = '#ffb347'; rr(-s * 0.45, -s * 0.65, s * 0.9, s * 1.5, s * 0.1); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#ff8a1f'; ctx.beginPath(); ctx.arc(0, s * 0.15, s * 0.28, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#5cc463'; ctx.beginPath(); ctx.ellipse(s * 0.12, -s * 0.15, s * 0.12, s * 0.06, -0.5, 0, TAU); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.fillRect(-s * 0.35, -s * 0.55, s * 0.12, s * 1.25);
+  } else if (k === 'cookie') {
+    ctx.fillStyle = '#e0a35c'; ctx.beginPath(); ctx.arc(0, 0, s * 0.8, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#6b3d1f';
+    for (const p of [[-0.3, -0.3], [0.3, -0.2], [0, 0.15], [-0.35, 0.35], [0.38, 0.35], [0.05, -0.5]]) { ctx.beginPath(); ctx.arc(p[0] * s, p[1] * s, s * 0.1, 0, TAU); ctx.fill(); }
+  } else if (k === 'car') {
+    ctx.fillStyle = '#ff5c6c'; rr(-s * 0.9, -s * 0.15, s * 1.8, s * 0.6, s * 0.2); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-s * 0.5, -s * 0.15); ctx.lineTo(-s * 0.3, -s * 0.6); ctx.lineTo(s * 0.35, -s * 0.6); ctx.lineTo(s * 0.6, -s * 0.15); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#bfe8ff'; ctx.beginPath(); ctx.moveTo(-s * 0.36, -s * 0.2); ctx.lineTo(-s * 0.22, -s * 0.5); ctx.lineTo(0, -s * 0.5); ctx.lineTo(0, -s * 0.2); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(s * 0.08, -s * 0.2); ctx.lineTo(s * 0.08, -s * 0.5); ctx.lineTo(s * 0.3, -s * 0.5); ctx.lineTo(s * 0.47, -s * 0.2); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#3a3340'; for (const wx of [-0.5, 0.5]) { ctx.beginPath(); ctx.arc(wx * s, s * 0.45, s * 0.24, 0, TAU); ctx.fill(); ctx.fillStyle = '#ccc'; ctx.beginPath(); ctx.arc(wx * s, s * 0.45, s * 0.1, 0, TAU); ctx.fill(); ctx.fillStyle = '#3a3340'; }
+    ctx.fillStyle = '#ffe066'; ctx.beginPath(); ctx.arc(s * 0.82, s * 0.05, s * 0.08, 0, TAU); ctx.fill();
+  } else if (k === 'book') {
+    ctx.fillStyle = '#fff'; rr(-s * 0.62, -s * 0.72, s * 1.3, s * 1.5, s * 0.08); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#4f8fe8'; rr(-s * 0.7, -s * 0.8, s * 1.25, s * 1.5, s * 0.1); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#2f62b0'; ctx.fillRect(-s * 0.7, -s * 0.78, s * 0.16, s * 1.46);
+    ctx.fillStyle = '#ffd34d'; starPath(s * 0.1, -s * 0.1, s * 0.35, s * 0.15, 0); ctx.fill();
+  } else if (k === 'teddy') {
+    drawAnimal('bear', 0, 0, s * 0.75, { noBody: true, mood: 'happy' });
+  } else if (k === 'cake') {
+    ctx.fillStyle = '#ffe0a8'; rr(-s * 0.8, -s * 0.1, s * 1.6, s * 0.8, s * 0.1); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#ff9fbf'; rr(-s * 0.8, s * 0.18, s * 1.6, s * 0.16, 0); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(-s * 0.8, -s * 0.1);
+    for (let i = 0; i <= 8; i++) ctx.quadraticCurveTo(-s * 0.8 + (i + 0.5) * s * 0.2, s * 0.08, -s * 0.8 + (i + 1) * s * 0.2, -s * 0.1);
+    ctx.lineTo(s * 0.8, -s * 0.3); ctx.lineTo(-s * 0.8, -s * 0.3); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#e8364f'; ctx.beginPath(); ctx.arc(0, -s * 0.48, s * 0.2, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#5cc463'; ctx.beginPath(); ctx.ellipse(s * 0.08, -s * 0.68, s * 0.1, s * 0.05, -0.5, 0, TAU); ctx.fill();
+  }
+  ctx.restore();
+}
+/** 不是錢的東西（存錢筒遊戲的干擾物） */
+const DISTRACT = ['button', 'leaf', 'cap', 'candy'];
+function drawDistractor(k, x, y, s) {
+  ctx.save(); ctx.translate(x, y); ctx.lineJoin = 'round';
+  const ol = 'rgba(70,40,50,0.6)'; ctx.strokeStyle = ol; ctx.lineWidth = Math.max(1.5, s * 0.07);
+  if (k === 'button') {
+    ctx.fillStyle = '#7bd88f'; ctx.beginPath(); ctx.arc(0, 0, s, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = 'rgba(30,90,40,0.4)'; ctx.beginPath(); ctx.arc(0, 0, s * 0.72, 0, TAU); ctx.stroke();
+    ctx.fillStyle = '#2f7a42'; for (const p of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) { ctx.beginPath(); ctx.arc(p[0] * s * 0.22, p[1] * s * 0.22, s * 0.11, 0, TAU); ctx.fill(); }
+  } else if (k === 'leaf') {
+    ctx.rotate(0.6); ctx.fillStyle = '#ffa94d'; ctx.beginPath(); ctx.moveTo(0, -s); ctx.quadraticCurveTo(s * 0.9, 0, 0, s); ctx.quadraticCurveTo(-s * 0.9, 0, 0, -s); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, -s * 0.8); ctx.lineTo(0, s * 1.15); ctx.stroke();
+  } else if (k === 'cap') {
+    ctx.fillStyle = '#e8364f'; ctx.beginPath();
+    for (let i = 0; i < 24; i++) { const a = i / 24 * TAU, r = i % 2 ? s * 0.86 : s; ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r); }
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#ff7a8a'; ctx.beginPath(); ctx.arc(0, 0, s * 0.6, 0, TAU); ctx.fill();
+  } else {
+    ctx.fillStyle = '#b49cff';
+    ctx.beginPath(); ctx.moveTo(-s * 0.55, 0); ctx.lineTo(-s, -s * 0.45); ctx.lineTo(-s, s * 0.45); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(s * 0.55, 0); ctx.lineTo(s, -s * 0.45); ctx.lineTo(s, s * 0.45); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#d8c8ff'; ctx.beginPath(); ctx.ellipse(0, 0, s * 0.6, s * 0.48, 0, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = s * 0.1; ctx.beginPath(); ctx.moveTo(-s * 0.3, -s * 0.3); ctx.lineTo(-s * 0.1, s * 0.35); ctx.moveTo(s * 0.1, -s * 0.35); ctx.lineTo(s * 0.3, s * 0.3); ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawPiggy(x, y, s, o) {
+  o = o || {};
+  const pink = '#ff9fbf', dk = '#d9628a', ol = 'rgba(120,40,70,0.7)';
+  ctx.save(); ctx.translate(x, y); ctx.rotate(o.rot || 0);
+  const sq = o.sq || 0; ctx.scale(1 + sq, 1 - sq);
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.lineWidth = Math.max(2, s * 0.05); ctx.strokeStyle = ol;
+  ctx.fillStyle = 'rgba(80,30,50,0.18)'; ctx.beginPath(); ctx.ellipse(0, s * 1.08, s * 1.2, s * 0.16, 0, 0, TAU); ctx.fill();
+  ctx.fillStyle = dk;
+  for (const lx of [-0.75, -0.35, 0.35, 0.75]) { rr(lx * s - s * 0.15, s * 0.55, s * 0.3, s * 0.52, s * 0.12); ctx.fill(); ctx.stroke(); }
+  ctx.beginPath(); ctx.moveTo(-s * 1.25, -s * 0.05); ctx.bezierCurveTo(-s * 1.6, -s * 0.3, -s * 1.5, s * 0.25, -s * 1.38, -s * 0.12); ctx.stroke();
+  const g = ctx.createRadialGradient(-s * 0.3, -s * 0.4, s * 0.1, 0, 0, s * 1.4);
+  g.addColorStop(0, '#ffe3ee'); g.addColorStop(0.6, pink); g.addColorStop(1, '#f07aa3');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(0, 0, s * 1.3, s, 0, 0, TAU); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = dk; ctx.beginPath(); ctx.moveTo(s * 0.35, -s * 0.8); ctx.lineTo(s * 0.55, -s * 1.25); ctx.lineTo(s * 0.8, -s * 0.72); ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#5a1f38'; rr(-s * 0.38, -s * 1.0, s * 0.62, s * 0.14, s * 0.07); ctx.fill();
+  ctx.fillStyle = '#ffb3cc'; ctx.beginPath(); ctx.ellipse(s * 1.22, s * 0.08, s * 0.24, s * 0.32, 0, 0, TAU); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = dk; for (const ny of [-0.06, 0.2]) { ctx.beginPath(); ctx.ellipse(s * 1.25, s * ny, s * 0.05, s * 0.07, 0, 0, TAU); ctx.fill(); }
+  const ex = s * 0.72, ey = -s * 0.3;
+  if (o.happy) { ctx.strokeStyle = '#3a1a28'; ctx.lineWidth = s * 0.07; ctx.beginPath(); ctx.arc(ex, ey + s * 0.05, s * 0.12, Math.PI * 1.15, Math.PI * 1.85); ctx.stroke(); }
+  else if (o.sad) { ctx.strokeStyle = '#3a1a28'; ctx.lineWidth = s * 0.07; ctx.beginPath(); ctx.moveTo(ex - s * 0.12, ey); ctx.lineTo(ex + s * 0.12, ey); ctx.stroke(); }
+  else { ctx.fillStyle = '#3a1a28'; ctx.beginPath(); ctx.ellipse(ex, ey, s * 0.09, s * 0.12, 0, 0, TAU); ctx.fill(); ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(ex + s * 0.03, ey - s * 0.04, s * 0.035, 0, TAU); ctx.fill(); }
+  ctx.fillStyle = 'rgba(255,90,130,0.35)'; ctx.beginPath(); ctx.ellipse(s * 0.85, s * 0.18, s * 0.16, s * 0.09, 0, 0, TAU); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = s * 0.08; ctx.beginPath(); ctx.arc(-s * 0.2, -s * 0.1, s * 0.65, Math.PI * 1.1, Math.PI * 1.45); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.75)'; heartPath(-s * 0.35, s * 0.35, s * 0.22); ctx.fill();
+  ctx.restore();
+}
+function drawPurse(r, col, glow) {
+  const x = r.x, y = r.y, w = r.w, h = r.h;
+  ctx.save(); ctx.lineJoin = 'round';
+  if (glow) {
+    const k = 0.5 + 0.5 * Math.sin(time * 6);
+    rr(x - 8, y - 8, w + 16, h + 16, h * 0.16 + 8); ctx.strokeStyle = 'rgba(255,214,61,' + (0.6 + k * 0.4) + ')'; ctx.lineWidth = 6 + k * 3; ctx.stroke();
+  }
+  rr(x, y + h * 0.1 + 6, w, h * 0.9, h * 0.16); ctx.fillStyle = 'rgba(60,30,70,0.2)'; ctx.fill();
+  rr(x, y + h * 0.1, w, h * 0.9, h * 0.16);
+  const g = ctx.createLinearGradient(0, y, 0, y + h); g.addColorStop(0, shade(col, 40)); g.addColorStop(1, shade(col, -20));
+  ctx.fillStyle = g; ctx.fill(); ctx.strokeStyle = shade(col, -70); ctx.lineWidth = 3; ctx.stroke();
+  // 開口裡面
+  rr(x + w * 0.05, y + h * 0.17, w * 0.9, h * 0.77, h * 0.11); ctx.fillStyle = shade(col, 95); ctx.fill();
+  ctx.strokeStyle = rgba('#ffffff', 0.7); ctx.setLineDash([6, 6]); ctx.lineWidth = 2; ctx.stroke(); ctx.setLineDash([]);
+  // 金屬扣
+  ctx.fillStyle = '#f6c945'; ctx.strokeStyle = '#a47a10'; ctx.lineWidth = 2.5;
+  rr(x + w * 0.04, y + h * 0.07, w * 0.92, Math.max(8, h * 0.06), 5); ctx.fill(); ctx.stroke();
+  for (const sx of [-1, 1]) { ctx.beginPath(); ctx.arc(x + w / 2 + sx * h * 0.05, y + h * 0.05, Math.max(5, h * 0.04), 0, TAU); ctx.fill(); ctx.stroke(); }
+  ctx.restore();
+}
+
+/* =====================================================================
+ * 場景與狀態
+ * ===================================================================== */
+let scene = 'title', sceneT = 0, paused = false;
+let bgCanvas = document.createElement('canvas'), bgKey = '';
+function drawBg(key, painter) {
+  if (bgKey !== key) {
+    bgCanvas.width = Math.max(1, Math.round(W * dpr)); bgCanvas.height = Math.max(1, Math.round(H * dpr));
+    paintTo(bgCanvas, painter);
+    bgKey = key;
+  }
+  ctx.drawImage(bgCanvas, 0, 0, W, H);
+}
+function contentRect() { return W > H ? { x: 12, y: 70, w: W - 84, h: H - 80 } : { x: 12, y: 116, w: W - 24, h: H - 126 }; }
+function menuRect() { return W > H ? { x: 70, y: 70, w: W - 140, h: H - 80 } : { x: 14, y: 116, w: W - 28, h: H - 126 }; }
+
+const ACTS = [
+  { id: 'learn', name: '認識錢幣', color: 'yellow', hex: '#f8b921', say: '認識錢幣。點一點錢，聽聽看它是多少錢。' },
+  { id: 'count', name: '數一數', color: 'green', hex: '#3fbf5c', say: '數一數，看看一共有多少錢。' },
+  { id: 'pay', name: '湊湊看', color: 'blue', hex: '#3c9ff0', say: '湊湊看，把剛剛好的錢放進盤子裡。' },
+  { id: 'shop', name: '開店囉', color: 'pink', hex: '#f45f93', say: '開店囉！客人來買東西，要找錢給客人喔。' },
+  { id: 'compare', name: '比比看', color: 'purple', hex: '#9b6ff2', say: '比比看，哪一個錢包的錢比較多？' },
+  { id: 'piggy', name: '存錢筒', color: 'orange', hex: '#ff8a3d', say: '存錢筒！把錢存進小豬裡，存到目標就能買東西。' }
+];
+const ACTINFO = {}; ACTS.forEach(a => { ACTINFO[a.id] = a; });
+
+/** 在一個矩形裡用格子排錢（數一數、比比看用） */
+function gridLayout(items, r, opts) {
+  opts = opts || {};
+  const n = items.length;
+  if (!n) return 0;
+  let needW = 0, needH = 0;
+  for (const it of items) { const d = moneyDims(it.v, 1); needW = Math.max(needW, d.w * 1.18); needH = Math.max(needH, d.h * 1.22 + (opts.label ? 0.5 : 0)); }
+  let best = null;
+  for (let cols = 1; cols <= n; cols++) {
+    const rows = Math.ceil(n / cols), cw = r.w / cols, ch = r.h / rows;
+    const M = Math.min(cw / needW, ch / needH);
+    if (!best || M > best.M) best = { cols, rows, M };
+  }
+  const M = Math.min(best.M, opts.maxM || 60 * U);
+  const cw = Math.min(r.w / best.cols, needW * M * 1.25), ch = Math.min(r.h / best.rows, needH * M * 1.25);
+  const gy0 = r.y + (r.h - ch * best.rows) / 2 + (opts.label ? 0.25 * M : 0);
+  items.forEach((it, i) => {
+    const row = Math.floor(i / best.cols), col = i % best.cols;
+    const inRow = row === best.rows - 1 ? n - row * best.cols : best.cols;
+    const gx0 = r.x + (r.w - cw * inRow) / 2;
+    it.x = gx0 + (col + 0.5) * cw + (it.jx || 0) * cw * 0.5;
+    it.y = gy0 + (row + 0.5) * ch + (it.jy || 0) * ch * 0.4;
+  });
+  return M;
+}
+function genPile(spec, s) {
+  const kLo = spec.k[0], kHi = Math.round(lerp(Math.min(kLo + 1, spec.k[1]), spec.k[1], s));
+  const hiCap = Math.round(lerp(spec.lo + (spec.hi - spec.lo) * 0.45, spec.hi, s));
+  for (let tries = 0; tries < 400; tries++) {
+    const k = KG.randInt(kLo, kHi), list = [];
+    for (let i = 0; i < k; i++) list.push(KG.pick(spec.d));
+    const tot = sum(list);
+    if (tot < spec.lo || tot > hiCap) continue;
+    if (spec.d.length > 1 && k >= 3 && new Set(list).size < 2) continue;
+    return list;
+  }
+  return greedy(spec.lo, spec.d);
+}
+function greedy(amount, denoms) {
+  const out = [], ds = denoms.slice().sort((a, b) => b - a);
+  for (const d of ds) while (amount >= d) { out.push(d); amount -= d; }
+  return out;
+}
+function pickAmount(spec, s) {
+  const top = lerp(spec.lo + (spec.hi - spec.lo) * 0.4, spec.hi, s);
+  let v = KG.randInt(spec.lo, Math.max(spec.lo, Math.round(top)));
+  if (spec.step) v = Math.max(spec.step, Math.round(v / spec.step) * spec.step);
+  return v;
+}
+
+/* ---------- 共用的「付錢盤」：從來源拖錢進盤子 ---------- */
+let drag = null;
+const flyers = [];
+function newPayer(denoms, target) {
+  return { denoms, target, tray: [], srcPos: [], M: 30, trayM: 30, trayR: null, srcR: null, hintV: 0, done: false, nid: 0, onDone: null, onOver: null, label: '盤子', glow: 0 };
+}
+function payTotal(pp) { let s = 0; for (const it of pp.tray) s += it.v; return s; }
+function bestCoin(denoms, rem) { let b = 0; for (const d of denoms) if (d <= rem && d > b) b = d; return b; }
+function layoutSources(pp, r) {
+  pp.srcR = r;
+  const coins = pp.denoms.filter(v => !isBill(v)), bills = pp.denoms.filter(isBill);
+  const pad = 10 * U, iw = r.w - pad * 2, ih = r.h - pad * 2;
+  const CW = 2.45, BW = 3.85;
+  const units1 = coins.length * CW + bills.length * BW;
+  const M1 = Math.min(iw / units1, ih / (bills.length ? 2.2 : 2.3));
+  let M2 = 0;
+  if (coins.length && bills.length) M2 = Math.min(iw / Math.max(coins.length * CW, bills.length * BW), ih / (2.3 + 2.0));
+  const two = M2 > M1 * 1.12;
+  const M = Math.min(two ? M2 : M1, 46 * U);
+  pp.M = M; pp.srcPos = [];
+  const place = (list, cy) => {
+    const ws = list.map(v => (isBill(v) ? BW : CW) * M);
+    const tot = sum(ws);
+    const gap = Math.max(0, Math.min((iw - tot) / Math.max(1, list.length - 1 + 0.0001), 30 * U));
+    let x = r.x + r.w / 2 - (tot + gap * (list.length - 1)) / 2;
+    list.forEach((v, i) => { const d = moneyDims(v, M); pp.srcPos.push({ v, x: x + ws[i] / 2, y: cy, w: d.w, h: d.h }); x += ws[i] + gap; });
+  };
+  if (two) { const h1 = 2.3 * M, h2 = 2.0 * M, sp = (ih - h1 - h2) / 3; place(coins, r.y + pad + sp + h1 / 2); place(bills, r.y + pad + sp * 2 + h1 + h2 / 2); }
+  else place(pp.denoms, r.y + r.h / 2);
+}
+function layoutTray(pp, r) {
+  if (r) pp.trayR = r;
+  r = pp.trayR;
+  if (!r) return;
+  const inner = { x: r.x + 12 * U, y: r.y + 34 * U, w: r.w - 24 * U, h: r.h - 44 * U };
+  const sorted = pp.tray.slice().sort((a, b) => b.v - a.v || a.id - b.id);
+  let M = Math.min(pp.M, inner.h / 2.3), rows = [];
+  for (let iter = 0; iter < 16; iter++) {
+    rows = []; let cur = null;
+    for (const it of sorted) {
+      const d = moneyDims(it.v, M), step = isBill(it.v) ? d.w * 0.45 : d.w * 0.82;
+      if (cur && cur.w - cur.lastW + cur.lastStep + d.w > inner.w) { rows.push(cur); cur = null; }
+      if (!cur) cur = { items: [], w: 0, h: 0, lastW: 0, lastStep: 0 };
+      cur.w = cur.items.length ? cur.w - cur.lastW + cur.lastStep + d.w : d.w;
+      cur.items.push({ it, d, step }); cur.lastW = d.w; cur.lastStep = step; cur.h = Math.max(cur.h, d.h * 0.92);
+    }
+    if (cur) rows.push(cur);
+    const th = rows.reduce((s, q) => s + q.h, 0);
+    if (th <= inner.h || M < 8) break;
+    M *= 0.88;
+  }
+  pp.trayM = M;
+  const th = rows.reduce((s, q) => s + q.h, 0);
+  let y = inner.y + Math.max(0, (inner.h - th) / 2);
+  for (const row of rows) {
+    let x = inner.x + (inner.w - row.w) / 2;
+    for (const e of row.items) { e.it.tx = x + e.d.w / 2; e.it.ty = y + row.h / 2; x += e.step; }
+    y += row.h;
+  }
+}
+function flyBack(v, x, y, src, M, bounce) {
+  flyers.push({ v, x0: x, y0: y, x1: src ? src.x : x, y1: src ? src.y : y + 200, t: 0, dur: bounce ? 0.6 : 0.32, M, arc: bounce ? -90 * U : -24 * U, spin: bounce ? (Math.random() < 0.5 ? -1 : 1) * 5 : 0 });
+}
+function payerAdd(pp, v, x, y) {
+  if (pp.done || P.phase !== 'ask') return false;
+  const tot = payTotal(pp);
+  const src = pp.srcPos.find(s => s.v === v);
+  P.idle = 0;
+  if (tot + v > pp.target) {
+    flyBack(v, x, y, src, pp.M, true);
+    shake(4, 0.2);
+    if (pp.onOver) pp.onOver(v);
+    return false;
+  }
+  pp.tray.push({ v, x, y, tx: x, ty: y, rot: (Math.random() - 0.5) * (isBill(v) ? 0.08 : 0.3), sc: 1.3, id: pp.nid++ });
+  layoutTray(pp);
+  moneySound(v, x);
+  sfx('plop', { pitch: isBill(v) ? 1.25 : 1, vol: 0.7 });
+  pp.hintV = 0;
+  const now = tot + v;
+  if (now === pp.target) { pp.done = true; if (pp.onDone) pp.onDone(); }
+  else say(now + '元');
+  return true;
+}
+function payerRemove(pp, idx, x, y) {
+  const it = pp.tray.splice(idx, 1)[0];
+  if (!it) return;
+  const src = pp.srcPos.find(s => s.v === it.v);
+  flyBack(it.v, x == null ? it.x : x, y == null ? it.y : y, src, pp.trayM, false);
+  sfx('back');
+  layoutTray(pp);
+  P.idle = 0;
+}
+function payerDown(pp, x, y, pid) {
+  if (pp.done || P.phase !== 'ask') return false;
+  let best = null, bd = 1e9;
+  for (const s of pp.srcPos) {
+    const d = Math.hypot(x - s.x, y - s.y), rad = Math.max(s.w, s.h) * 0.55 + 22 * U;
+    if (d < rad && d < bd) { bd = d; best = s; }
+  }
+  if (best) {
+    drag = { kind: 'src', v: best.v, x, y, sx: x, sy: y, pid, moved: false, pp };
+    sfx('grab', { pitch: isBill(best.v) ? 0.85 : 1.1, pan: panOf(x) });
+    if (isBill(best.v)) sfx('paper', { vol: 0.5 });
+    return true;
+  }
+  for (let i = pp.tray.length - 1; i >= 0; i--) {
+    const it = pp.tray[i], d = moneyDims(it.v, pp.trayM);
+    if (Math.abs(x - it.x) < d.w / 2 + 8 && Math.abs(y - it.y) < d.h / 2 + 8) {
+      drag = { kind: 'tray', it, x, y, sx: x, sy: y, pid, moved: false, pp, ox: it.x - x, oy: it.y - y };
+      it.dragging = true;
+      sfx('grab', { pitch: 0.9 });
+      return true;
+    }
+  }
+  return false;
+}
+function payerMove(x, y) {
+  if (!drag) return;
+  drag.x = x; drag.y = y;
+  if (Math.hypot(x - drag.sx, y - drag.sy) > 10) drag.moved = true;
+  if (drag.kind === 'tray') { drag.it.x = x + drag.ox; drag.it.y = y + drag.oy; }
+}
+function payerUp(x, y) {
+  const d = drag; drag = null;
+  if (!d) return;
+  const pp = d.pp;
+  if (d.kind === 'src') {
+    const s = pp.srcPos.find(q => q.v === d.v);
+    if (!d.moved) payerAdd(pp, d.v, s.x, s.y);
+    else if (inRect(x, y, pp.trayR, 30 * U)) payerAdd(pp, d.v, x, y);
+    else { flyBack(d.v, x, y, s, pp.M, false); sfx('back'); }
+  } else {
+    d.it.dragging = false;
+    const idx = pp.tray.indexOf(d.it);
+    if (idx < 0) return;
+    if (!d.moved || !inRect(x, y, pp.trayR, 6)) payerRemove(pp, idx, d.it.x, d.it.y);
+    else layoutTray(pp);
+  }
+}
+function updatePayer(pp, dt) {
+  const k = 1 - Math.exp(-dt * 13);
+  for (const it of pp.tray) {
+    if (it.dragging) continue;
+    it.x += (it.tx - it.x) * k; it.y += (it.ty - it.y) * k;
+    it.sc += (1 - it.sc) * k;
+  }
+  if (pp.glow > 0) pp.glow -= dt;
+}
+function drawTrayPanel(r, title, col) {
+  // 木頭托盤（靜態，畫在背景）
+  rr(r.x, r.y + 5, r.w, r.h, 22 * U); ctx.fillStyle = 'rgba(90,50,20,0.22)'; ctx.fill();
+  rr(r.x, r.y, r.w, r.h, 22 * U);
+  const g = ctx.createLinearGradient(0, r.y, 0, r.y + r.h); g.addColorStop(0, '#e9b071'); g.addColorStop(1, '#c47d3f');
+  ctx.fillStyle = g; ctx.fill(); ctx.strokeStyle = '#8f5427'; ctx.lineWidth = 3; ctx.stroke();
+  rr(r.x + 8 * U, r.y + 8 * U, r.w - 16 * U, r.h - 16 * U, 16 * U);
+  const g2 = ctx.createLinearGradient(0, r.y, 0, r.y + r.h); g2.addColorStop(0, '#fbe3bd'); g2.addColorStop(1, '#f3cf98');
+  ctx.fillStyle = g2; ctx.fill();
+  ctx.fillStyle = 'rgba(120,70,30,0.12)'; rr(r.x + 8 * U, r.y + 8 * U, r.w - 16 * U, 10 * U, 8 * U); ctx.fill();
+  ctx.strokeStyle = 'rgba(160,100,50,0.35)'; ctx.setLineDash([8, 7]); ctx.lineWidth = 2;
+  rr(r.x + 14 * U, r.y + 14 * U, r.w - 28 * U, r.h - 28 * U, 12 * U); ctx.stroke(); ctx.setLineDash([]);
+  if (title) txt(title, r.x + 24 * U, r.y + 24 * U, 15 * U, '#8f5427', { align: 'left', shadow: false, weight: '800' });
+}
+function drawSrcPanel(r, dark) {
+  rr(r.x, r.y + 5, r.w, r.h, 22 * U); ctx.fillStyle = 'rgba(60,30,70,0.2)'; ctx.fill();
+  rr(r.x, r.y, r.w, r.h, 22 * U);
+  const g = ctx.createLinearGradient(0, r.y, 0, r.y + r.h);
+  if (dark) { g.addColorStop(0, '#6d7f95'); g.addColorStop(1, '#4b5a6e'); } else { g.addColorStop(0, '#ff9fbe'); g.addColorStop(1, '#e8648d'); }
+  ctx.fillStyle = g; ctx.fill(); ctx.strokeStyle = dark ? '#36414f' : '#b8366a'; ctx.lineWidth = 3; ctx.stroke();
+  rr(r.x + 7 * U, r.y + 7 * U, r.w - 14 * U, r.h - 14 * U, 16 * U); ctx.fillStyle = dark ? '#2f3a48' : '#fff0f5'; ctx.fill();
+}
+function drawSources(pp) {
+  for (const s of pp.srcPos) {
+    ctx.fillStyle = 'rgba(255,255,255,0.22)';
+    if (isBill(s.v)) { rr(s.x - s.w / 2 - 5, s.y - s.h / 2 - 5, s.w + 10, s.h + 10, 10); ctx.fill(); }
+    else { ctx.beginPath(); circ(s.x, s.y, s.w / 2 + 6); ctx.fill(); }
+    // 一疊的感覺
+    drawMoney(s.v, s.x + 2, s.y + 4, pp.M, 0, 1, 0.5);
+    const lift = drag && drag.kind === 'src' && drag.v === s.v ? 0.92 : 1;
+    drawMoney(s.v, s.x, s.y, pp.M, 0, lift);
+    if (pp.hintV === s.v && !pp.done) hintRing(s.x, s.y, s.w, s.h, isBill(s.v));
+  }
+}
+function drawTrayItems(pp) {
+  for (const it of pp.tray) if (!it.dragging) drawMoney(it.v, it.x, it.y, pp.trayM, it.rot, it.sc);
+  for (const it of pp.tray) if (it.dragging) drawMoney(it.v, it.x, it.y - 6, pp.trayM, it.rot, 1.15);
+}
+function drawTrayTotal(pp, ok, hideTotal) {
+  const r = pp.trayR; if (!r) return;
+  const tot = payTotal(pp), s = hideTotal ? '' : tot + ' 元';
+  if (!s) return;
+  const fs = 20 * U, w = Math.max(70 * U, fitSize(s, 999, fs) && ctx.measureText(s).width + 30 * U), h = 32 * U;
+  const x = r.x + r.w - w - 12 * U, y = r.y + 8 * U;
+  hudPanel(x, y, w, h, ok ? '#3fbf5c' : '#c47d3f');
+  txt(s, x + w / 2, y + h / 2 + 1, fs, ok ? '#24873e' : '#7a4518', { shadow: false });
+}
+function drawDrag() {
+  if (!drag || drag.kind !== 'src') return;
+  const pp = drag.pp;
+  drawMoney(drag.v, drag.x + 4, drag.y + 10, pp.M, 0, 1.12, 0.25);
+  drawMoney(drag.v, drag.x, drag.y - (drag.moved ? 8 : 0), pp.M, Math.sin(time * 10) * 0.04, 1.12);
+}
+function updateFlyers(dt) {
+  let j = 0;
+  for (let i = 0; i < flyers.length; i++) { const f = flyers[i]; f.t += dt; if (f.t < f.dur) flyers[j++] = f; }
+  flyers.length = j;
+}
+function drawFlyers() {
+  for (const f of flyers) {
+    const p = clamp(f.t / f.dur, 0, 1), e = Ease.outCubic(p);
+    const x = lerp(f.x0, f.x1, e), y = lerp(f.y0, f.y1, e) + f.arc * Math.sin(Math.PI * p);
+    drawMoney(f.v, x, y, f.M, f.spin * p, 1 - p * 0.2, 1 - p * 0.6);
+  }
+}
+
+/* =====================================================================
+ * 一關的流程
+ * ===================================================================== */
+const P = { act: null, lv: 0, round: 0, rounds: 5, pen: 0, roundPen: 0, results: [], streak: 0, phase: 'ask', t: 0, prompt: '', voice: '', data: null, idle: 0, idleHinted: false };
+function setPrompt(text, voice) { P.prompt = text; P.voice = voice || text; say(P.voice); }
+function mistake() {
+  P.roundPen = Math.min(2, P.roundPen + 1);
+  P.streak = 0;
+  bumpSkill(P.act.id, -0.12);
+  if (HAS_MUSIC) KG.music.setLayer('top', false);
+  sfx('boop');
+  KG.vibrate(25);
+  P.idle = 0;
+}
+function roundWon() {
+  P.phase = 'won'; P.t = 0;
+  const first = P.roundPen === 0;
+  P.results[P.round] = first;
+  P.pen += P.roundPen;
+  if (first) { P.streak++; bumpSkill(P.act.id, 0.1); }
+  if (P.streak >= 3 && HAS_MUSIC) KG.music.setLayer('top', true);
+  sfx('kaching');
+}
+function startLevel(actId, lv) {
+  const A = GAMES[actId];
+  P.act = A; P.lv = lv; P.round = 0; P.rounds = A.rounds; P.pen = 0; P.results = []; P.streak = 0;
+  scene = 'play'; sceneT = 0; paused = false; Result.hide();
+  fx.list.length = 0; drag = null; flyers.length = 0; tweens = [];
+  playSong(SONG_SHOP);
+  if (HAS_MUSIC) { KG.music.resume(); KG.music.setLayer('top', false); KG.music.setTempo(1); }
+  bgKey = '';
+  if (A.begin) A.begin(lv);
+  newRound();
+}
+function newRound() {
+  P.roundPen = 0; P.phase = 'ask'; P.t = 0; P.idle = 0; P.idleHinted = false;
+  drag = null;
+  P.act.round(P.lv);
+  P.act.layout();
+  if (HAS_MUSIC) KG.music.setTempo(P.round === P.rounds - 1 ? 1.05 : 1);
+}
+function finishLevel() {
+  P.phase = 'end';
+  const stars = P.pen <= 1 ? 3 : P.pen <= 4 ? 2 : 1;
+  const prevBest = starsOf(P.act.id)[P.lv] || 0;
+  setStars(P.act.id, P.lv, stars);
+  KG.best(SLUG + ':' + P.act.id + ':' + P.lv, stars);
+  KG.best(SLUG + ':total', ACTS.filter(a => GAMES[a.id]).reduce((s, a) => s + totalStars(a.id), 0));
+  const firsts = P.results.filter(Boolean).length;
+  const title = stars === 3 ? '太厲害了！' : stars === 2 ? '做得很好！' : '完成了！';
+  const hasNext = P.lv < 5;
+  const unlock = hasNext && prevBest === 0 && !(starsOf(P.act.id)[P.lv + 1] > 0) ? '第 ' + (P.lv + 2) + ' 關打開了！' : '';
+  if (HAS_MUSIC) KG.music.setTempo(1);
+  Result.show({
+    stars, title, color: ACTINFO[P.act.id].hex,
+    lines: ['一次就答對：' + firsts + ' / ' + P.rounds, '最佳紀錄：' + Math.max(prevBest, stars) + ' 顆星'],
+    unlock,
+    onMenu: () => goLevels(P.act.id),
+    onRetry: () => startLevel(P.act.id, P.lv),
+    onNext: hasNext ? () => startLevel(P.act.id, P.lv + 1) : null
+  });
+  say(title + '你得到' + stars + '顆星星！');
+}
+
+/* =====================================================================
+ * 遊戲 1：數一數
+ * ===================================================================== */
+const COUNT_LV = [
+  { d: [1], lo: 1, hi: 5, k: [1, 5] },
+  { d: [1, 5], lo: 3, hi: 10, k: [2, 5] },
+  { d: [1, 5, 10], lo: 8, hi: 30, k: [2, 6] },
+  { d: [1, 5, 10, 50], lo: 20, hi: 100, k: [3, 7] },
+  { d: [5, 10, 50, 100], lo: 60, hi: 300, k: [3, 7] },
+  { d: [50, 100, 500, 1000], lo: 150, hi: 2000, k: [3, 7] }
+];
+function makeChoices(T, vals, spec) {
+  const set = new Set([T]), cands = [];
+  for (const d of new Set(vals.concat(spec.d))) cands.push(T + d, T - d);
+  if (T <= 12) cands.push(T + 1, T - 1, T + 2, T - 2);
+  for (const c of KG.shuffle(cands.filter(c => c > 0 && c !== T))) { if (set.size >= 3) break; set.add(c); }
+  let a = 1; while (set.size < 3) { set.add(T + a); a++; }
+  return [...set].sort((a2, b) => a2 - b);
+}
+const CountGame = {
+  id: 'count', rounds: 5,
+  round(lv) {
+    const spec = COUNT_LV[lv], s = getSkill('count');
+    let vals = genPile(spec, s);
+    if (lv <= 3) vals.sort((a, b) => b - a); else vals = KG.shuffle(vals);
+    const total = sum(vals);
+    P.data = {
+      spec, total, choices: makeChoices(total, vals, spec), off: {}, run: 0, auto: null, M: 30, win: -1,
+      items: vals.map((v, i) => ({ v, jx: (Math.random() - 0.5) * 0.3, jy: (Math.random() - 0.5) * 0.3, rot: (Math.random() - 0.5) * (isBill(v) ? 0.2 : 0.5), x: 0, y: 0, counted: 0, pop: 0, t0: i * 0.08 }))
+    };
+    setPrompt('一共有多少錢？', '數一數，一共有多少錢？');
+  },
+  layout() {
+    const c = contentRect(), D = P.data, land = W > H * 1.15;
+    if (land) { const aw = Math.min(230 * U, c.w * 0.3); D.table = { x: c.x, y: c.y, w: c.w - aw - 12, h: c.h }; D.ans = { x: c.x + c.w - aw, y: c.y, w: aw, h: c.h, vert: true }; }
+    else { const ah = Math.min(96 * U, c.h * 0.18); D.table = { x: c.x, y: c.y, w: c.w, h: c.h - ah - 18 }; D.ans = { x: c.x, y: c.y + c.h - ah - 4, w: c.w, h: ah, vert: false }; }
+    const t = D.table, inner = { x: t.x + 16 * U, y: t.y + 22 * U, w: t.w - 32 * U, h: t.h - 34 * U };
+    D.M = gridLayout(D.items, inner, { label: true, maxM: 64 * U });
+  },
+  paintBg() {
+    const D = P.data;
+    const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#dff5e1'); g.addColorStop(1, '#bfe7c7');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    dotPattern('#ffffff', 0.35);
+    const t = D.table;
+    rr(t.x, t.y + 6, t.w, t.h, 26 * U); ctx.fillStyle = 'rgba(40,80,40,0.22)'; ctx.fill();
+    rr(t.x, t.y, t.w, t.h, 26 * U); ctx.fillStyle = '#b8783f'; ctx.fill(); ctx.strokeStyle = '#7d4a20'; ctx.lineWidth = 3; ctx.stroke();
+    rr(t.x + 10 * U, t.y + 10 * U, t.w - 20 * U, t.h - 20 * U, 18 * U);
+    const g2 = ctx.createRadialGradient(t.x + t.w / 2, t.y + t.h / 2, 10, t.x + t.w / 2, t.y + t.h / 2, Math.max(t.w, t.h) * 0.7);
+    g2.addColorStop(0, '#5ec27a'); g2.addColorStop(1, '#3a9a57'); ctx.fillStyle = g2; ctx.fill();
+  },
+  update(dt) {
+    const D = P.data;
+    for (const it of D.items) if (it.pop < 1) it.pop = Math.min(1, it.pop + dt * 3);
+    if (D.auto) {
+      D.auto.t -= dt;
+      if (D.auto.t <= 0) {
+        const it = D.items[D.auto.i];
+        if (it) { this.countItem(it, true); D.auto.i++; D.auto.t = 0.75; }
+        else { D.auto = null; say('一共是多少元呢？'); }
+      }
+    }
+  },
+  countItem(it, auto) {
+    const D = P.data;
+    if (it.counted) { moneySound(it.v, it.x, true); return; }
+    D.run += it.v; it.counted = D.run; it.pop = 0;
+    moneySound(it.v, it.x);
+    fx.ring(it.x, it.y, '#ffe066', moneyDims(it.v, D.M).r * 0.9, 0.4);
+    say(D.run + '元');
+    if (!auto) P.idle = 0;
+  },
+  answer(i) {
+    const D = P.data, v = D.choices[i];
+    if (P.phase !== 'ask' || D.off[v]) return;
+    P.idle = 0;
+    if (v === D.total) {
+      D.win = i; roundWon();
+      for (const it of D.items) fx.burst(it.x, it.y, { n: 4, shape: 'sparkle', colors: ['#fff', '#ffe066'], speed: 160, size: 6 * U, g: 0, life: 0.6 });
+      say('答對了！一共' + D.total + '元！');
+    } else {
+      D.off[v] = true; mistake(); shake(5, 0.25);
+      say('不是' + v + '元喔，我們一起數一數。');
+      for (const it of D.items) it.counted = 0;
+      D.run = 0; D.auto = { i: 0, t: 1.6 };
+    }
+  },
+  hint() { const D = P.data; if (!D.auto) { for (const it of D.items) it.counted = 0; D.run = 0; D.auto = { i: 0, t: 0.3 }; say('點一點錢，一起數一數。'); } },
+  draw() {
+    const D = P.data, M = D.M;
+    for (let i = 0; i < D.items.length; i++) {
+      const it = D.items[i];
+      const ap = clamp((P.t - it.t0) * 4, 0, 1), sc = Ease.outBack(ap) * (it.counted ? 1 + 0.12 * Math.sin(Math.min(1, it.pop) * Math.PI) : 1);
+      const jump = P.phase === 'won' ? -Math.abs(Math.sin(P.t * 8 + i)) * 8 * U * Math.max(0, 1 - P.t) : 0;
+      if (it.counted) {
+        const d = moneyDims(it.v, M);
+        ctx.fillStyle = 'rgba(255,255,255,0.35)';
+        if (isBill(it.v)) { rr(it.x - d.w / 2 - 6, it.y - d.h / 2 - 6, d.w + 12, d.h + 12, 10); ctx.fill(); } else { ctx.beginPath(); circ(it.x, it.y, d.r + 6); ctx.fill(); }
+      }
+      drawMoney(it.v, it.x, it.y + jump, M, it.rot, sc);
+      if (it.counted) {
+        const d = moneyDims(it.v, M), s = String(it.counted), fs = Math.max(14, 18 * U);
+        ctx.font = '900 ' + fs + 'px ' + FONT;
+        const w = ctx.measureText(s).width + 16, bx = it.x + d.w * 0.3, by = it.y - d.h / 2 - 2;
+        const ps = Ease.outBack(Math.min(1, it.pop * 1.5));
+        ctx.save(); ctx.translate(bx, by); ctx.scale(ps, ps);
+        rr(-w / 2, -fs * 0.7, w, fs * 1.4, fs * 0.7); ctx.fillStyle = '#ff6b9a'; ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5; ctx.stroke();
+        txt(s, 0, 1, fs, '#fff', { shadow: false });
+        ctx.restore();
+      }
+    }
+    // 答案按鈕
+    const a = D.ans, n = D.choices.length, gap = 12 * U;
+    for (let i = 0; i < n; i++) {
+      let bx, by, bw, bh;
+      if (a.vert) { bh = Math.min(84 * U, (a.h - gap * (n - 1)) / n); bw = a.w; bx = a.x; by = a.y + (a.h - (bh * n + gap * (n - 1))) / 2 + i * (bh + gap); }
+      else { bw = (a.w - gap * (n - 1)) / n; bh = a.h - 10; bx = a.x + i * (bw + gap); by = a.y; }
+      const v = D.choices[i], off = D.off[v], win = D.win === i;
+      button('ans' + i, bx, by, bw, bh, { label: v + ' 元', color: win ? 'green' : off ? 'white' : 'yellow', size: Math.min(bh * 0.42, 34 * U), disabled: off || P.phase !== 'ask', dimAlpha: off ? 0.45 : 1, radius: 20 * U, onClick: () => this.answer(i), pulse: win });
+    }
+  },
+  down(x, y) {
+    const D = P.data;
+    if (P.phase !== 'ask' || D.auto) return;
+    let best = null, bd = 1e9;
+    for (const it of D.items) { const d = moneyDims(it.v, D.M); const dist = Math.hypot(x - it.x, y - it.y); if (dist < Math.max(d.w, d.h) * 0.6 + 14 && dist < bd) { bd = dist; best = it; } }
+    if (best) { this.countItem(best); return true; }
+    return false;
+  },
+  key(k) { if (k >= '1' && k <= '3') this.answer(+k - 1); },
+  solve() { const D = P.data; this.answer(D.choices.indexOf(D.total)); }
+};
+
+/* =====================================================================
+ * 遊戲 2：湊湊看（付剛好的錢）
+ * ===================================================================== */
+const PAY_LV = [
+  { d: [1], lo: 1, hi: 5 },
+  { d: [1, 5], lo: 3, hi: 10 },
+  { d: [1, 5, 10], lo: 8, hi: 30 },
+  { d: [1, 5, 10, 50], lo: 20, hi: 100 },
+  { d: [1, 5, 10, 50, 100], lo: 60, hi: 300, step: 5 },
+  { d: [1, 5, 10, 50, 100, 500, 1000], lo: 300, hi: 2000, step: 10 }
+];
+let lastAmount = 0;
+function freshAmount(spec, s) { let v, n = 0; do { v = pickAmount(spec, s); n++; } while (v === lastAmount && n < 10); lastAmount = v; return v; }
+const PayGame = {
+  id: 'pay', rounds: 5,
+  round(lv) {
+    const spec = PAY_LV[lv], price = freshAmount(spec, getSkill('pay')), item = pickItem();
+    const pp = newPayer(spec.d, price);
+    P.data = { spec, price, item, pp, pop: 0 };
+    pp.onDone = () => {
+      roundWon(); pp.glow = 1.2;
+      const r = pp.trayR; fx.burst(r.x + r.w / 2, r.y + r.h / 2, { n: 24, colors: ['#ffe066', '#fff', '#7bd88f'], speed: 280, size: 7 * U, g: 300 });
+      fx.text(r.x + r.w / 2, r.y + r.h * 0.45, '剛剛好！', { size: 34 * U, color: '#fff', stroke: '#2f8a48' });
+      say('付好了！剛剛好' + price + '元！');
+    };
+    pp.onOver = (v) => {
+      mistake();
+      const rem = price - payTotal(pp);
+      pp.hintV = bestCoin(spec.d, rem);
+      say('太多了喔！還差' + rem + '元，試試這個。');
+    };
+    setPrompt('付 ' + price + ' 元', item.name + '要' + price + '元，請把錢放進盤子裡。');
+  },
+  layout() {
+    const c = contentRect(), D = P.data, land = W > H * 1.15;
+    if (land) {
+      const cw = Math.min(c.w * 0.3, 260 * U);
+      D.card = { x: c.x, y: c.y, w: cw, h: c.h };
+      const rx = c.x + cw + 12, rw = c.w - cw - 12;
+      D.trayR = { x: rx, y: c.y, w: rw, h: c.h * 0.46 };
+      D.srcR = { x: rx, y: c.y + c.h * 0.46 + 12, w: rw, h: c.h * 0.54 - 12 };
+    } else {
+      D.card = { x: c.x, y: c.y, w: c.w, h: c.h * 0.24 };
+      D.trayR = { x: c.x, y: c.y + c.h * 0.24 + 12, w: c.w, h: c.h * 0.38 };
+      D.srcR = { x: c.x, y: c.y + c.h * 0.62 + 24, w: c.w, h: c.h * 0.38 - 24 };
+    }
+    layoutSources(D.pp, D.srcR);
+    layoutTray(D.pp, D.trayR);
+  },
+  paintBg() {
+    const D = P.data;
+    const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#e2f2ff'); g.addColorStop(1, '#c4e3ff');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    dotPattern('#ffffff', 0.45);
+    const c = D.card;
+    rr(c.x, c.y + 6, c.w, c.h, 24 * U); ctx.fillStyle = 'rgba(30,60,110,0.18)'; ctx.fill();
+    rr(c.x, c.y, c.w, c.h, 24 * U); ctx.fillStyle = '#fffdf6'; ctx.fill(); ctx.strokeStyle = '#3c9ff0'; ctx.lineWidth = 3; ctx.stroke();
+    drawTrayPanel(D.trayR, '付錢盤');
+    drawSrcPanel(D.srcR, false);
+  },
+  update(dt) { updatePayer(P.data.pp, dt); },
+  hint() { const D = P.data, rem = D.price - payTotal(D.pp); D.pp.hintV = bestCoin(D.spec.d, rem); say('還差' + rem + '元，試試這個。'); },
+  draw() {
+    const D = P.data, c = D.card, pp = D.pp;
+    const land = c.h > c.w;
+    // 商品＋價格牌
+    const bob = Math.sin(time * 2.5) * 3;
+    const won = P.phase === 'won' ? Ease.outElastic(clamp(P.t * 1.5, 0, 1)) * 0.15 : 0;
+    if (land) {
+      const s = Math.min(c.w * 0.3, c.h * 0.2);
+      ctx.save(); ctx.translate(c.x + c.w / 2, c.y + c.h * 0.33 + bob); ctx.scale(1 + won, 1 + won); drawItem(D.item.k, 0, 0, s); ctx.restore();
+      priceTag(c.x + c.w / 2, c.y + c.h * 0.72, D.price, Math.min(c.w * 0.8, 170 * U));
+    } else {
+      const s = Math.min(c.h * 0.34, c.w * 0.15);
+      ctx.save(); ctx.translate(c.x + c.w * 0.3, c.y + c.h * 0.5 + bob); ctx.scale(1 + won, 1 + won); drawItem(D.item.k, 0, 0, s); ctx.restore();
+      priceTag(c.x + c.w * 0.68, c.y + c.h * 0.52, D.price, Math.min(c.w * 0.5, 190 * U));
+    }
+    drawTrayItems(pp);
+    drawTrayTotal(pp, pp.done);
+    drawSources(pp);
+  },
+  down(x, y, e) { return payerDown(P.data.pp, x, y, e && e.pointerId); },
+  move(x, y) { payerMove(x, y); },
+  up(x, y) { payerUp(x, y); },
+  key(k) { payKey(P.data.pp, k); },
+  solve() { const pp = P.data.pp; let rem = pp.target - payTotal(pp); while (rem > 0 && !pp.done) { const v = bestCoin(pp.denoms, rem); const s = pp.srcPos.find(q => q.v === v); payerAdd(pp, v, s.x, s.y); rem -= v; } }
+};
+function payKey(pp, k) {
+  if (k >= '1' && k <= '9') { const s = pp.srcPos[+k - 1]; if (s) payerAdd(pp, s.v, s.x, s.y); }
+  else if (k === 'Backspace' && pp.tray.length && !pp.done) payerRemove(pp, pp.tray.length - 1);
+}
+function priceTag(cx, cy, price, w) {
+  const h = w * 0.46, s = price + ' 元';
+  ctx.save(); ctx.translate(cx, cy); ctx.rotate(-0.05 + Math.sin(time * 2) * 0.02);
+  ctx.strokeStyle = '#b57c0b'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(-w / 2 + h * 0.3, 0); ctx.quadraticCurveTo(-w / 2 - h * 0.2, -h * 0.7, -w / 2 - h * 0.1, -h * 0.9); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-w / 2, 0); ctx.lineTo(-w / 2 + h * 0.4, -h / 2); ctx.lineTo(w / 2 - 8, -h / 2); ctx.quadraticCurveTo(w / 2, -h / 2, w / 2, -h / 2 + 8);
+  ctx.lineTo(w / 2, h / 2 - 8); ctx.quadraticCurveTo(w / 2, h / 2, w / 2 - 8, h / 2); ctx.lineTo(-w / 2 + h * 0.4, h / 2); ctx.closePath();
+  ctx.fillStyle = 'rgba(120,80,0,0.2)'; ctx.save(); ctx.translate(0, 4); ctx.fill(); ctx.restore();
+  const g = ctx.createLinearGradient(0, -h / 2, 0, h / 2); g.addColorStop(0, '#fff3a8'); g.addColorStop(1, '#ffd23f');
+  ctx.fillStyle = g; ctx.fill(); ctx.strokeStyle = '#b57c0b'; ctx.lineWidth = 3; ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(-w / 2 + h * 0.32, 0, h * 0.09, 0, TAU); ctx.fill(); ctx.stroke();
+  const fs = fitSize(s, w * 0.68, h * 0.5);
+  txt(s, h * 0.18, 2, fs, '#7a4f00', { shadow: false });
+  ctx.restore();
+}
+
+/* =====================================================================
+ * 遊戲 3：開店囉（找錢給客人）
+ * ===================================================================== */
+const SHOP_LV = [
+  { lo: 1, hi: 4, d: [1], pay: () => [5] },
+  { lo: 1, hi: 9, d: [1, 5], pay: () => [10] },
+  { lo: 12, hi: 45, d: [1, 5, 10], pay: () => [50] },
+  { lo: 15, hi: 95, d: [1, 5, 10, 50], pay: p => p < 50 && Math.random() < 0.5 ? [50] : [100] },
+  { lo: 110, hi: 490, step: 5, d: [1, 5, 10, 50, 100], pay: p => p < 200 ? [100, 100] : [500] },
+  { lo: 120, hi: 990, step: 10, d: [10, 50, 100, 500], pay: p => p < 500 ? [500] : [1000] }
+];
+let lastCust = '';
+const ShopGame = {
+  id: 'shop', rounds: 5, wonDelay: 2.4,
+  begin() { this.sales = 0; },
+  round(lv) {
+    const spec = SHOP_LV[lv], s = getSkill('shop');
+    const price = freshAmount(spec, s), paid = spec.pay(price), paidT = sum(paid), change = paidT - price;
+    let kind; do { kind = KG.pick(ANIMAL_KEYS); } while (kind === lastCust); lastCust = kind;
+    const item = pickItem();
+    const pp = newPayer(spec.d, change);
+    P.data = { spec, price, paid, paidT, change, item, pp, show: lv <= 2 || s < 0.3,
+      cust: { kind, x: -200, state: 'in', t: 0, mood: 'idle' }, paidDrop: 0 };
+    pp.onDone = () => {
+      roundWon(); pp.glow = 1.2;
+      const D = P.data; D.cust.state = 'happy'; D.cust.t = 0; D.cust.mood = 'happy';
+      this.sales += price;
+      setTimeout(() => sfx('chirp', { pitch: 1.05 }), 380);
+      fx.burst(D.cust.x, D.custY, { n: 10, shape: 'heart', colors: ['#ff6b9a', '#ff9fbf', '#fff'], speed: 200, up: 120, size: 9 * U, g: 120 });
+      say('謝謝老闆！');
+    };
+    pp.onOver = () => {
+      mistake();
+      const D = P.data, rem = change - payTotal(pp);
+      D.show = true; pp.hintV = bestCoin(spec.d, rem);
+      D.cust.mood = 'think';
+      say('太多了喔！還要再找' + rem + '元。');
+    };
+    P.phase = 'intro';
+    P.prompt = '客人來囉！'; P.voice = '';
+    sfx('dingdong');
+  },
+  layout() {
+    const c = contentRect(), D = P.data, land = W > H * 1.15;
+    if (land) {
+      const sw = c.w * 0.44;
+      D.S = { x: c.x, y: c.y, w: sw, h: c.h };
+      const rx = c.x + sw + 12, rw = c.w - sw - 12, eh = Math.min(64 * U, c.h * 0.2);
+      D.E = { x: rx, y: c.y, w: rw, h: eh };
+      D.trayR = { x: rx, y: c.y + eh + 10, w: rw, h: (c.h - eh - 10) * 0.42 };
+      D.srcR = { x: rx, y: D.trayR.y + D.trayR.h + 10, w: rw, h: c.y + c.h - (D.trayR.y + D.trayR.h + 10) };
+    } else {
+      const sh = c.h * 0.34, eh = Math.min(64 * U, c.h * 0.1);
+      D.S = { x: c.x, y: c.y, w: c.w, h: sh };
+      D.E = { x: c.x, y: c.y + sh + 8, w: c.w, h: eh };
+      D.trayR = { x: c.x, y: D.E.y + eh + 10, w: c.w, h: c.h * 0.24 };
+      D.srcR = { x: c.x, y: D.trayR.y + D.trayR.h + 10, w: c.w, h: c.y + c.h - (D.trayR.y + D.trayR.h + 10) };
+    }
+    const S = D.S;
+    D.counterY = S.y + S.h * 0.66;
+    D.cs = Math.min(S.w * 0.15, S.h * 0.2);
+    D.custTX = S.x + S.w * 0.27;
+    D.custY = D.counterY - D.cs * 1.25;
+    if (D.cust.state !== 'in') D.cust.x = D.custTX;
+    D.bub = { w: Math.min(S.w * 0.46, 200 * U), x: 0, y: 0, h: 0 };
+    D.bub.h = Math.min(D.bub.w * 0.72, D.counterY - S.y - 12);
+    D.bub.x = S.x + S.w - D.bub.w - 8; D.bub.y = S.y + 8;
+    D.paidM = Math.min(S.h * 0.12, 32 * U, S.w * 0.075);
+    D.paidX = S.x + S.w * 0.68; D.paidY = D.counterY + (S.y + S.h - D.counterY) * 0.5;
+    layoutSources(D.pp, D.srcR);
+    layoutTray(D.pp, D.trayR);
+  },
+  paintBg() {
+    const D = P.data, S = D.S;
+    const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#fff2dc'); g.addColorStop(1, '#ffe2bd');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    // 牆壁條紋
+    ctx.fillStyle = 'rgba(255,190,120,0.18)';
+    for (let x = 0; x < W; x += 36) ctx.fillRect(x, 0, 18, H);
+    // 店面
+    rr(S.x, S.y + 5, S.w, S.h, 22 * U); ctx.fillStyle = 'rgba(120,60,20,0.2)'; ctx.fill();
+    rr(S.x, S.y, S.w, S.h, 22 * U); ctx.fillStyle = '#fff8ea'; ctx.fill(); ctx.strokeStyle = '#e58b4d'; ctx.lineWidth = 3; ctx.stroke();
+    ctx.save(); rr(S.x, S.y, S.w, S.h, 22 * U); ctx.clip();
+    // 架子與商品
+    const shelfY = [S.y + S.h * 0.22, S.y + S.h * 0.46];
+    for (let r = 0; r < 2; r++) {
+      ctx.fillStyle = '#c98a4b'; ctx.fillRect(S.x, shelfY[r], S.w, 7 * U);
+      const n = Math.max(3, Math.floor(S.w / (60 * U)));
+      for (let i = 0; i < n; i++) {
+        const k = ITEMS[(i * 3 + r * 5) % ITEMS.length].k, s = Math.min(S.h * 0.07, 16 * U);
+        ctx.globalAlpha = 0.6; drawItem(k, S.x + (i + 0.5) * S.w / n, shelfY[r] - s * 0.95, s); ctx.globalAlpha = 1;
+      }
+    }
+    // 遮雨棚
+    const aw = S.w / 8;
+    for (let i = 0; i < 8; i++) { ctx.fillStyle = i % 2 ? '#fff' : '#ff6b8a'; ctx.fillRect(S.x + i * aw, S.y, aw, 16 * U); ctx.beginPath(); ctx.arc(S.x + i * aw + aw / 2, S.y + 16 * U, aw / 2, 0, Math.PI); ctx.fill(); }
+    ctx.restore();
+    // 等式條
+    const E = D.E;
+    // 找錢盤與收銀機抽屜
+    drawTrayPanel(D.trayR, '找錢盤');
+    drawSrcPanel(D.srcR, true);
+    void E;
+  },
+  update(dt) {
+    const D = P.data, c = D.cust;
+    c.t += dt;
+    updatePayer(D.pp, dt);
+    if (c.state === 'in') {
+      c.x += (D.custTX - c.x) * (1 - Math.exp(-dt * 5));
+      if (Math.floor(c.t * 6) !== Math.floor((c.t - dt) * 6) && c.t < 0.9) sfx('step', { pitch: 0.9 + Math.random() * 0.2, vol: 0.6 });
+      if (c.t > 1.0) {
+        c.state = 'wait'; c.x = D.custTX; D.paidDrop = 0;
+        P.phase = 'ask'; P.t = 0; P.idle = 0;
+        for (const v of D.paid) moneySound(v, D.paidX);
+        tween(D, { paidDrop: 1 }, 0.5, 'outBack');
+        const A = ANIMALS[c.kind];
+        P.prompt = D.show ? '要找 ' + D.change + ' 元' : '要找多少錢？';
+        P.voice = A.name + '要買' + D.item.name + '，' + D.price + '元。給你' + D.paidT + '元。' + (D.show ? '請找' + D.change + '元。' : '要找多少錢呢？');
+        say(P.voice);
+      }
+    } else if (c.state === 'happy' && c.t > 1.1) { c.state = 'out'; c.t = 0; }
+    else if (c.state === 'out') { c.x += dt * 420 * U; }
+    if (c.state === 'wait' && c.mood === 'think' && P.idle > 2) c.mood = 'idle';
+  },
+  hint() { const D = P.data, rem = D.change - payTotal(D.pp); D.show = true; D.pp.hintV = bestCoin(D.spec.d, rem); P.prompt = '要找 ' + D.change + ' 元'; say('要找' + D.change + '元，試試這個。'); },
+  draw() {
+    const D = P.data, S = D.S, c = D.cust, pp = D.pp;
+    ctx.save(); rr(S.x, S.y, S.w, S.h, 22 * U); ctx.clip();
+    const bob = c.state === 'in' || c.state === 'out' ? -Math.abs(Math.sin(c.t * 10)) * 6 * U : Math.sin(time * 2) * 2;
+    const jump = c.state === 'happy' ? -Math.abs(Math.sin(c.t * 7)) * 14 * U : 0;
+    drawAnimal(c.kind, c.x, D.custY + bob + jump, D.cs, { mood: c.mood, wave: c.state === 'happy' });
+    // 櫃台
+    const cy = D.counterY;
+    ctx.fillStyle = '#b8743c'; ctx.fillRect(S.x, cy, S.w, S.y + S.h - cy);
+    ctx.fillStyle = '#d99a5c'; ctx.fillRect(S.x, cy, S.w, 10 * U);
+    ctx.fillStyle = 'rgba(255,255,255,0.25)'; ctx.fillRect(S.x, cy, S.w, 3 * U);
+    ctx.fillStyle = 'rgba(90,40,10,0.18)'; for (let x = S.x + 30; x < S.x + S.w; x += 60 * U) ctx.fillRect(x, cy + 14 * U, 3, S.y + S.h - cy);
+    // 客人給的錢
+    if (c.state !== 'in') {
+      const n = D.paid.length;
+      for (let i = 0; i < n; i++) {
+        const dy = (1 - D.paidDrop) * -40 * U;
+        drawMoney(D.paid[i], D.paidX + (i - (n - 1) / 2) * D.paidM * 1.6, D.paidY + dy + i * 3, D.paidM, -0.08 + i * 0.12, 1, Math.min(1, D.paidDrop * 2));
+      }
+    }
+    ctx.restore();
+    // 對話框：想買什麼
+    if (c.state === 'wait' || c.state === 'happy') {
+      const b = D.bub, ap = Ease.outBack(clamp(c.t * 3, 0, 1));
+      ctx.save(); ctx.translate(b.x + b.w / 2, b.y + b.h / 2); ctx.scale(ap, ap); ctx.translate(-(b.x + b.w / 2), -(b.y + b.h / 2));
+      rr(b.x, b.y + 4, b.w, b.h, 18 * U); ctx.fillStyle = 'rgba(60,30,70,0.15)'; ctx.fill();
+      rr(b.x, b.y, b.w, b.h, 18 * U); ctx.fillStyle = '#fff'; ctx.fill(); ctx.strokeStyle = '#f45f93'; ctx.lineWidth = 3; ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(b.x + 10, b.y + b.h * 0.62); ctx.lineTo(b.x - 14 * U, b.y + b.h * 0.8); ctx.lineTo(b.x + 10, b.y + b.h * 0.82); ctx.fillStyle = '#fff'; ctx.fill();
+      if (c.state === 'happy') { heartPath(b.x + b.w / 2, b.y + b.h * 0.55, b.h * 0.3); ctx.fillStyle = '#ff6b9a'; ctx.fill(); }
+      else {
+        const s = Math.min(b.h * 0.26, b.w * 0.2);
+        drawItem(D.item.k, b.x + b.w * 0.27, b.y + b.h * 0.5, s);
+        const fs = fitSize(D.price + '元', b.w * 0.44, Math.min(26 * U, b.h * 0.3));
+        txt(D.price + '元', b.x + b.w * 0.7, b.y + b.h * 0.5, fs, '#c2305f', { shadow: false });
+      }
+      ctx.restore();
+    }
+    // 等式條：價錢、收到、要找
+    if (c.state !== 'in') {
+      const E = D.E, gap = 8 * U, cw = (E.w - gap * 2) / 3;
+      const chips = [['價錢', D.price + '元', '#f8b921'], ['收到', D.paidT + '元', '#3c9ff0'], ['要找', (D.show || pp.done ? D.change : '?') + '元', '#f45f93']];
+      for (let i = 0; i < 3; i++) {
+        const x = E.x + i * (cw + gap), y = E.y;
+        hudPanel(x, y, cw, E.h, chips[i][2], 14 * U);
+        const fs1 = Math.max(10, Math.min(13 * U, E.h * 0.24)), fs2 = fitSize(chips[i][1], cw * 0.85, Math.max(15, Math.min(22 * U, E.h * 0.4)));
+        txt(chips[i][0], x + cw / 2, y + E.h * 0.27, fs1, shade(chips[i][2], -60), { shadow: false, weight: '800' });
+        txt(chips[i][1], x + cw / 2, y + E.h * 0.66, fs2, i === 2 ? '#c2305f' : '#4a3b52', { shadow: false });
+      }
+    }
+    drawTrayItems(pp);
+    drawTrayTotal(pp, pp.done);
+    drawSources(pp);
+    // 營業額
+    const sr = D.srcR, st = '今天賺了 ' + this.sales + ' 元';
+    const fs = Math.min(13 * U, 14);
+    txt(st, sr.x + sr.w - 14 * U, sr.y + sr.h - 12 * U, fs, 'rgba(255,255,255,0.7)', { align: 'right', shadow: false, weight: '800' });
+  },
+  down(x, y, e) { return payerDown(P.data.pp, x, y, e && e.pointerId); },
+  move(x, y) { payerMove(x, y); },
+  up(x, y) { payerUp(x, y); },
+  key(k) { payKey(P.data.pp, k); },
+  solve() { if (P.phase === 'intro') { P.data.cust.t = 5; this.update(0.016); } PayGame.solve.call(this); }
+};
+
+/* =====================================================================
+ * 遊戲 4：比比看（哪個錢包比較多）
+ * ===================================================================== */
+const CMP_LV = [
+  { d: [1], k: [1, 5], trick: 0 },
+  { d: [1, 5], k: [1, 5], trick: 0.5 },
+  { d: [1, 5, 10], k: [1, 5], trick: 0.55 },
+  { d: [1, 5, 10, 50], k: [1, 6], trick: 0.6 },
+  { d: [10, 50, 100], k: [1, 6], trick: 0.6 },
+  { d: [50, 100, 500, 1000], k: [1, 6], trick: 0.6 }
+];
+function pick1(spec) { const k = KG.randInt(spec.k[0], spec.k[1]), a = []; for (let i = 0; i < k; i++) a.push(KG.pick(spec.d)); return a; }
+const CompareGame = {
+  id: 'compare', rounds: 6,
+  round(lv) {
+    const spec = CMP_LV[lv], s = getSkill('compare');
+    const wantTrick = Math.random() < spec.trick * (0.6 + s * 0.6);
+    let a, b;
+    for (let tries = 0; tries < 600; tries++) {
+      a = pick1(spec); b = pick1(spec);
+      const ta = sum(a), tb = sum(b);
+      if (ta === tb) continue;
+      if (wantTrick && tries < 400 && !(a.length !== b.length && (a.length > b.length) !== (ta > tb))) continue;
+      const ratio = Math.min(ta, tb) / Math.max(ta, tb);
+      if (tries < 300 && ratio < lerp(0, 0.55, s) && lv > 0) continue;
+      break;
+    }
+    a.sort((x, y) => y - x); b.sort((x, y) => y - x);
+    const mk = vals => vals.map(v => ({ v, x: 0, y: 0, jx: (Math.random() - 0.5) * 0.25, jy: (Math.random() - 0.5) * 0.25, rot: (Math.random() - 0.5) * (isBill(v) ? 0.15 : 0.4) }));
+    P.data = { spec, purses: [{ items: mk(a), total: sum(a), col: '#ff8fb1' }, { items: mk(b), total: sum(b), col: '#6cc4ff' }], reveal: false, win: -1, wrong: -1 };
+    setPrompt('哪一個比較多？', '比比看，哪一個錢包的錢比較多？');
+  },
+  layout() {
+    const c = contentRect(), D = P.data, land = W > H;
+    const gap = 16 * U;
+    D.purses.forEach((p, i) => {
+      let r;
+      if (land) { const w = (c.w - gap) / 2; r = { x: c.x + i * (w + gap), y: c.y + 6, w, h: c.h - 46 * U }; }
+      else { const h = (c.h - gap - 72 * U) / 2; r = { x: c.x + 6, y: c.y + i * (h + gap + 36 * U), w: c.w - 12, h }; }
+      p.r = r;
+      const inner = { x: r.x + r.w * 0.08, y: r.y + r.h * 0.22, w: r.w * 0.84, h: r.h * 0.7 };
+      p.M = gridLayout(p.items, inner, { maxM: 46 * U });
+      p.labelY = r.y + r.h + 20 * U;
+    });
+  },
+  paintBg() {
+    const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#f1eaff'); g.addColorStop(1, '#ddd0ff');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    dotPattern('#ffffff', 0.5);
+  },
+  update() {},
+  choose(i) {
+    const D = P.data;
+    if (P.phase !== 'ask') return;
+    const p = D.purses[i], o = D.purses[1 - i];
+    P.idle = 0;
+    if (p.total > o.total) {
+      D.win = i; D.reveal = true; roundWon();
+      fx.burst(p.r.x + p.r.w / 2, p.r.y + p.r.h / 2, { n: 22, colors: ['#ffe066', '#fff', '#ff8fb1'], speed: 260, size: 7 * U, g: 250 });
+      say('答對了！這邊有' + p.total + '元，比較多！');
+    } else {
+      if (D.wrong === i) { sfx('boop'); return; }
+      D.wrong = i; D.reveal = true; mistake(); shake(5, 0.25);
+      say('這邊有' + p.total + '元，那邊有' + o.total + '元。哪一個比較多呢？');
+    }
+  },
+  hint() { P.data.reveal = true; const D = P.data; say('這邊有' + D.purses[0].total + '元，那邊有' + D.purses[1].total + '元。'); },
+  draw() {
+    const D = P.data;
+    D.purses.forEach((p, i) => {
+      const r = p.r, ap = Ease.outBack(clamp(P.t * 3 - i * 0.3, 0, 1));
+      const won = D.win === i && P.phase === 'won';
+      const sc = ap * (won ? 1 + Math.sin(P.t * 10) * 0.02 * Math.max(0, 2 - P.t) : 1);
+      ctx.save(); ctx.translate(r.x + r.w / 2, r.y + r.h / 2); ctx.scale(sc, sc); ctx.translate(-(r.x + r.w / 2), -(r.y + r.h / 2));
+      if (D.wrong === i && P.phase === 'ask') ctx.globalAlpha = 0.65;
+      drawPurse(r, p.col, D.win === i);
+      for (const it of p.items) drawMoney(it.v, it.x, it.y, p.M, it.rot, 1);
+      ctx.restore();
+      if (D.reveal) {
+        const s = p.total + ' 元', fs = 22 * U;
+        ctx.font = '900 ' + fs + 'px ' + FONT;
+        const w = ctx.measureText(s).width + 34 * U, h = 34 * U;
+        hudPanel(r.x + r.w / 2 - w / 2, p.labelY - h / 2, w, h, D.win === i ? '#3fbf5c' : shade(p.col, -40));
+        txt(s, r.x + r.w / 2, p.labelY + 1, fs, '#4a3b52', { shadow: false });
+      }
+    });
+    // 中間的「?」或大於符號
+    const a = D.purses[0].r, b = D.purses[1].r, land = W > H;
+    const mx = land ? (a.x + a.w + b.x) / 2 : a.x + a.w / 2, my = land ? a.y + a.h / 2 : (a.y + a.h + D.purses[0].labelY + 18 * U + b.y) / 2 - 6 * U;
+    if (land && D.win >= 0) { ctx.fillStyle = '#fff'; ctx.beginPath(); circ(mx, my, 22); ctx.fill(); ctx.strokeStyle = '#9b6ff2'; ctx.lineWidth = 3; ctx.stroke(); txt(D.win === 0 ? '>' : '<', mx, my, 28, '#9b6ff2', { shadow: false }); }
+  },
+  down(x, y) {
+    const D = P.data;
+    let best = -1, bd = 1e9;
+    D.purses.forEach((p, i) => { const r = p.r, dx = Math.max(r.x - x, 0, x - r.x - r.w), dy = Math.max(r.y - y, 0, y - r.y - r.h), d = Math.hypot(dx, dy); if (d < 40 && d < bd) { bd = d; best = i; } });
+    if (best >= 0) { this.choose(best); return true; }
+    return false;
+  },
+  key(k) {
+    if (k === '1' || k === 'ArrowLeft' || k === 'ArrowUp') this.choose(0);
+    else if (k === '2' || k === 'ArrowRight' || k === 'ArrowDown') this.choose(1);
+  },
+  solve() { const D = P.data; this.choose(D.purses[0].total > D.purses[1].total ? 0 : 1); }
+};
+
+/* =====================================================================
+ * 遊戲 5：存錢筒（點掉下來的錢存進小豬，存到目標）
+ * ===================================================================== */
+const PIGGY_LV = [
+  { d: [1], lo: 3, hi: 5, step: 1 },
+  { d: [1, 5], lo: 6, hi: 12, step: 1 },
+  { d: [1, 5, 10], lo: 15, hi: 35, step: 1 },
+  { d: [5, 10, 50], lo: 40, hi: 120, step: 5 },
+  { d: [10, 50, 100], lo: 150, hi: 400, step: 10 },
+  { d: [50, 100, 500, 1000], lo: 600, hi: 2000, step: 50 }
+];
+const PiggyGame = {
+  id: 'piggy', rounds: 3, wonDelay: 2.6,
+  round(lv) {
+    const spec = PIGGY_LV[lv], s = getSkill('piggy');
+    const goal = pickAmount(spec, s), item = pickItem();
+    P.data = { spec, goal, item, total: 0, pending: 0, falling: [], spawnT: 0.4, lastUseful: 0,
+      pig: { sq: 0, rot: 0, happy: 0, sad: 0 }, shown: 0, prize: 0 };
+    setPrompt('存到 ' + goal + ' 元', '點掉下來的錢，存進小豬裡。存到' + goal + '元，就可以買' + item.name + '！');
+  },
+  layout() {
+    const c = contentRect(), D = P.data, land = W > H * 1.15;
+    if (land) { const gw = Math.min(c.w * 0.28, 240 * U); D.G = { x: c.x, y: c.y, w: gw, h: c.h }; D.F = { x: c.x + gw + 12, y: c.y, w: c.w - gw - 12, h: c.h }; }
+    else { const gh = Math.min(96 * U, c.h * 0.16); D.G = { x: c.x, y: c.y, w: c.w, h: gh }; D.F = { x: c.x, y: c.y + gh + 10, w: c.w, h: c.h - gh - 10 }; }
+    const F = D.F;
+    D.ps = Math.min(F.w * 0.16, F.h * 0.12, 70 * U);
+    D.px = F.x + F.w / 2; D.py = F.y + F.h - D.ps * 1.25;
+    D.M = clamp(Math.min(F.w / 11, F.h / 12), 18, 38 * U);
+  },
+  paintBg() {
+    const D = P.data;
+    const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#bfe8ff'); g.addColorStop(1, '#fff3dc');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = 'rgba(255,255,255,0.8)';
+    for (let i = 0; i < 6; i++) { const x = (i * 0.19 + 0.05) * W, y = (0.15 + (i % 3) * 0.17) * H; ctx.beginPath(); ctx.ellipse(x, y, 40 * U, 16 * U, 0, 0, TAU); ctx.ellipse(x + 26 * U, y - 10 * U, 26 * U, 16 * U, 0, 0, TAU); ctx.fill(); }
+    const F = D.F;
+    ctx.fillStyle = '#9fdc8c'; ctx.beginPath(); ctx.ellipse(F.x + F.w / 2, F.y + F.h + 30 * U, F.w * 0.7, 70 * U, 0, 0, TAU); ctx.fill();
+    const G = D.G;
+    rr(G.x, G.y + 5, G.w, G.h, 22 * U); ctx.fillStyle = 'rgba(120,60,20,0.18)'; ctx.fill();
+    rr(G.x, G.y, G.w, G.h, 22 * U); ctx.fillStyle = '#fffdf6'; ctx.fill(); ctx.strokeStyle = '#ff8a3d'; ctx.lineWidth = 3; ctx.stroke();
+  },
+  remaining() { const D = P.data; return D.goal - D.total - D.pending; },
+  spawn(forceUseful) {
+    const D = P.data, spec = D.spec, F = D.F, rem = this.remaining();
+    let kind = 'money', v = 0, dk = '';
+    const valid = spec.d.filter(d => d <= rem);
+    if (!forceUseful && Math.random() < 0.16) { kind = 'junk'; dk = KG.pick(DISTRACT); }
+    else if (forceUseful || Math.random() < 0.7) {
+      if (!valid.length) return;
+      const wsum = valid.reduce((s, d, i) => s + i + 1, 0); let r = Math.random() * wsum;
+      v = valid[0]; for (let i = 0; i < valid.length; i++) { r -= i + 1; if (r <= 0) { v = valid[i]; break; } }
+    } else v = KG.pick(spec.d);
+    const sz = kind === 'money' ? moneyDims(v, D.M) : { w: D.M * 1.6, h: D.M * 1.6 };
+    // 不要跟其他東西疊在一起，也避開小豬正上方
+    let x = 0;
+    for (let tries = 0; tries < 12; tries++) {
+      x = F.x + sz.w / 2 + 6 + Math.random() * Math.max(1, F.w - sz.w - 12);
+      if (D.falling.every(f => Math.abs(f.x - x) > (sz.w + f.w) * 0.55 || f.y > F.y + F.h * 0.35)) break;
+    }
+    D.falling.push({ kind, v, dk, x, y: F.y - sz.h * 0.6, w: sz.w, h: sz.h, vy: (34 + P.lv * 5 + getSkill('piggy') * 16) * U * (0.85 + Math.random() * 0.3), sway: Math.random() * TAU, rot: 0, out: 0, vx: 0, spin: 0 });
+  },
+  update(dt) {
+    const D = P.data, F = D.F, pig = D.pig;
+    pig.sq *= Math.exp(-dt * 8); pig.rot = pig.sad > 0 ? Math.sin(time * 30) * 0.08 * pig.sad : pig.rot * Math.exp(-dt * 8);
+    if (pig.happy > 0) pig.happy -= dt; if (pig.sad > 0) pig.sad -= dt;
+    if (P.phase === 'ask') {
+      D.spawnT -= dt;
+      const usefulOnScreen = D.falling.some(f => f.kind === 'money' && !f.out && f.v <= this.remaining());
+      D.lastUseful = usefulOnScreen ? 0 : D.lastUseful + dt;
+      const maxN = W > H ? 6 : 5;
+      if (D.spawnT <= 0 && D.falling.length < maxN) { this.spawn(D.lastUseful > 2.5); D.spawnT = lerp(1.7, 1.15, P.lv / 5) * (0.8 + Math.random() * 0.4); }
+    }
+    let j = 0;
+    for (let i = 0; i < D.falling.length; i++) {
+      const f = D.falling[i];
+      if (f.out) { f.out += dt; f.vy += 900 * U * dt; f.x += f.vx * dt; f.y += f.vy * dt; f.rot += f.spin * dt; if (f.out > 1.2) continue; }
+      else { f.y += f.vy * dt; f.sway += dt * 2; f.rot = Math.sin(f.sway) * 0.25; if (f.y - f.h / 2 > F.y + F.h) continue; }
+      D.falling[j++] = f;
+    }
+    D.falling.length = j;
+    if (D.prize > 0) D.prize += dt;
+  },
+  tapItem(f) {
+    const D = P.data, pig = D.pig;
+    P.idle = 0;
+    if (f.kind === 'junk') {
+      f.out = 0.01; f.vy = -260 * U; f.vx = (Math.random() - 0.5) * 200; f.spin = 8;
+      mistake(); pig.sad = 0.8; sfx('poof');
+      fx.burst(f.x, f.y, { n: 8, shape: 'circle', colors: ['#fff', '#e0d4f0'], speed: 120, size: 7 * U, g: 0, life: 0.5 });
+      say('這不是錢喔！');
+      return;
+    }
+    const rem = this.remaining();
+    if (f.v > rem) {
+      f.out = 0.01; f.vy = -320 * U; f.vx = (f.x < D.px ? -1 : 1) * 180; f.spin = 6;
+      mistake(); pig.sad = 0.9; sfx('oink', { pitch: 0.85 });
+      say('太多了！只差' + rem + '元喔。');
+      return;
+    }
+    // 飛進小豬
+    D.falling.splice(D.falling.indexOf(f), 1);
+    D.pending += f.v;
+    moneySound(f.v, f.x, true);
+    const fl = { v: f.v, x: f.x, y: f.y, p: 0 };
+    const sx = f.x, sy = f.y, tx = D.px - D.ps * 0.1, ty = D.py - D.ps * 1.0;
+    tween(fl, { p: 1 }, 0.45, 'inOutSine', 0, () => {
+      D.pending -= fl.v; D.total += fl.v;
+      pig.sq = 0.12; sfx('piggy', { pitch: isBill(fl.v) ? 0.85 : 1 });
+      fx.burst(tx, ty, { n: 8, shape: 'sparkle', colors: ['#ffe066', '#fff'], speed: 150, size: 6 * U, g: 200, life: 0.5 });
+      fx.text(tx, ty - 20 * U, '+' + fl.v, { size: 24 * U, color: '#fff', stroke: '#c1561a' });
+      if (D.total >= D.goal && P.phase === 'ask') this.complete();
+      else if (P.phase === 'ask') say(D.total + '元');
+    });
+    fl.sx = sx; fl.sy = sy; fl.tx = tx; fl.ty = ty;
+    D.flying = D.flying || []; D.flying.push(fl);
+  },
+  complete() {
+    const D = P.data;
+    roundWon(); D.pig.happy = 2.5; D.prize = 0.01;
+    for (const f of D.falling) if (!f.out) { f.out = 0.6; f.vy = 0; }
+    fx.burst(D.px, D.py - D.ps, { n: 26, colors: ['#ffe066', '#fff', '#ff8fb1', '#7bd88f'], speed: 300, size: 8 * U, g: 300, up: 100 });
+    say('存到' + D.goal + '元了！可以買' + D.item.name + '囉！');
+  },
+  hint() {
+    const D = P.data, rem = this.remaining();
+    say('還差' + rem + '元。點一點錢，存進小豬裡！');
+    D.hintT = 2.5;
+  },
+  draw() {
+    const D = P.data, G = D.G, F = D.F, pig = D.pig;
+    // 目標卡
+    const land = G.h > G.w;
+    if (land) {
+      const s = Math.min(G.w * 0.26, G.h * 0.14);
+      drawItem(D.item.k, G.x + G.w / 2, G.y + G.h * 0.2, s);
+      txt('目標', G.x + G.w / 2, G.y + G.h * 0.4, Math.max(14, 15 * U), '#c1561a', { shadow: false, weight: '800' });
+      txt(D.goal + ' 元', G.x + G.w / 2, G.y + G.h * 0.5, fitSize(D.goal + ' 元', G.w * 0.8, Math.max(24, 30 * U)), '#4a3b52', { shadow: false });
+      progressBar(G.x + 14 * U, G.y + G.h * 0.62, G.w - 28 * U, 22 * U, D.total / D.goal, '#ff8a3d');
+      txt('已存 ' + D.total + ' 元', G.x + G.w / 2, G.y + G.h * 0.74, fitSize('已存 ' + D.total + ' 元', G.w * 0.86, Math.max(17, 18 * U)), '#c1561a', { shadow: false });
+      txt('還差 ' + (D.goal - D.total) + ' 元', G.x + G.w / 2, G.y + G.h * 0.84, fitSize('還差 ' + (D.goal - D.total) + ' 元', G.w * 0.86, Math.max(15, 16 * U)), '#6a4a7a', { shadow: false, weight: '800' });
+    } else {
+      const s = Math.min(G.h * 0.32, 34 * U);
+      drawItem(D.item.k, G.x + s * 1.4, G.y + G.h / 2, s);
+      const tx = G.x + s * 2.8, tw = G.w - s * 2.8 - 14 * U;
+      txt('目標 ' + D.goal + ' 元', tx, G.y + G.h * 0.28, fitSize('目標 ' + D.goal + ' 元', tw * 0.6, 22 * U), '#4a3b52', { align: 'left', shadow: false });
+      txt('已存 ' + D.total, tx + tw, G.y + G.h * 0.28, 16 * U, '#c1561a', { align: 'right', shadow: false, weight: '800' });
+      progressBar(tx, G.y + G.h * 0.55, tw, 22 * U, D.total / D.goal, '#ff8a3d');
+    }
+    // 掉下來的東西
+    for (const f of D.falling) {
+      const a = f.out ? Math.max(0, 1 - f.out) : 1;
+      const useful = D.hintT > 0 && f.kind === 'money' && !f.out && f.v <= this.remaining();
+      if (useful) hintRing(f.x, f.y, f.w, f.h, isBill(f.v));
+      if (f.kind === 'money') drawMoney(f.v, f.x, f.y, D.M, f.rot, 1, a);
+      else { ctx.save(); ctx.globalAlpha = a; drawDistractor(f.dk, f.x, f.y, D.M * 0.8); ctx.restore(); }
+    }
+    if (D.hintT > 0) D.hintT -= 1 / 60;
+    // 小豬
+    drawPiggy(D.px, D.py, D.ps, { sq: pig.sq, rot: pig.rot, happy: pig.happy > 0, sad: pig.sad > 0 });
+    // 飛行中的錢
+    if (D.flying) {
+      let j = 0;
+      for (const fl of D.flying) {
+        if (fl.p >= 1) continue;
+        const x = lerp(fl.sx, fl.tx, fl.p), y = lerp(fl.sy, fl.ty, fl.p) - Math.sin(fl.p * Math.PI) * 60 * U;
+        drawMoney(fl.v, x, y, D.M, fl.p * 4, 1 - fl.p * 0.5);
+        D.flying[j++] = fl;
+      }
+      D.flying.length = j;
+    }
+    // 買到的獎品
+    if (D.prize > 0) {
+      const p = Ease.outBack(clamp(D.prize * 2, 0, 1)), s = D.ps * 0.8;
+      ctx.save(); ctx.translate(D.px, D.py - D.ps * 2.4); ctx.scale(p, p);
+      ctx.fillStyle = 'rgba(255,240,170,0.5)'; ctx.rotate(time);
+      for (let i = 0; i < 10; i++) { ctx.rotate(TAU / 10); ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-s * 0.25, s * 1.6); ctx.lineTo(s * 0.25, s * 1.6); ctx.fill(); }
+      ctx.restore();
+      ctx.save(); ctx.translate(D.px, D.py - D.ps * 2.4); ctx.scale(p, p); drawItem(D.item.k, 0, 0, s); ctx.restore();
+    }
+  },
+  down(x, y) {
+    const D = P.data;
+    if (P.phase !== 'ask') return;
+    let best = null, bd = 1e9;
+    for (const f of D.falling) { if (f.out) continue; const d = Math.hypot(x - f.x, y - f.y); if (d < Math.max(f.w, f.h) * 0.6 + 24 * U && d < bd) { bd = d; best = f; } }
+    if (best) { this.tapItem(best); return true; }
+    return false;
+  },
+  key(k) {
+    const D = P.data;
+    if (k >= '1' && k <= '9') {
+      const v = D.spec.d[+k - 1];
+      const f = D.falling.filter(q => !q.out && q.kind === 'money' && q.v === v).sort((a, b) => b.y - a.y)[0];
+      if (f) this.tapItem(f);
+    }
+  },
+  solve() {
+    const D = P.data;
+    if (P.phase !== 'ask') return;
+    D.total = D.goal; D.pending = 0; this.complete();
+  }
+};
+
+const GAMES = { count: CountGame, pay: PayGame, shop: ShopGame, compare: CompareGame, piggy: PiggyGame };
+const LEVEL_DENOMS = { count: COUNT_LV, pay: PAY_LV, shop: SHOP_LV, compare: CMP_LV, piggy: PIGGY_LV };
+
+function dotPattern(col, a) {
+  ctx.fillStyle = rgba(col, a);
+  const step = 46;
+  for (let y = 0; y < H + step; y += step) for (let x = ((y / step) % 2) * step / 2; x < W + step; x += step) { ctx.beginPath(); circ(x, y, 3.5); ctx.fill(); }
+}
+
+/* =====================================================================
+ * HUD（題目泡泡、進度點、暫停）
+ * ===================================================================== */
+function hudRects() {
+  if (W > H) { const bw = Math.min(W - 132, 720); return { bubble: { x: (W - bw) / 2, y: 8, w: bw, h: 54 }, dotsIn: true }; }
+  return { bubble: { x: 10, y: 62, w: W - 80, h: 46 }, pill: { x: 66, y: 10, w: W - 132, h: 42 }, dotsIn: false };
+}
+function drawRoundDots(cx, cy, maxW) {
+  const n = P.rounds, r = Math.min(7, maxW / (n * 3.2)), gap = r * 3;
+  const x0 = cx - (n - 1) * gap / 2;
+  for (let i = 0; i < n; i++) {
+    const x = x0 + i * gap;
+    if (i < P.round || (i === P.round && P.phase === 'won') || P.phase === 'end') {
+      const ok = P.results[i];
+      ctx.fillStyle = ok ? '#3fbf5c' : '#f8b921'; ctx.beginPath(); circ(x, cy, r); ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+    } else if (i === P.round) {
+      ctx.fillStyle = '#ff6b9a'; ctx.beginPath(); circ(x, cy, r * (1 + Math.sin(time * 6) * 0.15)); ctx.fill();
+    } else { ctx.fillStyle = 'rgba(90,70,110,0.22)'; ctx.beginPath(); circ(x, cy, r * 0.8); ctx.fill(); }
+  }
+}
+function drawHud() {
+  const h = hudRects(), info = ACTINFO[P.act.id];
+  const b = h.bubble;
+  btnReg.push({ id: 'bubble', x: b.x, y: b.y, w: b.w, h: b.h, onClick: () => { if (P.voice) say(P.voice); } });
+  hudPanel(b.x, b.y, b.w, b.h, info.hex, 18);
+  const ic = b.h * 0.36, icx = b.x + 12 + ic, icy = h.dotsIn ? b.y + b.h * 0.4 : b.y + b.h / 2;
+  ctx.fillStyle = info.hex; ctx.beginPath(); circ(icx, icy, ic); ctx.fill();
+  drawIcon('speaker', icx + 1, icy, ic * 1.15, '#fff');
+  const tx0 = icx + ic + 10, tw = b.x + b.w - 12 - tx0;
+  const fs = fitSize(P.prompt, tw, Math.min(24, b.h * (h.dotsIn ? 0.42 : 0.5)));
+  txt(P.prompt, tx0 + tw / 2, h.dotsIn ? b.y + b.h * 0.38 : b.y + b.h / 2 + 1, fs, '#4a3b52', { shadow: false });
+  if (h.dotsIn) drawRoundDots(tx0 + tw / 2, b.y + b.h - 10, tw * 0.6);
+  if (h.pill) {
+    const p = h.pill;
+    hudPanel(p.x, p.y, p.w, p.h, info.hex);
+    const lab = info.name + ' ' + (P.lv + 1);
+    const lfs = fitSize(lab, p.w * 0.42, 17);
+    txt(lab, p.x + 16, p.y + p.h / 2 + 1, lfs, shade(info.hex, -60), { align: 'left', shadow: false });
+    ctx.font = '900 ' + lfs + 'px ' + FONT;
+    const lw = ctx.measureText(lab).width;
+    drawRoundDots(p.x + 16 + lw + (p.w - 32 - lw) / 2 + 8, p.y + p.h / 2, p.w - lw - 40);
+  }
+  fab('pause', W - 34, 84, 'pause', () => setPaused(true));
+}
+function setPaused(on) {
+  if (on === paused) return;
+  paused = on;
+  if (on) { drag = null; if (HAS_MUSIC) KG.music.pause(); sfx('ui'); }
+  else { if (HAS_MUSIC) KG.music.resume(); }
+}
+
+/* =====================================================================
+ * 結算畫面
+ * ===================================================================== */
+const Result = {
+  on: false, t: 0, o: null, shown: 0, panel: { s: 0 },
+  show(o) {
+    this.on = true; this.t = 0; this.o = o; this.shown = 0; this.panel.s = 0;
+    tween(this.panel, { s: 1 }, 0.5, 'outBack');
+    this.unlockPlayed = false;
+    if (HAS_MUSIC) { KG.music.stop(0.3); clearTimeout(this.musT); this.musT = setTimeout(() => { if (this.on) playSong(SONG_TITLE); }, 2800); }
+    jingle({ bpm: 150, inst: 'bell', vol: 0.8, notes: [['C5', 1], ['F5', 1], ['A5', 1], ['C6', 2], ['A5', 1], ['C6', 3]], bass: [['F3', 4, 0], ['C3', 2, 4], ['F3', 4, 6]] });
+    if (o.stars >= 2) KG.confetti();
+  },
+  hide() { this.on = false; },
+  update(dt) {
+    if (!this.on) return;
+    this.t += dt;
+    const o = this.o;
+    while (this.shown < 3 && this.t > 1.0 + this.shown * 0.4) {
+      if (this.shown < o.stars) {
+        sfx('starding', { pitch: [1, 1.26, 1.5][this.shown] });
+        const p = this.starPos(this.shown);
+        fx.burst(p[0], p[1], { n: 14, colors: ['#ffe066', '#fff', '#ffb02e'], speed: 240, g: 300, size: 7 * UO });
+        if (this.shown === o.stars - 1 && o.stars === 3) setTimeout(() => jingle({ bpm: 190, inst: 'bell', notes: [['F5', 1], ['A5', 1], ['C6', 1], ['F6', 3]] }), 350);
+      }
+      this.shown++;
+    }
+    if (o.unlock && !this.unlockPlayed && this.t > 1.2 + o.stars * 0.4 + 0.5) { this.unlockPlayed = true; sfx('levelup', { pitch: 0.667 }); }
+  },
+  geom() {
+    const pw = Math.min(W - 32, 420 * UO), ph = Math.min(H - 60, 420 * UO);
+    return { x: (W - pw) / 2, y: (H - ph) / 2 + 18 * UO, w: pw, h: ph };
+  },
+  starPos(i) { const g = this.geom(); return [W / 2 + (i - 1) * g.w * 0.24, g.y + g.h * 0.24 - (i === 1 ? 12 * UO : 0)]; },
+  draw() {
+    if (!this.on) return;
+    const o = this.o, g = this.geom(), col = o.color;
+    ctx.fillStyle = 'rgba(50,25,70,' + (0.45 * Math.min(1, this.t * 3)) + ')'; ctx.fillRect(0, 0, W, H);
+    const s = this.panel.s;
+    ctx.save();
+    ctx.translate(W / 2, g.y + g.h / 2); ctx.scale(s, s); ctx.translate(-W / 2, -(g.y + g.h / 2));
+    ctx.save(); ctx.translate(W / 2, g.y + g.h * 0.24); ctx.rotate(time * 0.4);
+    ctx.fillStyle = 'rgba(255,240,170,0.16)';
+    for (let i = 0; i < 12; i++) { ctx.rotate(TAU / 12); ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-28 * UO, g.w * 0.7); ctx.lineTo(28 * UO, g.w * 0.7); ctx.fill(); }
+    ctx.restore();
+    rr(g.x, g.y + 10, g.w, g.h, 30 * UO); ctx.fillStyle = 'rgba(60,30,70,0.3)'; ctx.fill();
+    rr(g.x, g.y, g.w, g.h, 30 * UO);
+    const pg = ctx.createLinearGradient(0, g.y, 0, g.y + g.h); pg.addColorStop(0, '#fffdf6'); pg.addColorStop(1, '#fff1e0');
+    ctx.fillStyle = pg; ctx.fill(); ctx.lineWidth = 6 * UO; ctx.strokeStyle = col; ctx.stroke();
+    // 緞帶
+    const bw = g.w * 0.86, bh = 50 * UO, by = g.y - bh * 0.45;
+    rr(W / 2 - bw / 2, by, bw, bh, 14 * UO); ctx.fillStyle = col; ctx.fill(); ctx.strokeStyle = shade(col, -50); ctx.lineWidth = 3; ctx.stroke();
+    txt(o.title, W / 2, by + bh / 2 + 1, fitSize(o.title, bw * 0.85, 26 * UO), '#fff', { stroke: shade(col, -60), sw: 7 * UO });
+    for (let i = 0; i < 3; i++) {
+      const p = this.starPos(i), on = i < this.shown && i < o.stars;
+      let k = 1;
+      if (on) { const tt = this.t - (1.0 + i * 0.4); k = tt < 0.4 ? Ease.outElastic(clamp(tt / 0.4, 0, 1)) : 1 + Math.sin(time * 3 + i) * 0.03; }
+      glossyStar(p[0], p[1], (i === 1 ? 42 : 34) * UO * (on ? k : 1), on, on ? Math.sin(time * 2 + i) * 0.08 : 0);
+    }
+    let ty = g.y + g.h * 0.45;
+    const lfs = Math.min(19 * UO, g.h * 0.055);
+    for (const l of o.lines) { txt(l, W / 2, ty, lfs, '#5a2d5c', { shadow: false, weight: '800' }); ty += lfs * 1.6; }
+    if (o.unlock) { const pulse = 1 + Math.sin(time * 6) * 0.04; ctx.save(); ctx.translate(W / 2, ty + 4); ctx.scale(pulse, pulse); txt(o.unlock, 0, 0, lfs, '#ff6b9a', { stroke: '#fff', sw: 5 * UO, shadow: false }); ctx.restore(); }
+    const bh2 = Math.min(58 * UO, g.h * 0.16), by2 = g.y + g.h - bh2 - 22 * UO;
+    const btns = [{ id: 'rmenu', icon: 'menu', color: 'blue', cb: o.onMenu }, { id: 'rretry', icon: 'replay', color: 'yellow', cb: o.onRetry }];
+    if (o.onNext) btns.push({ id: 'rnext', icon: 'play', color: 'green', cb: o.onNext, wide: true });
+    const unit = 70 * UO, wideW = 118 * UO, gapb = 12 * UO;
+    const totw = btns.reduce((a, b) => a + (b.wide ? wideW : unit), 0) + gapb * (btns.length - 1);
+    let bx = W / 2 - totw / 2;
+    const ready = this.t > 0.6;
+    for (const b of btns) {
+      const bw2 = b.wide ? wideW : unit;
+      button(b.id, bx, by2, bw2, bh2, { icon: b.icon, color: b.color, pulse: b.wide, disabled: !ready, dimAlpha: 0.6, onClick: () => { this.hide(); b.cb(); } });
+      bx += bw2 + gapb;
+    }
+    ctx.restore();
+  },
+  primary() { if (!this.on || this.t < 0.6) return; const o = this.o; this.hide(); (o.onNext || o.onRetry)(); }
+};
+
+/* =====================================================================
+ * 暫停選單
+ * ===================================================================== */
+function toggleRow(cx, y, w, h, prefix) {
+  const items = [
+    { id: prefix + 'mus', label: '音樂 ' + (HAS_MUSIC && KG.music.isEnabled() ? '開' : '關'), on: HAS_MUSIC && KG.music.isEnabled(), cb: () => { if (HAS_MUSIC) KG.music.setEnabled(!KG.music.isEnabled()); } },
+    { id: prefix + 'sfx', label: '音效 ' + (sfxOn ? '開' : '關'), on: sfxOn, cb: () => { sfxOn = !sfxOn; Save.set('sfx', sfxOn); sfx('ui'); } },
+    { id: prefix + 'voi', label: '語音 ' + (voiceOn ? '開' : '關'), on: voiceOn, cb: () => { voiceOn = !voiceOn; Save.set('voice', voiceOn); if (!voiceOn && window.speechSynthesis) window.speechSynthesis.cancel(); else say('語音打開了'); duck(false); } }
+  ];
+  const gap = 8, bw = (w - gap * 2) / 3;
+  items.forEach((it, i) => button(it.id, cx - w / 2 + i * (bw + gap), y, bw, h, { label: it.label, color: it.on ? 'green' : 'white', size: Math.min(h * 0.4, 18 * U), onClick: it.cb }));
+}
+function drawPause() {
+  ctx.fillStyle = 'rgba(50,25,70,0.5)'; ctx.fillRect(0, 0, W, H);
+  const pw = Math.min(W - 32, 380 * UO), ph = Math.min(H - 40, 360 * UO);
+  const x = (W - pw) / 2, y = (H - ph) / 2;
+  rr(x, y + 8, pw, ph, 28 * UO); ctx.fillStyle = 'rgba(60,30,70,0.3)'; ctx.fill();
+  rr(x, y, pw, ph, 28 * UO); ctx.fillStyle = '#fffdf6'; ctx.fill(); ctx.strokeStyle = '#f45f93'; ctx.lineWidth = 5; ctx.stroke();
+  txt('休息一下', W / 2, y + ph * 0.13, Math.min(30 * UO, ph * 0.1), '#fff', { stroke: '#f45f93', sw: 8 * UO });
+  const bh = Math.min(54 * UO, ph * 0.16), bw = pw * 0.7, gap = Math.min(12 * UO, ph * 0.03);
+  let by = y + ph * 0.25;
+  button('presume', W / 2 - bw / 2, by, bw, bh, { label: '繼續玩', icon: 'play', color: 'green', size: bh * 0.4, pulse: true, onClick: () => setPaused(false) }); by += bh + gap;
+  button('prestart', W / 2 - bw / 2, by, bw, bh, { label: '重新開始', icon: 'replay', color: 'yellow', size: bh * 0.4, onClick: () => { setPaused(false); startLevel(P.act.id, P.lv); } }); by += bh + gap;
+  button('pmenu', W / 2 - bw / 2, by, bw, bh, { label: '選關卡', icon: 'menu', color: 'blue', size: bh * 0.4, onClick: () => { setPaused(false); goLevels(P.act.id); } }); by += bh + gap * 1.6;
+  toggleRow(W / 2, Math.min(by, y + ph - bh * 0.85 - 14 * UO), pw - 28 * UO, bh * 0.85, 'p');
+}
+
+/* =====================================================================
+ * 標題、選單、關卡選擇
+ * ===================================================================== */
+function paintMenuBg() {
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#bfe8ff'); g.addColorStop(0.55, '#fff6e6'); g.addColorStop(1, '#ffe4c4');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  ctx.save(); ctx.translate(W / 2, H * 0.3); ctx.fillStyle = 'rgba(255,255,255,0.22)';
+  for (let i = 0; i < 16; i++) { ctx.rotate(TAU / 16); ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-40, Math.max(W, H)); ctx.lineTo(40, Math.max(W, H)); ctx.fill(); }
+  ctx.restore();
+  // 遮雨棚
+  const n = Math.max(8, Math.round(W / 64)), aw = W / n, ah = 30;
+  ctx.fillStyle = 'rgba(120,40,60,0.18)'; ctx.fillRect(0, 0, W, ah + 18);
+  for (let i = 0; i < n; i++) {
+    ctx.fillStyle = i % 2 ? '#fff7f0' : '#ff6b8a';
+    ctx.fillRect(i * aw, 0, aw, ah);
+    ctx.beginPath(); ctx.arc(i * aw + aw / 2, ah, aw / 2, 0, Math.PI); ctx.fill();
+  }
+  // 地板
+  ctx.fillStyle = '#f1c48c'; ctx.fillRect(0, H - 26, W, 26);
+  ctx.fillStyle = 'rgba(160,100,40,0.2)'; for (let x = 0; x < W; x += 40) ctx.fillRect(x, H - 26, 2, 26);
+}
+function drawFallingDecor(a) {
+  for (let i = 0; i < 10; i++) {
+    const v = DEN[i % 7], sp = (22 + (i % 3) * 10) * U;
+    const x = ((i * 0.107 + 0.04) % 1) * W + Math.sin(time * 0.8 + i) * 14;
+    const y = ((time * sp + i * 137) % (H + 120)) - 60;
+    drawMoney(v, x, y, (isBill(v) ? 14 : 18) * U, Math.sin(time + i) * 0.5, 1, a);
+  }
+}
+function drawTitle() {
+  drawBg('title' + W + 'x' + H, paintMenuBg);
+  drawFallingDecor(0.35);
+  const ty = H < 520 ? 92 : Math.max(130, H * 0.2);
+  const ls = Math.min(W * 0.17, 76 * U, H * 0.14);
+  logo('認識錢幣', W / 2, ty, ls, ['#f6b81f', '#ff7a8a', '#4fb0f0', '#66c96f']);
+  txt('新臺幣小老闆', W / 2, ty + ls * 0.85, Math.min(22 * U, ls * 0.34), '#fff', { stroke: '#c2305f', sw: 6 * U });
+  // 小豬和錢
+  const land = W > H;
+  const ps = Math.min(W * 0.14, H * 0.1, 66 * U);
+  const pcx = W / 2, pcy = land ? Math.min(H * 0.52, ty + ls * 0.85 + ps * 2.3) : H * 0.53;
+  const orbit = ps * 2.3;
+  for (let i = 0; i < 4; i++) {
+    const a = time * 0.9 + i * TAU / 4, v = [1, 5, 10, 50][i];
+    drawMoney(v, pcx + Math.cos(a) * orbit, pcy - ps * 0.3 + Math.sin(a) * orbit * 0.35, 22 * U, Math.sin(a) * 0.3, 1);
+  }
+  drawPiggy(pcx, pcy + Math.sin(time * 3) * 4, ps, { sq: Math.max(0, Math.sin(time * 6)) * 0.04, happy: Math.sin(time * 0.7) > 0.6 });
+  drawMoney(100, pcx - orbit * 1.05, pcy + ps * 1.0, 20 * U, -0.2, 1);
+  drawMoney(1000, pcx + orbit * 1.05, pcy + ps * 1.0, 20 * U, 0.2, 1);
+  const bw = Math.min(W * 0.62, 280 * U), bh = Math.min(70 * U, H * 0.13), th = Math.max(40, 46 * U);
+  const togY = land ? H - th - 34 : 0;
+  const by = land ? togY - bh - 16 : Math.min(H * 0.74, H - bh - 110 * U);
+  button('start', W / 2 - bw / 2, by, bw, bh, { label: '開始玩！', icon: 'play', color: 'green', pulse: true, size: bh * 0.42, onClick: () => { sfx('select'); say('一起來認識錢幣吧！選一個遊戲。'); goHub(); } });
+  toggleRow(W / 2, land ? togY : Math.min(H - th - 34, by + bh + 22 * U), Math.min(W - 40, 360 * U), th, 't');
+  const tot = ACTS.filter(a => GAMES[a.id]).reduce((s, a) => s + totalStars(a.id), 0);
+  if (tot > 0) {
+    const w = 120 * U, h = 34 * U, x = W - w - 14, y = H - h - 36;
+    if (!land) { hudPanel(W / 2 - w / 2, by - h - 16 * U, w, h, '#f8b921'); glossyStar(W / 2 - w / 2 + 20 * U, by - h / 2 - 16 * U, 12 * U, true); txt(tot + ' / 90', W / 2 + 10 * U, by - h / 2 - 16 * U + 1, 18 * U, '#7a4f00', { shadow: false }); }
+    else { hudPanel(x, y, w, h, '#f8b921'); glossyStar(x + 20 * U, y + h / 2, 12 * U, true); txt(tot + ' / 90', x + w / 2 + 10 * U, y + h / 2 + 1, 18 * U, '#7a4f00', { shadow: false }); }
+  }
+}
+function goHub() { scene = 'hub'; sceneT = 0; paused = false; Result.hide(); playSong(SONG_TITLE); if (HAS_MUSIC) KG.music.resume(); }
+function goLevels(id) { scene = 'levels'; sceneT = 0; curLevelsAct = id; paused = false; Result.hide(); playSong(SONG_TITLE); if (HAS_MUSIC) { KG.music.resume(); KG.music.setTempo(1); } }
+function goLearn() { scene = 'learn'; sceneT = 0; Learn.sel = -1; playSong(SONG_CALM); if (HAS_MUSIC) KG.music.resume(); }
+let curLevelsAct = 'count';
+
+function drawActIcon(id, x, y, s) {
+  if (id === 'learn') {
+    drawMoney(100, x - s * 0.3, y - s * 0.35, s * 0.42, -0.25, 1);
+    drawMoney(50, x + s * 0.35, y + s * 0.05, s * 0.5, 0.15, 1);
+    drawMoney(10, x - s * 0.3, y + s * 0.35, s * 0.42, -0.1, 1);
+  } else if (id === 'count') {
+    for (let i = 0; i < 4; i++) drawMoney([10, 5, 1, 10][i], x - s * 0.5 + (i % 2) * s * 0.75 + (i > 1 ? s * 0.2 : 0), y - s * 0.3 + Math.floor(i / 2) * s * 0.65, s * 0.4, (i - 1.5) * 0.2, 1);
+    ctx.save(); ctx.translate(x + s * 0.55, y - s * 0.6); rr(-s * 0.3, -s * 0.22, s * 0.6, s * 0.44, s * 0.2); ctx.fillStyle = '#ff6b9a'; ctx.fill(); ctx.restore();
+    txt('26', x + s * 0.55, y - s * 0.6, s * 0.3, '#fff', { shadow: false });
+  } else if (id === 'pay') {
+    ctx.fillStyle = '#c47d3f'; rr(x - s * 0.85, y - s * 0.05, s * 1.7, s * 0.75, s * 0.2); ctx.fill(); ctx.fillStyle = '#fbe3bd'; rr(x - s * 0.75, y + s * 0.04, s * 1.5, s * 0.58, s * 0.15); ctx.fill();
+    drawMoney(5, x - s * 0.35, y + s * 0.33, s * 0.33, 0, 1); drawMoney(10, x + s * 0.3, y + s * 0.33, s * 0.33, 0, 1);
+    drawItem('apple', x, y - s * 0.5, s * 0.38);
+  } else if (id === 'shop') {
+    drawAnimal('cat', x - s * 0.25, y - s * 0.15, s * 0.45, { noBody: true, mood: 'happy' });
+    ctx.fillStyle = '#b8743c'; rr(x - s * 0.9, y + s * 0.3, s * 1.8, s * 0.45, s * 0.1); ctx.fill();
+    drawMoney(50, x + s * 0.5, y + s * 0.05, s * 0.32, 0.2, 1);
+  } else if (id === 'compare') {
+    drawPurse({ x: x - s * 0.95, y: y - s * 0.55, w: s * 0.8, h: s * 1.0 }, '#ff8fb1', false);
+    drawPurse({ x: x + s * 0.15, y: y - s * 0.55, w: s * 0.8, h: s * 1.0 }, '#6cc4ff', false);
+    drawMoney(50, x - s * 0.55, y + s * 0.05, s * 0.28, 0, 1); drawMoney(1, x + s * 0.4, y - s * 0.05, s * 0.25, 0, 1); drawMoney(1, x + s * 0.7, y + s * 0.2, s * 0.25, 0, 1);
+  } else if (id === 'piggy') {
+    drawPiggy(x - s * 0.05, y + s * 0.2, s * 0.5, { happy: true });
+    drawMoney(10, x + s * 0.05, y - s * 0.62 + Math.abs(Math.sin(time * 3)) * -s * 0.1, s * 0.3, 0, 1);
+  }
+}
+function drawHub() {
+  drawBg('title' + W + 'x' + H, paintMenuBg);
+  drawFallingDecor(0.2);
+  const land = W > H;
+  const top = land ? 34 : 86;
+  logo('認識錢幣', W / 2, top, Math.min(land ? 34 : 44, W * 0.1) * Math.max(1, U * 0.9), ['#f6b81f', '#ff7a8a', '#4fb0f0', '#66c96f']);
+  const r = land ? { x: 70, y: 72, w: W - 140, h: H - 86 } : { x: 14, y: 126, w: W - 28, h: H - 146 };
+  const cols = land ? 3 : 2, rows = 2 * 3 / cols;
+  const gap = 14 * U;
+  let cw = (r.w - gap * (cols - 1)) / cols, ch = (r.h - gap * (rows - 1)) / rows;
+  cw = Math.min(cw, 260 * U); ch = Math.min(ch, cw * 1.05, 230 * U);
+  const gx = r.x + (r.w - (cw * cols + gap * (cols - 1))) / 2, gy = r.y + (r.h - (ch * rows + gap * (rows - 1))) / 2;
+  ACTS.forEach((a, i) => {
+    const c = i % cols, rw = Math.floor(i / cols);
+    const x = gx + c * (cw + gap), y = gy + rw * (ch + gap);
+    const ap = Ease.outBack(clamp(sceneT * 4 - i * 0.2, 0, 1));
+    if (ap <= 0) return;
+    ctx.save(); ctx.translate(x + cw / 2, y + ch / 2); ctx.scale(ap, ap); ctx.translate(-(x + cw / 2), -(y + ch / 2));
+    const yo = button('act' + i, x, y, cw, ch, { color: a.color, radius: 24 * U, label: '', onClick: () => { sfx('select'); say(a.say); if (a.id === 'learn') goLearn(); else goLevels(a.id); } });
+    // 白色圖示區
+    const ih = ch * 0.56;
+    rr(x + cw * 0.08, y + ch * 0.08 + yo, cw * 0.84, ih, 18 * U); ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.fill();
+    drawActIcon(a.id, x + cw / 2, y + ch * 0.08 + ih / 2 + yo, Math.min(cw * 0.32, ih * 0.42));
+    const nfs = fitSize(a.name, cw * 0.84, Math.min(26 * U, ch * 0.15));
+    txt(a.name, x + cw / 2, y + ch * 0.75 + yo, nfs, '#fff', { stroke: BTN[a.color][2], sw: nfs * 0.22 });
+    if (a.id !== 'learn') {
+      const st = totalStars(a.id), sfs = Math.min(15 * U, ch * 0.09);
+      glossyStar(x + cw / 2 - sfs * 1.9, y + ch * 0.9 + yo, sfs * 0.7, st > 0);
+      txt(st + '/18', x + cw / 2 + sfs * 0.5, y + ch * 0.9 + yo + 1, sfs, '#fff', { stroke: BTN[a.color][2], sw: 4, shadow: false });
+    } else txt('聽一聽', x + cw / 2, y + ch * 0.9 + yo + 1, Math.min(15 * U, ch * 0.09), '#fff', { stroke: BTN[a.color][2], sw: 4, shadow: false });
+    ctx.restore();
+  });
+  fab('back', 34, 84, 'back', () => { scene = 'title'; sceneT = 0; });
+}
+function drawLevels() {
+  drawBg('title' + W + 'x' + H, paintMenuBg);
+  const a = ACTINFO[curLevelsAct], land = W > H;
+  const top = land ? 34 : 84;
+  const hs = Math.min(34 * U, 30);
+  txt(a.name, W / 2, top, Math.min(36 * U, 40), '#fff', { stroke: a.hex, sw: 9 * U });
+  const r = land ? { x: 70, y: 66, w: W - 140, h: H - 80 } : { x: 14, y: 120, w: W - 28, h: H - 140 };
+  void hs;
+  const st = starsOf(a.id);
+  const cols = land ? 6 : (W < 360 ? 2 : 3), rows = Math.ceil(6 / cols), gap = 12 * U;
+  let cw = (r.w - gap * (cols - 1)) / cols, ch = (r.h - gap * (rows - 1)) / rows;
+  cw = Math.min(cw, 170 * U); ch = Math.min(ch, cw * 1.3);
+  const gx = r.x + (r.w - (cw * cols + gap * (cols - 1))) / 2, gy = r.y + (r.h - (ch * rows + gap * (rows - 1))) / 2;
+  const specs = LEVEL_DENOMS[a.id];
+  for (let i = 0; i < 6; i++) {
+    const c = i % cols, rw = Math.floor(i / cols), x = gx + c * (cw + gap), y = gy + rw * (ch + gap);
+    const locked = i > 0 && !(st[i - 1] > 0);
+    const ap = Ease.outBack(clamp(sceneT * 4 - i * 0.15, 0, 1));
+    if (ap <= 0) continue;
+    const rec = !locked && !(st[i] > 0);
+    ctx.save(); ctx.translate(x + cw / 2, y + ch / 2); ctx.scale(ap, ap); ctx.translate(-(x + cw / 2), -(y + ch / 2));
+    const yo = button('lv' + i, x, y, cw, ch, { color: locked ? 'white' : a.color, radius: 20 * U, label: '', pulse: rec, onClick: () => {
+      if (locked) { sfx('boop'); say('先玩上一關喔！'); return; }
+      sfx('select'); say('第' + (i + 1) + '關'); startLevel(a.id, i);
+    } });
+    if (locked) drawIcon('lock', x + cw / 2, y + ch * 0.42 + yo, cw * 0.32, '#b9a2c8');
+    else {
+      txt(String(i + 1), x + cw / 2, y + ch * 0.22 + yo, Math.min(ch * 0.24, cw * 0.32), '#fff', { stroke: 'rgba(80,40,90,0.5)', sw: 6 });
+      // 這一關用到的錢
+      const ds = specs[i].d.slice(-3), hasB = ds.some(isBill), M = Math.min(cw * (hasB ? 0.075 : 0.13), ch * 0.09);
+      const ws = ds.map(v => moneyDims(v, M).w), tw = sum(ws) + (ds.length - 1) * M * 0.2;
+      let px = x + cw / 2 - tw / 2;
+      rr(x + cw * 0.08, y + ch * 0.4 + yo, cw * 0.84, ch * 0.26, 10); ctx.fillStyle = 'rgba(255,255,255,0.75)'; ctx.fill();
+      for (let k = 0; k < ds.length; k++) { drawMoney(ds[k], px + ws[k] / 2, y + ch * 0.53 + yo, M, 0, 1); px += ws[k] + M * 0.2; }
+      for (let k = 0; k < 3; k++) glossyStar(x + cw / 2 + (k - 1) * cw * 0.26, y + ch * 0.83 + yo - (k === 1 ? 3 : 0), Math.min(cw * 0.1, ch * 0.08), k < (st[i] || 0));
+    }
+    ctx.restore();
+  }
+  fab('back', 34, 84, 'back', () => goHub());
+}
+
+/* =====================================================================
+ * 認識錢幣頁
+ * ===================================================================== */
+const Learn = {
+  sel: -1, t: 0, items: [],
+  layout() {
+    const land = W > H;
+    const r = land ? { x: 70, y: 76, w: W - 140, h: H - 96 } : { x: 14, y: 130, w: W - 28, h: H - 150 };
+    this.items = [];
+    if (land) {
+      const M1 = Math.min(r.w / 4 / 2.6, r.h * 0.5 / 2.9), M2 = Math.min(r.w / 3 / 3.9, r.h * 0.5 / 2.3);
+      [1, 5, 10, 50].forEach((v, i) => this.items.push({ v, x: r.x + r.w * (i + 0.5) / 4, y: r.y + r.h * 0.22, M: M1 }));
+      [100, 500, 1000].forEach((v, i) => this.items.push({ v, x: r.x + r.w * (i + 0.5) / 3, y: r.y + r.h * 0.72, M: M2 }));
+    } else {
+      const M1 = Math.min(r.w / 2 / 2.7, (r.h * 0.22 - 30) / 2, 62 * U);
+      [1, 5, 10, 50].forEach((v, i) => this.items.push({ v, x: r.x + r.w * ((i % 2) + 0.5) / 2, y: r.y + r.h * (0.1 + Math.floor(i / 2) * 0.22), M: M1 }));
+      const slot = r.h * 0.55 / 3, M2 = Math.min(r.w * 0.7 / 3.6, (slot - 34) / 1.85);
+      [100, 500, 1000].forEach((v, i) => this.items.push({ v, x: r.x + r.w / 2, y: r.y + r.h * 0.45 + slot * (i + 0.42), M: M2 }));
+    }
+  },
+  open(i) {
+    this.sel = i; this.t = 0;
+    const v = this.items[i].v;
+    moneySound(v, this.items[i].x);
+    say(MINFO[v].say);
+  },
+  draw() {
+    drawBg('learn' + W + 'x' + H, () => {
+      const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#fff6d8'); g.addColorStop(1, '#ffe7b3');
+      ctx.fillStyle = g; ctx.fillRect(0, 0, W, H); dotPattern('#ffffff', 0.5);
+    });
+    const land = W > H;
+    txt('認識錢幣', W / 2, land ? 34 : 84, Math.min(34 * U, 38), '#fff', { stroke: '#f8b921', sw: 9 * U });
+    if (!land) txt('點一點，聽聽看！', W / 2, 116, 16 * U, '#b57c0b', { shadow: false, weight: '800' });
+    this.items.forEach((it, i) => {
+      const ap = Ease.outBack(clamp(sceneT * 4 - i * 0.12, 0, 1));
+      const bob = Math.sin(time * 2 + i) * 3;
+      const d = moneyDims(it.v, it.M);
+      drawMoney(it.v, it.x, it.y + bob, it.M, 0, ap * (this.sel === i ? 1.08 : 1));
+      txt(it.v + ' 元', it.x, it.y + d.h / 2 + 16 * U + bob * 0.5, Math.max(13, 16 * U), '#6b3a12', { shadow: false });
+    });
+    fab('back', 34, 84, 'back', () => goHub());
+    if (this.sel >= 0) this.drawCard();
+  },
+  drawCard() {
+    const it = this.items[this.sel], v = it.v, m = MINFO[v], land = W > H;
+    this.t += 1 / 60;
+    ctx.fillStyle = 'rgba(50,25,70,0.5)'; ctx.fillRect(0, 0, W, H);
+    btnReg.push({ id: 'lclose-bg', x: 0, y: 0, w: W, h: H, onClick: () => { this.sel = -1; sfx('back'); } });
+    const cw = Math.min(W - 32, land ? Math.max(620 * U, 560) : 440 * U), ch = Math.min(H - (land ? 24 : 120), land ? Math.max(340 * U, 330) : 520 * U);
+    const x = (W - cw) / 2, y = (H - ch) / 2 + (land ? 0 : 20);
+    const ap = Ease.outBack(clamp(this.t * 4, 0, 1));
+    ctx.save(); ctx.translate(W / 2, y + ch / 2); ctx.scale(ap, ap); ctx.translate(-W / 2, -(y + ch / 2));
+    btnReg.push({ id: 'lcard', x, y, w: cw, h: ch, onClick: () => {} });
+    rr(x, y + 8, cw, ch, 28 * U); ctx.fillStyle = 'rgba(60,30,70,0.3)'; ctx.fill();
+    rr(x, y, cw, ch, 28 * U); ctx.fillStyle = '#fffdf6'; ctx.fill(); ctx.strokeStyle = isBill(v) ? m.base : m.cols[2]; ctx.lineWidth = 6; ctx.stroke();
+    const flip = Math.abs(Math.cos(Math.min(1, this.t * 1.6) * Math.PI * 2)) * 0.6 + 0.4 * Math.min(1, this.t * 1.6);
+    let mx, my, tx, ty, tw;
+    if (land) { mx = x + cw * 0.27; my = y + ch * 0.42; tx = x + cw * 0.5; ty = y + ch * 0.12; tw = cw * 0.46; }
+    else { mx = W / 2; my = y + ch * 0.22; tx = x + 20 * U; ty = y + ch * 0.42; tw = cw - 40 * U; }
+    const big = isBill(v) ? Math.min((land ? cw * 0.4 : cw * 0.72) / 3.6, ch * 0.4 / 1.75) : Math.min(land ? cw * 0.2 : cw * 0.22, ch * 0.18 * (land ? 1.6 : 1));
+    ctx.save(); ctx.translate(mx, my); ctx.scale(Math.max(0.05, flip), 1);
+    drawMoney(v, 0, 0, big, 0, 1);
+    ctx.restore();
+    // 名稱、說明
+    const nfs = Math.min(44, ch * 0.11);
+    txt(m.name, tx + tw / 2, ty + nfs * 0.6, nfs, '#fff', { stroke: isBill(v) ? m.dark : m.cols[3], sw: nfs * 0.24 });
+    const ffs = Math.min(21, ch * 0.06);
+    const lines = wrapLines(m.fact, tw, ffs);
+    let ly = ty + nfs * 1.5 + ffs * 0.4;
+    for (const l of lines) { txt(l, tx + tw / 2, ly, ffs, '#4a3b52', { shadow: false, weight: '800' }); ly += ffs * 1.45; }
+    // 換算
+    if (m.ex) {
+      const ev = m.ex[0], n = m.ex[1];
+      let eM = Math.min(ch * 0.065, 24);
+      const rowOf = M => { const dd = moneyDims(ev, M), sv = moneyDims(v, isBill(v) ? M * 0.8 : M); return sv.w + 26 * U + (isBill(ev) ? dd.w * 0.62 : dd.w * 1.05) * (n - 1) + dd.w; };
+      const rw0 = rowOf(eM); if (rw0 > tw) eM *= tw / rw0;
+      const dd = moneyDims(ev, eM), step = isBill(ev) ? dd.w * 0.62 : dd.w * 1.05;
+      const sv = moneyDims(v, isBill(v) ? eM * 0.8 : eM);
+      const rowW = sv.w + 26 * U + step * (n - 1) + dd.w;
+      let ex = tx + tw / 2 - rowW / 2, ey = ly + Math.max(dd.h, sv.h) / 2 + 4;
+      drawMoney(v, ex + sv.w / 2, ey, isBill(v) ? eM * 0.8 : eM, 0, 1); ex += sv.w;
+      txt('=', ex + 13 * U, ey, 24 * U, '#f45f93', { shadow: false }); ex += 26 * U;
+      for (let k = 0; k < n; k++) drawMoney(ev, ex + dd.w / 2 + k * step, ey + (isBill(ev) ? k * 2 : 0), eM, 0, 1);
+    }
+    // 按鈕
+    const bh = Math.min(52 * U, ch * 0.14), by = y + ch - bh - 16 * U, bw = Math.min(64 * U, cw * 0.2);
+    button('lprev', x + 16 * U, by, bw, bh, { icon: 'prev', color: 'white', size: bh * 0.42, onClick: () => this.open((this.sel + 6) % 7) });
+    button('lsay', W / 2 - bw * 0.9, by, bw * 1.8, bh, { icon: 'speaker', label: '再聽', color: 'blue', size: bh * 0.38, onClick: () => say(m.say) });
+    button('lnext', x + cw - 16 * U - bw, by, bw, bh, { icon: 'next', color: 'green', size: bh * 0.42, onClick: () => this.open((this.sel + 1) % 7) });
+    ctx.restore();
+    fab('lclose', Math.min(x + cw - 6, W - 30), Math.max(y + 6, 30), 'close', () => { this.sel = -1; sfx('back'); });
+  },
+  down(x, y) {
+    if (this.sel >= 0) return;
+    let best = -1, bd = 1e9;
+    this.items.forEach((it, i) => { const d = moneyDims(it.v, it.M), dist = Math.hypot(x - it.x, y - it.y); if (dist < Math.max(d.w, d.h) * 0.6 + 20 && dist < bd) { bd = dist; best = i; } });
+    if (best >= 0) { this.open(best); return true; }
+    return false;
+  }
+};
+
+/* =====================================================================
+ * 主畫面繪製
+ * ===================================================================== */
+function drawPlay() {
+  const A = P.act;
+  drawBg('play-' + A.id + '-' + W + 'x' + H, () => A.paintBg());
+  let sx = 0, sy = 0;
+  if (shakeT > 0) { const k = shakeAmt * Math.min(1, shakeT * 4); sx = (Math.random() * 2 - 1) * k; sy = (Math.random() * 2 - 1) * k; }
+  ctx.save(); ctx.translate(sx, sy);
+  A.draw();
+  drawFlyers();
+  drawDrag();
+  ctx.restore();
+  drawHud();
+}
+
+/* =====================================================================
+ * 輸入
+ * ===================================================================== */
+function toLocal(e) { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * W / r.width, (e.clientY - r.top) * H / r.height]; }
+cv.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  const [x, y] = toLocal(e);
+  const b = hitBtn(x, y);
+  if (b) { pressed = { id: b.id, pid: e.pointerId }; sfx('click', { vol: 0.8 }); return; }
+  let handled = false;
+  if (!paused && !Result.on) {
+    if (scene === 'play' && P.act && P.act.down) { handled = !!P.act.down(x, y, e); if (handled && drag) { try { cv.setPointerCapture(e.pointerId); } catch (err) { /* 忽略 */ } } }
+    else if (scene === 'learn') handled = !!Learn.down(x, y);
+  }
+  if (!handled) {
+    const nb = hitBtnNear(x, y);
+    if (nb) { pressed = { id: nb.id, pid: e.pointerId }; sfx('click', { vol: 0.8 }); }
+  }
+});
+cv.addEventListener('pointermove', (e) => {
+  if (!drag || drag.pid !== e.pointerId) return;
+  const [x, y] = toLocal(e);
+  if (scene === 'play' && P.act.move) P.act.move(x, y);
+});
+function endPointer(e, cancel) {
+  const [x, y] = toLocal(e);
+  if (pressed && pressed.pid === e.pointerId) {
+    const b = hitBtn(x, y) || hitBtnNear(x, y), id = pressed.id;
+    pressed = null;
+    if (!cancel && b && b.id === id && b.onClick) b.onClick();
+    return;
+  }
+  if (drag && drag.pid === e.pointerId && scene === 'play' && P.act.up) {
+    if (cancel) { drag.moved = true; P.act.up(-9999, -9999); } else P.act.up(x, y);
+  }
+}
+cv.addEventListener('pointerup', (e) => endPointer(e, false));
+cv.addEventListener('pointercancel', (e) => endPointer(e, true));
+cv.addEventListener('contextmenu', (e) => e.preventDefault());
+window.addEventListener('keydown', (e) => {
+  const k = e.key;
+  if (k === ' ' || k.startsWith('Arrow') || k === 'Backspace') e.preventDefault();
+  if (scene === 'title') { if (k === 'Enter' || k === ' ') { say('一起來認識錢幣吧！選一個遊戲。'); goHub(); } return; }
+  if (scene === 'hub') {
+    if (k >= '1' && k <= '6') { const a = ACTS[+k - 1]; say(a.say); if (a.id === 'learn') goLearn(); else goLevels(a.id); }
+    else if (k === 'Escape') scene = 'title';
+    return;
+  }
+  if (scene === 'levels') {
+    if (k >= '1' && k <= '6') { const i = +k - 1, st = starsOf(curLevelsAct); if (i === 0 || st[i - 1] > 0) startLevel(curLevelsAct, i); }
+    else if (k === 'Escape' || k === 'Backspace') goHub();
+    return;
+  }
+  if (scene === 'learn') {
+    if (Learn.sel >= 0) {
+      if (k === 'Escape') Learn.sel = -1;
+      else if (k === 'ArrowRight') Learn.open((Learn.sel + 1) % 7);
+      else if (k === 'ArrowLeft') Learn.open((Learn.sel + 6) % 7);
+      else if (k === ' ' || k === 'Enter') say(MINFO[Learn.items[Learn.sel].v].say);
+    } else if (k >= '1' && k <= '7') Learn.open(+k - 1);
+    else if (k === 'Escape' || k === 'Backspace') goHub();
+    return;
+  }
+  if (scene === 'play') {
+    if (Result.on) { if (k === 'Enter' || k === ' ') Result.primary(); else if (k === 'Escape') { Result.hide(); goLevels(P.act.id); } return; }
+    if (k === 'Escape' || k === 'p' || k === 'P') { setPaused(!paused); return; }
+    if (paused) { if (k === 'Enter' || k === ' ') setPaused(false); return; }
+    if (k === 's' || k === 'S') { if (P.voice) say(P.voice); return; }
+    if (P.act.key) P.act.key(k);
+  }
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && scene === 'play' && !Result.on && !paused) setPaused(true);
+  if (document.hidden && window.speechSynthesis) window.speechSynthesis.cancel();
+});
+
+/* =====================================================================
+ * 主迴圈
+ * ===================================================================== */
+function resize() {
+  const r = cv.getBoundingClientRect();
+  const nw = Math.max(1, r.width), nh = Math.max(1, r.height), nd = window.devicePixelRatio || 1;
+  if (nw === W && nh === H && nd === dpr) return;
+  W = nw; H = nh; dpr = nd;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  U = clamp(Math.min(W / 420, H / 600), 0.66, 1.35);
+  UO = clamp(Math.min(W / 420, H / 480), 0.78, 1.35);
+  bgKey = ''; spriteCache.clear();
+  if (scene === 'play' && P.act && P.data) { P.act.layout(); }
+  Learn.layout();
+}
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 120));
+if (window.visualViewport) window.visualViewport.addEventListener('resize', resize);
+
+let lastFrame = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, Math.max(0, (now - lastFrame) / 1000));
+  lastFrame = now;
+  resize();
+  time += dt; sceneT += dt;
+  if (shakeT > 0) shakeT -= dt;
+  updateDuck();
+  if (!paused) {
+    updateTweens(dt);
+    fx.update(dt);
+    updateFlyers(dt);
+    Result.update(dt);
+    if (scene === 'play' && P.act && Result.on) P.act.update(dt);
+    else if (scene === 'play' && P.act) {
+      P.t += dt;
+      if (P.phase === 'ask') P.idle += dt;
+      P.act.update(dt);
+      if (P.phase === 'ask' && P.idle > 11 && !P.idleHinted && P.act.hint) { P.idleHinted = true; P.idle = 0; P.act.hint(); }
+      if (P.phase === 'won' && P.t > (P.act.wonDelay || 1.9)) {
+        P.round++;
+        if (P.round >= P.rounds) finishLevel(); else newRound();
+      }
+    }
+  }
+  btnReg = [];
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (scene === 'title') drawTitle();
+  else if (scene === 'hub') drawHub();
+  else if (scene === 'levels') drawLevels();
+  else if (scene === 'learn') Learn.draw();
+  else if (scene === 'play') {
+    drawPlay();
+    fx.draw();
+    Result.draw();
+    if (paused) drawPause();
+  }
+  if (scene !== 'play') fx.draw();
+  requestAnimationFrame(frame);
+}
+resize();
+Learn.layout();
+playSong(SONG_TITLE);
+requestAnimationFrame((t) => { lastFrame = t; frame(t); });
+
+/* ---------- 測試用 ---------- */
+window.__money = {
+  scene: () => scene,
+  state: () => ({ scene, act: P.act && P.act.id, lv: P.lv, round: P.round, phase: P.phase, pen: P.pen, paused, result: Result.on, prompt: P.prompt }),
+  data: () => P.data,
+  start: (id, lv) => startLevel(id, lv || 0),
+  hub: () => goHub(),
+  levels: (id) => goLevels(id),
+  learn: () => goLearn(),
+  learnOpen: (i) => Learn.open(i),
+  solve: () => { if (P.act && P.act.solve) P.act.solve(); },
+  skip: (n) => { for (let i = 0; i < (n || 1); i++) { if (P.act && P.act.solve) P.act.solve(); P.t = 99; if (P.phase === 'won') { P.round++; if (P.round >= P.rounds) finishLevel(); else newRound(); } } },
+  pause: (on) => setPaused(on),
+  srcPos: () => P.data && P.data.pp ? P.data.pp.srcPos.map(s => ({ v: s.v, x: s.x, y: s.y })) : null,
+  trayRect: () => P.data && P.data.pp ? P.data.pp.trayR : null,
+  ducked: () => duckOn,
+  say: (t) => say(t),
+  sfxOn: () => sfxOn
+};
+</script>
+</body>
+</html>

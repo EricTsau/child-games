@@ -32,7 +32,7 @@
   if (!KG) return;
 
   /* ---------- 共用聲音節點 ---------- */
-  var A = null, master, comp, musicBus, musicOut, sfxBus, revIn, revOut, noiseBuf;
+  var A = null, master, comp, musicBus, musicOut, sfxBus, loopBus, revIn, revOut, noiseBuf;
   var musicVol = 0.24, sfxVol = 0.9;
 
   function getCtx() {
@@ -51,6 +51,8 @@
     musicOut = A.createGain(); musicOut.gain.value = musicEnabled ? musicVol : 0; musicOut.connect(master);
     musicBus = A.createGain(); musicBus.gain.value = 1; musicBus.connect(musicOut);
     sfxBus = A.createGain(); sfxBus.gain.value = sfxVol; sfxBus.connect(master);
+    // 持續的聲音（引擎、水流）都走這裡：切到別的分頁或靜音時整條關掉
+    loopBus = A.createGain(); loopBus.gain.value = loopsAudible() ? 1 : 0; loopBus.connect(sfxBus);
     // 殘響：自己產生的衝擊響應
     var conv = A.createConvolver();
     var len = Math.floor(A.sampleRate * 2.2), ir = A.createBuffer(2, len, A.sampleRate);
@@ -370,13 +372,17 @@
   window.addEventListener('pointerdown', unlockRetry, true);
   window.addEventListener('keydown', unlockRetry, true);
   window.addEventListener('touchend', unlockRetry, true);
+  function loopsAudible() { return !KG.isMuted() && !document.hidden; }
+  function refreshLoops() { if (A && loopBus) loopBus.gain.setTargetAtTime(loopsAudible() ? 1 : 0, A.currentTime, 0.03); }
   document.addEventListener('visibilitychange', function () {
+    refreshLoops();
     if (document.hidden) halt(0.05); else if (song) start();
   });
   // 跟著 🔊 靜音按鈕
   var origSetMuted = KG.setMuted;
   KG.setMuted = function (m) {
     origSetMuted(m);
+    refreshLoops();
     if (m) halt(0.1); else if (song) start();
   };
 
@@ -531,7 +537,7 @@
     /** 持續的聲音（引擎、風聲、水流）：h = loop('engine'|'wind'|'water'|'hum'); h.set(0~1); h.stop() */
     loop: function (kind) {
       var a = getCtx(); if (!a) return { set: function () {}, stop: function () {} };
-      var g = A.createGain(); g.gain.value = 0.0001; g.connect(sfxBus);
+      var g = A.createGain(); g.gain.value = 0.0001; g.connect(loopBus);
       var nodes = [], f = null, base = 1;
       if (kind === 'engine' || kind === 'hum') {
         f = A.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 600; f.Q.value = 2; f.connect(g);
@@ -548,7 +554,7 @@
           if (!A) return; x = +x; if (!isFinite(x)) x = 0; x = Math.max(0, Math.min(1, x)); if (v != null && !isFinite(+v)) v = 0; var t = A.currentTime;
           if (nodes[0].frequency) { nodes[0].frequency.setTargetAtTime(base * (1 + x * 3), t, 0.05); if (nodes[1]) nodes[1].frequency.setTargetAtTime(base * 1.5 * (1 + x * 3), t, 0.05); }
           f.frequency.setTargetAtTime((kind === 'water' ? 600 : 400) + x * 2400, t, 0.08);
-          vol = (v == null ? 0.12 : v) * (KG.isMuted() || document.hidden ? 0 : 1);
+          vol = v == null ? 0.12 : v;
           g.gain.setTargetAtTime(Math.max(0.0001, vol * (0.4 + x * 0.6)), t, 0.06);
         },
         stop: function () {

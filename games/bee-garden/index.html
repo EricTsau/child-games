@@ -1,0 +1,2676 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>蜜蜂採蜜</title>
+<link rel="stylesheet" href="../../assets/common.css">
+<style>
+  html, body { height: 100%; overflow: hidden; background: #fdf3d6; overscroll-behavior: none; }
+  #game {
+    position: fixed; inset: 0; display: block;
+    width: 100vw; height: 100vh; height: 100dvh;
+    touch-action: none; cursor: default;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" aria-label="蜜蜂採蜜"></canvas>
+<script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+ * 蜜蜂採蜜：當一隻小蜜蜂，在花園裡吸花蜜、幫同色的花授粉、把花蜜帶回蜂巢。
+ * 15 關（春天花園、夏日果園、秋天山坡）、星星、蜂巢小屋（裝飾與蜜蜂造型）、每關一張小知識卡。
+ * ===================================================================== */
+(function () {
+const SLUG = 'bee-garden';
+const cv = document.getElementById('game');
+const ctx = cv.getContext('2d');
+const FONT = '"PingFang TC","Noto Sans TC","Microsoft JhengHei","Heiti TC",system-ui,sans-serif';
+let W = 360, H = 640, dpr = 1, U = 1, time = 0;
+const TAU = Math.PI * 2;
+const INK = '#5a3a14';
+const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+const lerp = (a, b, t) => a + (b - a) * t;
+const rand = (a, b) => a + Math.random() * (b - a);
+const Ease = {
+  outCubic: t => 1 - Math.pow(1 - t, 3),
+  inOutSine: t => -(Math.cos(Math.PI * t) - 1) / 2,
+  outBack: t => { const c = 1.70158, c3 = c + 1; return 1 + c3 * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); },
+  outElastic: t => (t === 0 || t === 1) ? t : Math.pow(2, -10 * t) * Math.sin((t * 10 - 0.75) * (TAU / 3)) + 1
+};
+function mulberry(a) {
+  return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+}
+
+/* ---------- 補間動畫、延遲呼叫、畫面震動 ---------- */
+const tweens = [];
+function tween(obj, to, dur, ease, delay, done) {
+  const tw = { obj, to, from: null, dur: dur || 0.3, ease: typeof ease === 'function' ? ease : (Ease[ease] || Ease.outCubic), t: -(delay || 0), done };
+  tweens.push(tw);
+  return tw;
+}
+function killTweens(obj) { for (let i = tweens.length - 1; i >= 0; i--) if (tweens[i].obj === obj) tweens.splice(i, 1); }
+function updateTweens(dt) {
+  for (let i = tweens.length - 1; i >= 0; i--) {
+    const tw = tweens[i];
+    if (!tw) continue;
+    tw.t += dt;
+    if (tw.t < 0) continue;
+    if (!tw.from) { tw.from = {}; for (const k in tw.to) tw.from[k] = tw.obj[k]; }
+    const p = Math.min(1, tw.t / tw.dur), e = tw.ease(p);
+    for (const k in tw.to) tw.obj[k] = tw.from[k] + (tw.to[k] - tw.from[k]) * e;
+    if (p >= 1) { const j = tweens.indexOf(tw); if (j >= 0) tweens.splice(j, 1); if (tw.done) tw.done(); }
+  }
+}
+const timers = [];
+function after(sec, fn) { timers.push({ t: sec, fn }); }
+function updateTimers(dt) {
+  for (let i = timers.length - 1; i >= 0; i--) {
+    const tm = timers[i];
+    tm.t -= dt;
+    if (tm.t <= 0) { timers.splice(i, 1); tm.fn(); }
+  }
+}
+let shakeT = 0, shakeAmt = 0;
+function shake(a, d) { shakeAmt = Math.max(shakeT > 0 ? shakeAmt : 0, a); shakeT = Math.max(shakeT, d || 0.25); }
+
+/* ---------- 繪圖小工具 ---------- */
+function circ(x, y, r) { ctx.moveTo(x + r, y); ctx.arc(x, y, r, 0, TAU); }
+function rr(x, y, w, h, r) {
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+function starPath(x, y, R, r, rot) {
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const a = (rot || 0) + i * Math.PI / 5 - Math.PI / 2, rad = i % 2 ? r : R;
+    ctx.lineTo(x + Math.cos(a) * rad, y + Math.sin(a) * rad);
+  }
+  ctx.closePath();
+}
+function hexPath(x, y, r) {
+  ctx.beginPath();
+  for (let i = 0; i < 6; i++) { const a = i * Math.PI / 3 + Math.PI / 6; ctx.lineTo(x + Math.cos(a) * r, y + Math.sin(a) * r); }
+  ctx.closePath();
+}
+function heartPath(x, y, s) {
+  ctx.beginPath();
+  ctx.moveTo(x, y + s * 0.35);
+  ctx.bezierCurveTo(x - s * 1.1, y - s * 0.35, x - s * 0.55, y - s * 1.05, x, y - s * 0.45);
+  ctx.bezierCurveTo(x + s * 0.55, y - s * 1.05, x + s * 1.1, y - s * 0.35, x, y + s * 0.35);
+  ctx.closePath();
+}
+function dropPath(x, y, s) {
+  ctx.beginPath();
+  ctx.moveTo(x, y - s);
+  ctx.bezierCurveTo(x + s * 0.2, y - s * 0.5, x + s * 0.75, y - s * 0.05, x + s * 0.75, y + s * 0.3);
+  ctx.arc(x, y + s * 0.3, s * 0.75, 0, Math.PI);
+  ctx.bezierCurveTo(x - s * 0.75, y - s * 0.05, x - s * 0.2, y - s * 0.5, x, y - s);
+  ctx.closePath();
+}
+function shade(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  const f = v => clamp(v + amt, 0, 255);
+  return 'rgb(' + f(n >> 16) + ',' + f((n >> 8) & 255) + ',' + f(n & 255) + ')';
+}
+function rgba(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return 'rgba(' + (n >> 16) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+}
+function mix(h1, h2, t) {
+  const a = parseInt(h1.slice(1), 16), b = parseInt(h2.slice(1), 16);
+  const r = Math.round(lerp(a >> 16, b >> 16, t)), g = Math.round(lerp((a >> 8) & 255, (b >> 8) & 255, t)), bl = Math.round(lerp(a & 255, b & 255, t));
+  return '#' + ((1 << 24) + (r << 16) + (g << 8) + bl).toString(16).slice(1);
+}
+function setFont(size, weight) { ctx.font = (weight || '900') + ' ' + Math.round(size) + 'px ' + FONT; }
+/** 有外框與陰影的字 */
+function txt(s, x, y, size, fill, o) {
+  o = o || {};
+  ctx.save();
+  setFont(size, o.weight);
+  ctx.textAlign = o.align || 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round';
+  if (o.shadow !== false) {
+    ctx.fillStyle = o.shadow || 'rgba(90,50,10,0.25)';
+    if (o.stroke) { ctx.strokeStyle = ctx.fillStyle; ctx.lineWidth = o.sw || size * 0.22; ctx.strokeText(s, x, y + size * 0.09); }
+    ctx.fillText(s, x, y + size * 0.09);
+  }
+  if (o.stroke) { ctx.strokeStyle = o.stroke; ctx.lineWidth = o.sw || size * 0.22; ctx.strokeText(s, x, y); }
+  ctx.fillStyle = fill; ctx.fillText(s, x, y);
+  ctx.restore();
+}
+/** 標題字：每個字會彈跳，蜂蜜色 */
+function logo(s, cx, cy, size) {
+  ctx.save();
+  setFont(size);
+  ctx.textBaseline = 'middle'; ctx.textAlign = 'center'; ctx.lineJoin = 'round';
+  const chars = [...s];
+  let total = 0;
+  const widths = chars.map(c => { const w = ctx.measureText(c).width * 1.04; total += w; return w; });
+  let x = cx - total / 2;
+  const cols = ['#ffc83d', '#ffa62b', '#ffc83d', '#ff9f43'];
+  chars.forEach((c, i) => {
+    const w = widths[i];
+    const bob = Math.sin(time * 2.6 + i * 0.8) * size * 0.06;
+    const rot = Math.sin(time * 1.9 + i) * 0.05;
+    ctx.save();
+    ctx.translate(x + w / 2, cy + bob); ctx.rotate(rot);
+    ctx.strokeStyle = 'rgba(110,60,0,0.3)'; ctx.lineWidth = size * 0.36; ctx.strokeText(c, 0, size * 0.1);
+    ctx.strokeStyle = '#7a4a0c'; ctx.lineWidth = size * 0.34; ctx.strokeText(c, 0, 0);
+    ctx.strokeStyle = '#fff8e0'; ctx.lineWidth = size * 0.17; ctx.strokeText(c, 0, 0);
+    const col = cols[i % cols.length];
+    const g = ctx.createLinearGradient(0, -size / 2, 0, size / 2);
+    g.addColorStop(0, shade(col, 70)); g.addColorStop(0.5, col); g.addColorStop(1, shade(col, -40));
+    ctx.fillStyle = g; ctx.fillText(c, 0, 0);
+    // 蜂蜜滴
+    const dp = (time * 0.35 + i * 0.27) % 1;
+    ctx.fillStyle = '#ffb21e';
+    ctx.globalAlpha = dp < 0.85 ? 1 : (1 - dp) / 0.15;
+    dropPath(w * 0.12, size * 0.45 + dp * size * 0.35, size * 0.07 + dp * size * 0.03); ctx.fill();
+    ctx.globalAlpha = 0.55; ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.ellipse(-w * 0.18, -size * 0.25, size * 0.1, size * 0.05, -0.5, 0, TAU); ctx.fill();
+    ctx.restore();
+    x += w;
+  });
+  ctx.restore();
+}
+function glossyStar(x, y, R, on, rot) {
+  ctx.save();
+  ctx.lineJoin = 'round';
+  if (on) {
+    ctx.fillStyle = 'rgba(160,90,0,0.25)'; starPath(x, y + R * 0.12, R, R * 0.5, rot); ctx.fill();
+    const g = ctx.createRadialGradient(x - R * 0.3, y - R * 0.4, R * 0.1, x, y, R * 1.1);
+    g.addColorStop(0, '#fffbd0'); g.addColorStop(0.45, '#ffd93d'); g.addColorStop(1, '#f39a0c');
+    ctx.fillStyle = g; ctx.strokeStyle = '#c9700a'; ctx.lineWidth = Math.max(1.5, R * 0.12);
+    starPath(x, y, R, R * 0.5, rot); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.75)';
+    ctx.beginPath(); ctx.ellipse(x - R * 0.25, y - R * 0.3, R * 0.22, R * 0.12, -0.6, 0, TAU); ctx.fill();
+  } else {
+    ctx.fillStyle = 'rgba(120,90,40,0.18)'; ctx.strokeStyle = 'rgba(120,90,40,0.35)'; ctx.lineWidth = Math.max(1.5, R * 0.1);
+    starPath(x, y, R, R * 0.5, rot); ctx.fill(); ctx.stroke();
+  }
+  ctx.restore();
+}
+function honeyDrop(x, y, s, on) {
+  ctx.save();
+  dropPath(x, y, s);
+  if (on) {
+    const g = ctx.createLinearGradient(x, y - s, x, y + s);
+    g.addColorStop(0, '#ffe27a'); g.addColorStop(1, '#f59a0b');
+    ctx.fillStyle = g; ctx.fill();
+    ctx.strokeStyle = '#b36a05'; ctx.lineWidth = Math.max(1.2, s * 0.16); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.beginPath(); ctx.ellipse(x - s * 0.25, y + s * 0.1, s * 0.15, s * 0.24, 0.3, 0, TAU); ctx.fill();
+  } else {
+    ctx.fillStyle = 'rgba(160,110,40,0.16)'; ctx.fill();
+    ctx.strokeStyle = 'rgba(160,110,40,0.4)'; ctx.lineWidth = Math.max(1, s * 0.13); ctx.stroke();
+  }
+  ctx.restore();
+}
+/** 蜂巢格子圖示：p = 0~1 蜂蜜高度 */
+function honeyHex(x, y, r, p) {
+  ctx.save();
+  hexPath(x, y, r); ctx.fillStyle = '#fff6d8'; ctx.fill();
+  ctx.save(); hexPath(x, y, r); ctx.clip();
+  const top = y + r - p * 2 * r;
+  ctx.fillStyle = '#ffb627'; ctx.fillRect(x - r, top + Math.sin(time * 4) * 1.2, r * 2, r * 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.fillRect(x - r, top + Math.sin(time * 4) * 1.2, r * 2, r * 0.2);
+  ctx.restore();
+  hexPath(x, y, r); ctx.strokeStyle = '#a8650a'; ctx.lineWidth = Math.max(1.5, r * 0.16); ctx.stroke();
+  ctx.restore();
+}
+function pill(x, y, w, h, col, bg) {
+  rr(x, y + 3, w, h, h / 2); ctx.fillStyle = 'rgba(90,60,20,0.16)'; ctx.fill();
+  rr(x, y, w, h, h / 2); ctx.fillStyle = bg || 'rgba(255,253,244,0.94)'; ctx.fill();
+  ctx.strokeStyle = col; ctx.lineWidth = 3; ctx.stroke();
+}
+/** 自動換行（中文逐字） */
+const wrapCache = new Map();
+function wrapText(s, maxW, size) {
+  const key = s + '|' + Math.round(maxW) + '|' + Math.round(size);
+  let r = wrapCache.get(key);
+  if (r) return r;
+  setFont(size, '800');
+  r = [];
+  let line = '';
+  for (const ch of s) {
+    const t = line + ch;
+    if (ctx.measureText(t).width > maxW && line) {
+      if ('，。！？、：）」'.indexOf(ch) >= 0 && line.length > 1) { r.push(line.slice(0, -1)); line = line.slice(-1) + ch; }
+      else { r.push(line); line = ch; }
+    } else line = t;
+  }
+  if (line) r.push(line);
+  if (wrapCache.size > 300) wrapCache.clear();
+  wrapCache.set(key, r);
+  return r;
+}
+
+/* ---------- 按鈕（每一格畫面重新登記，支援鍵盤焦點） ---------- */
+let btnReg = [], pressed = null, focusId = null, kbMode = false;
+const BTN = {
+  green: ['#b6f5a6', '#52c25e', '#2f8a3c'], pink: ['#ffc0d6', '#f56f9e', '#b8406e'], blue: ['#b0e2ff', '#4aa6ef', '#2768a3'],
+  honey: ['#fff09a', '#f9b522', '#b0730a'], purple: ['#e0ccff', '#a07cf0', '#62449f'], orange: ['#ffd6a8', '#ff9a4d', '#c0601e'],
+  white: ['#ffffff', '#fff6e2', '#c9a46a']
+};
+function drawIcon(name, x, y, s, col) {
+  ctx.save(); ctx.translate(x, y);
+  ctx.fillStyle = col || '#fff'; ctx.strokeStyle = col || '#fff';
+  ctx.lineWidth = s * 0.2; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  if (name === 'play') { ctx.beginPath(); ctx.moveTo(-s * 0.32, -s * 0.45); ctx.lineTo(s * 0.45, 0); ctx.lineTo(-s * 0.32, s * 0.45); ctx.closePath(); ctx.fill(); ctx.stroke(); }
+  else if (name === 'pause') { rr(-s * 0.38, -s * 0.42, s * 0.26, s * 0.84, s * 0.08); ctx.fill(); rr(s * 0.12, -s * 0.42, s * 0.26, s * 0.84, s * 0.08); ctx.fill(); }
+  else if (name === 'replay') {
+    ctx.beginPath(); ctx.arc(0, 0, s * 0.42, -Math.PI * 0.3, Math.PI * 1.35); ctx.stroke();
+    const a = -Math.PI * 0.3, ex = Math.cos(a) * s * 0.42, ey = Math.sin(a) * s * 0.42;
+    ctx.beginPath(); ctx.moveTo(ex + s * 0.2, ey - s * 0.05); ctx.lineTo(ex - s * 0.02, ey + s * 0.25); ctx.lineTo(ex - s * 0.25, ey - s * 0.12); ctx.closePath(); ctx.fill();
+  }
+  else if (name === 'menu') { for (let i = -1; i <= 1; i += 2) for (let j = -1; j <= 1; j += 2) { rr(i * s * 0.25 - s * 0.17, j * s * 0.25 - s * 0.17, s * 0.34, s * 0.34, s * 0.08); ctx.fill(); } }
+  else if (name === 'back') { ctx.beginPath(); ctx.moveTo(s * 0.4, 0); ctx.lineTo(-s * 0.35, 0); ctx.moveTo(-s * 0.05, -s * 0.32); ctx.lineTo(-s * 0.38, 0); ctx.lineTo(-s * 0.05, s * 0.32); ctx.stroke(); }
+  else if (name === 'lock') {
+    ctx.lineWidth = s * 0.16; ctx.beginPath(); ctx.arc(0, -s * 0.12, s * 0.26, Math.PI, 0); ctx.stroke();
+    rr(-s * 0.38, -s * 0.12, s * 0.76, s * 0.6, s * 0.12); ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.beginPath(); circ(0, s * 0.15, s * 0.08); ctx.fill();
+  }
+  else if (name === 'speaker') {
+    ctx.beginPath(); ctx.moveTo(-s * 0.45, -s * 0.16); ctx.lineTo(-s * 0.22, -s * 0.16); ctx.lineTo(s * 0.05, -s * 0.4); ctx.lineTo(s * 0.05, s * 0.4); ctx.lineTo(-s * 0.22, s * 0.16); ctx.lineTo(-s * 0.45, s * 0.16); ctx.closePath(); ctx.fill();
+    ctx.lineWidth = s * 0.12;
+    ctx.beginPath(); ctx.arc(s * 0.08, 0, s * 0.22, -0.9, 0.9); ctx.stroke();
+    ctx.beginPath(); ctx.arc(s * 0.08, 0, s * 0.4, -0.9, 0.9); ctx.stroke();
+  }
+  else if (name === 'hive') {
+    for (let i = 0; i < 4; i++) { const w = s * (0.5 + Math.sin((i + 0.5) / 4 * Math.PI) * 0.45); rr(-w / 2, -s * 0.45 + i * s * 0.22, w, s * 0.24, s * 0.12); ctx.fill(); }
+    ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.beginPath(); ctx.ellipse(0, s * 0.3, s * 0.12, s * 0.09, 0, 0, TAU); ctx.fill();
+  }
+  else if (name === 'check') { ctx.lineWidth = s * 0.22; ctx.beginPath(); ctx.moveTo(-s * 0.36, 0); ctx.lineTo(-s * 0.08, s * 0.28); ctx.lineTo(s * 0.4, -s * 0.3); ctx.stroke(); }
+  ctx.restore();
+}
+/** 立體按鈕。o: {label, icon, color, onClick, size, pulse, disabled, def, radius} */
+function button(id, x, y, w, h, o) {
+  btnReg.push({ id, x, y, w, h, onClick: o.onClick, disabled: o.disabled, def: o.def, silent: o.silent });
+  const pal = BTN[o.color || 'honey'];
+  const isDown = pressed && pressed.id === id;
+  let s = isDown ? 0.93 : 1;
+  if (o.pulse && !isDown) s *= 1 + Math.sin(time * 5) * 0.03;
+  const lip = Math.max(4, h * 0.1);
+  ctx.save();
+  ctx.translate(x + w / 2, y + h / 2); ctx.scale(s, s);
+  if (o.disabled) ctx.globalAlpha = 0.55;
+  const r = o.radius == null ? h / 2 : o.radius;
+  const yo = isDown ? lip * 0.6 : 0;
+  rr(-w / 2, -h / 2 + lip + 3, w, h, r); ctx.fillStyle = 'rgba(90,60,20,0.2)'; ctx.fill();
+  rr(-w / 2, -h / 2 + lip, w, h, r); ctx.fillStyle = pal[2]; ctx.fill();
+  rr(-w / 2, -h / 2 + yo, w, h, r);
+  const g = ctx.createLinearGradient(0, -h / 2, 0, h / 2);
+  g.addColorStop(0, pal[0]); g.addColorStop(0.55, pal[1]); g.addColorStop(1, shade(pal[1], -15));
+  ctx.fillStyle = g; ctx.fill();
+  ctx.strokeStyle = pal[2]; ctx.lineWidth = Math.max(2, h * 0.05); ctx.stroke();
+  rr(-w / 2 + Math.min(h, w) * 0.22, -h / 2 + yo + h * 0.09, w - Math.min(h, w) * 0.44, h * 0.28, h * 0.14);
+  ctx.fillStyle = 'rgba(255,255,255,0.45)'; ctx.fill();
+  const fs = o.size || h * 0.42;
+  const tc = o.color === 'white' ? '#7a4f12' : '#fff';
+  const sc = o.color === 'white' ? '#fff' : pal[2];
+  if (o.icon && o.label) {
+    setFont(fs);
+    const tw = ctx.measureText(o.label).width;
+    const tot = fs * 1.15 + tw;
+    drawIcon(o.icon, -tot / 2 + fs * 0.45, yo, fs * 0.9, tc);
+    txt(o.label, -tot / 2 + fs * 1.15 + tw / 2, yo + 1, fs, tc, { stroke: sc, sw: fs * 0.2, shadow: false });
+  } else if (o.icon) drawIcon(o.icon, 0, yo, fs * 1.1, tc);
+  else if (o.label != null) txt(o.label, 0, yo + 1, fs, tc, { stroke: sc, sw: fs * 0.2, shadow: false });
+  ctx.restore();
+  if (kbMode && focusId === id) {
+    rr(x - 5, y - 5, w + 10, h + lip + 10, r + 5);
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 4; ctx.setLineDash([9, 6]); ctx.lineDashOffset = -time * 30; ctx.stroke(); ctx.setLineDash([]);
+  }
+}
+function hotspot(id, x, y, w, h, onClick, o) { btnReg.push(Object.assign({ id, x, y, w, h, onClick }, o || {})); }
+function hitBtn(x, y) {
+  let best = null, bd = 14;
+  for (let i = btnReg.length - 1; i >= 0; i--) {
+    const b = btnReg[i];
+    if (b.disabled) continue;
+    if (x >= b.x - 4 && x <= b.x + b.w + 4 && y >= b.y - 4 && y <= b.y + b.h + 8) return b;
+    const dx = Math.max(b.x - x, 0, x - (b.x + b.w)), dy = Math.max(b.y - y, 0, y - (b.y + b.h));
+    const d = Math.hypot(dx, dy);
+    if (d < bd) { bd = d; best = b; }
+  }
+  return best;
+}
+function focusMove(dir) {
+  const list = btnReg.filter(b => !b.disabled && !b.noFocus);
+  if (!list.length) return;
+  let i = list.findIndex(b => b.id === focusId);
+  i = i < 0 ? (dir > 0 ? 0 : list.length - 1) : (i + dir + list.length) % list.length;
+  focusId = list[i].id;
+  sfx('click', { vol: 0.6 });
+}
+function focusPress() {
+  const b = btnReg.find(q => q.id === focusId && !q.disabled) || btnReg.find(q => q.def && !q.disabled);
+  if (b && b.onClick) { sfx('ui'); b.onClick(); }
+}
+
+/* ---------- 粒子（物件池）：world = 世界座標，否則是螢幕座標 ---------- */
+const PMAX = KG.lowEnd ? 140 : 220;
+const parts = [];
+for (let i = 0; i < PMAX; i++) parts.push({ on: false, world: true, x: 0, y: 0, vx: 0, vy: 0, life: 0, max: 1, size: 1, color: '#fff', shape: 0, rot: 0, vr: 0, g: 0, drag: 1 });
+let pIdx = 0;
+const SH_STAR = 0, SH_SPARK = 1, SH_DOT = 2, SH_PETAL = 3, SH_RING = 4, SH_DROP = 5, SH_LEAF = 6, SH_HEART = 7;
+function allocP() {
+  for (let k = 0; k < PMAX; k++) {
+    const p = parts[(pIdx + k) % PMAX];
+    if (!p.on) { pIdx = (pIdx + k + 1) % PMAX; return p; }
+  }
+  const p = parts[pIdx]; pIdx = (pIdx + 1) % PMAX; return p;
+}
+/** 一團粒子。o: {n, colors, speed, g, size, shape, life, world, up, drag} */
+function burst(x, y, o) {
+  o = o || {};
+  const n = o.n || 12;
+  for (let i = 0; i < n; i++) {
+    const p = allocP();
+    const a = o.angle != null ? o.angle + rand(-(o.spread || 0.6), o.spread || 0.6) : rand(0, TAU);
+    const sp = (o.speed || 150) * rand(0.35, 1);
+    p.on = true; p.world = o.world !== false; p.x = x + rand(-(o.jx || 0), o.jx || 0); p.y = y + rand(-(o.jy || 0), o.jy || 0);
+    p.vx = Math.cos(a) * sp; p.vy = Math.sin(a) * sp - (o.up || 0);
+    p.life = 0; p.max = (o.life || 0.8) * rand(0.7, 1.2); p.size = (o.size || 6) * rand(0.6, 1.2);
+    p.color = o.colors ? o.colors[i % o.colors.length] : '#ffd93d';
+    p.shape = o.shape != null ? o.shape : SH_STAR; p.rot = rand(0, TAU); p.vr = rand(-6, 6); p.g = o.g == null ? 200 : o.g; p.drag = o.drag || 0.985;
+  }
+}
+function ring(x, y, color, r, life, world) {
+  const p = allocP();
+  p.on = true; p.world = world !== false; p.x = x; p.y = y; p.vx = 0; p.vy = 0; p.life = 0; p.max = life || 0.5; p.size = r || 40; p.color = color; p.shape = SH_RING; p.g = 0; p.drag = 1;
+}
+function updateParts(dt) {
+  for (const p of parts) {
+    if (!p.on) continue;
+    p.life += dt;
+    if (p.life >= p.max) { p.on = false; continue; }
+    p.vy += p.g * dt; p.vx *= p.drag; p.vy *= p.drag;
+    if (p.shape === SH_PETAL || p.shape === SH_LEAF) { p.vx += Math.sin(time * 2 + p.rot) * 20 * dt; }
+    p.x += p.vx * dt; p.y += p.vy * dt; p.rot += p.vr * dt;
+  }
+}
+function drawParts(world) {
+  for (const p of parts) {
+    if (!p.on || p.world !== world) continue;
+    const k = p.life / p.max;
+    ctx.globalAlpha = k > 0.7 ? (1 - k) / 0.3 : 1;
+    if (p.shape === SH_RING) {
+      ctx.strokeStyle = p.color; ctx.lineWidth = 4 * (1 - k) + 1;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.size * Ease.outCubic(k), 0, TAU); ctx.stroke();
+      continue;
+    }
+    ctx.fillStyle = p.color;
+    const s = p.size * (p.shape === SH_SPARK ? (1 - k) : 1);
+    if (p.shape === SH_STAR) { starPath(p.x, p.y, s, s * 0.45, p.rot); ctx.fill(); }
+    else if (p.shape === SH_SPARK) { ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot); ctx.fillRect(-s, -s * 0.18, s * 2, s * 0.36); ctx.fillRect(-s * 0.18, -s, s * 0.36, s * 2); ctx.restore(); }
+    else if (p.shape === SH_DOT) { ctx.beginPath(); circ(p.x, p.y, s); ctx.fill(); }
+    else if (p.shape === SH_PETAL) { ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot); ctx.beginPath(); ctx.ellipse(0, 0, s, s * 0.55, 0, 0, TAU); ctx.fill(); ctx.restore(); }
+    else if (p.shape === SH_LEAF) { ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot); ctx.beginPath(); ctx.moveTo(-s, 0); ctx.quadraticCurveTo(0, -s * 0.8, s, 0); ctx.quadraticCurveTo(0, s * 0.8, -s, 0); ctx.fill(); ctx.restore(); }
+    else if (p.shape === SH_DROP) { dropPath(p.x, p.y, s); ctx.fill(); }
+    else if (p.shape === SH_HEART) { heartPath(p.x, p.y, s); ctx.fill(); }
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* ---------- 文字提示：每一種只有一個位置，新的取代舊的（不會疊在一起） ---------- */
+const banner = { text: '', t: 0, dur: 0, prio: 0, color: '#7a4a0c' };
+function showBanner(text, dur, prio, color) {
+  if (banner.t < banner.dur && (prio || 0) < banner.prio && banner.t < 1.0) return;
+  banner.text = text; banner.t = 0; banner.dur = dur || 2.2; banner.prio = prio || 0; banner.color = color || '#7a4a0c';
+}
+const beePop = { text: '', t: 9, color: '#fff', stroke: '#b36a05' };
+function showPop(text, color, stroke) { beePop.text = text; beePop.t = 0; beePop.color = color || '#fff'; beePop.stroke = stroke || '#b36a05'; }
+
+/* =====================================================================
+ * 聲音：原創配樂（F 大調 6/8 拍）＋音效
+ * ===================================================================== */
+const S = KG.sfx, M = KG.music;
+const MUSIC_VOL = 0.29;
+if (M) M.setVolume(MUSIC_VOL);
+const Save = {
+  get(k, d) { return KG.store.get(SLUG + ':' + k, d); },
+  set(k, v) { KG.store.set(SLUG + ':' + k, v); }
+};
+let sfxOn = Save.get('sfx', true) !== false;
+let voiceOn = Save.get('voice', true) !== false;
+const sfxLast = Object.create(null);
+/** 播放音效：同一種音效 40ms 內只播一次、音高隨機 ±4% */
+function sfx(name, o) {
+  if (!sfxOn || !S) return;
+  const now = performance.now();
+  if (now - (sfxLast[name] || 0) < ((o && o.gap) || 40)) return;
+  sfxLast[name] = now;
+  const pitch = ((o && o.pitch) || 1) * (o && o.exact ? 1 : 0.96 + Math.random() * 0.08);
+  S.play(name, { vol: o ? o.vol : undefined, pitch, pan: o ? o.pan : undefined });
+}
+/** 依世界座標算左右聲道 */
+function panW(wx) { return clamp(((wx - camX) / Math.max(1, viewW)) * 2 - 1, -1, 1) * 0.55; }
+
+/* 講話時把音樂調小，講完再恢復 */
+let duckTimer = null;
+function say(t) {
+  if (!voiceOn || !t) return;
+  KG.say(t, 1.0);
+  if (!M || !window.speechSynthesis) return;
+  M.setVolume(MUSIC_VOL * 0.4);
+  const t0 = performance.now();
+  if (duckTimer) clearInterval(duckTimer);
+  duckTimer = setInterval(() => {
+    const sp = window.speechSynthesis.speaking || window.speechSynthesis.pending;
+    if ((!sp && performance.now() - t0 > 400) || performance.now() - t0 > 12000) { clearInterval(duckTimer); duckTimer = null; M.setVolume(MUSIC_VOL); }
+  }, 200);
+}
+function stopSay() { if (window.speechSynthesis) window.speechSynthesis.cancel(); }
+
+/* F 大調音階：每種花的顏色一個音（開花鈴聲用） */
+const SCALE_HZ = [698.46, 783.99, 880.0, 932.33, 1046.5, 1174.66];
+
+if (S) {
+  // 吸花蜜：咕嚕咕嚕的泡泡
+  S.define('bee_sip', (p, s) => {
+    for (let i = 0; i < 3; i++) s.tone((240 + i * 70) * p, 0.09, { vol: 0.16, slide: (520 + i * 120) * p, delay: i * 0.075 });
+    s.tone(170 * p, 0.16, { type: 'triangle', vol: 0.08, slide: 120 * p, delay: 0.02 });
+  });
+  S.define('bee_sipTick', (p, s) => { s.tone(420 * p, 0.05, { vol: 0.05, slide: 700 * p }); });
+  // 開花鈴聲：p 直接是頻率倍數（以 C5 為 1）
+  S.define('bee_bloom', (p, s) => {
+    const f = 523.25 * p;
+    s.tone(f, 0.7, { vol: 0.13 });
+    s.tone(f * 2, 0.35, { vol: 0.04 });
+    s.tone(f * 1.5, 0.55, { vol: 0.08, delay: 0.09 });
+    s.tone(f * 2, 0.5, { vol: 0.06, delay: 0.18 });
+    s.tone(f * 3.01, 0.2, { vol: 0.02, delay: 0.18 });
+  });
+  // 沾到花粉：細細的閃光
+  S.define('bee_pollen', (p, s) => {
+    [1760, 2217, 2637, 3520].forEach((f, i) => s.tone(f * p, 0.14, { vol: 0.045, delay: i * 0.035 }));
+    s.noise(0.12, { vol: 0.04, freq: 7000, type: 'highpass' });
+  });
+  // 蜂蜜放進格子：啵
+  S.define('bee_plop', (p, s) => {
+    s.tone(540 * p, 0.13, { vol: 0.24, slide: 190 * p });
+    s.tone(880 * p, 0.07, { vol: 0.07, slide: 1500 * p, delay: 0.05 });
+    s.noise(0.05, { vol: 0.06, freq: 700, type: 'lowpass' });
+  });
+  // 虎頭蜂警告：低沉的嗡嗡
+  S.define('bee_hornet', (p, s) => {
+    for (let i = 0; i < 7; i++) {
+      s.tone((150 + (i % 2) * 8) * p, 0.1, { type: 'sawtooth', vol: 0.075, delay: i * 0.075, attack: 0.02 });
+      s.tone((225 + (i % 2) * 10) * p, 0.1, { type: 'square', vol: 0.025, delay: i * 0.075, attack: 0.02 });
+    }
+  });
+  // 黏到蜘蛛網：彈簧聲
+  S.define('bee_web', (p, s) => {
+    s.tone(150 * p, 0.32, { vol: 0.22, slide: 430 * p });
+    s.tone(260 * p, 0.24, { vol: 0.1, slide: 170 * p, delay: 0.14 });
+    s.tone(190 * p, 0.3, { vol: 0.08, slide: 330 * p, delay: 0.28 });
+  });
+  // 雨滴
+  S.define('bee_rain', (p, s) => { s.tone(rand(1800, 2500) * p, 0.07, { vol: 0.045, slide: 1300 * p }); });
+  // 青蛙：咕呱
+  S.define('bee_croak', (p, s) => {
+    s.tone(118 * p, 0.09, { type: 'triangle', vol: 0.16, slide: 150 * p });
+    s.tone(118 * p, 0.09, { type: 'square', vol: 0.03 });
+    s.tone(132 * p, 0.12, { type: 'triangle', vol: 0.16, slide: 100 * p, delay: 0.13 });
+    s.tone(132 * p, 0.1, { type: 'square', vol: 0.03, delay: 0.13 });
+  });
+  S.define('bee_tongue', (p, s) => {
+    s.tone(320 * p, 0.12, { type: 'triangle', vol: 0.12, slide: 950 * p });
+    s.noise(0.1, { vol: 0.07, freq: 1200 * p, sweep: 3000, q: 1.2 });
+  });
+  // 被碰到：柔和的「喔喔」（不刺耳）
+  S.define('bee_oops', (p, s) => {
+    s.tone(660 * p, 0.16, { type: 'triangle', vol: 0.12, slide: 520 * p });
+    s.tone(520 * p, 0.24, { type: 'triangle', vol: 0.11, slide: 392 * p, delay: 0.14 });
+  });
+  S.define('bee_drip', (p, s) => { for (let i = 0; i < 3; i++) s.tone((1100 - i * 120) * p, 0.07, { vol: 0.08, slide: 600 * p, delay: 0.05 + i * 0.09 }); });
+  S.define('bee_full', (p, s) => { s.tone(1047 * p, 0.12, { type: 'triangle', vol: 0.11 }); s.tone(1397 * p, 0.25, { type: 'triangle', vol: 0.1, delay: 0.1 }); });
+  S.define('bee_fruit', (p, s) => { s.tone(300 * p, 0.12, { vol: 0.2, slide: 820 * p }); s.tone(1320 * p, 0.12, { vol: 0.05, delay: 0.1 }); });
+  S.define('bee_gust', (p, s) => { s.noise(0.9, { vol: 0.17, freq: 380 * p, sweep: 1300 * p, q: 0.9, attack: 0.25 }); });
+  S.define('bee_buy', (p, s) => { [784, 988, 1175, 1568].forEach((f, i) => s.tone(f * p, 0.18, { type: 'triangle', vol: 0.12, delay: i * 0.06 })); });
+  S.define('bee_tab', (p, s) => { s.tone(700 * p, 0.05, { type: 'triangle', vol: 0.1, slide: 900 * p }); });
+}
+
+/* ---------- 原創配樂 ----------
+ * 遊戲中：6/8 拍，附點四分音符 = 112（引擎一小節 = 240/bpm 秒，所以 bpm 寫 224，每小節 12 格 = 十六分音符）
+ * 長笛主旋律、卡林巴琴分解和弦、撥弦（像撥奏）伴奏、輕輕的沙鈴
+ */
+const E12 = '............';
+const MEL_PLAY = [
+  'A4 - C5 F5 - C5', 'E5 - D5 C5 - G4', 'A4 - D5 F5 - E5', 'D5 - - Bb4 - .',
+  'C5 - A4 C5 - F5', 'D5 - Bb4 G4 - Bb4', 'C5 - E4 G4 - Bb4', 'A4 - - F4 - .',
+  'F5 - D5 Bb4 - D5', 'C5 - A4 F4 - A4', 'Bb4 - D5 F5 - D5', 'E5 - - C5 - .',
+  'D5 - E5 F5 - D5', 'Bb4 - D5 F5 - D5', 'E5 - C5 Bb4 - G4', 'F4 - - A4 C5 .'
+];
+const SONG_PLAY = {
+  bpm: 224, steps: 12, swing: 0,
+  chords: ['F', 'C', 'Dm', 'Bb', 'F', 'Gm', 'C7', 'F', 'Bb', 'F', 'Gm7', 'C', 'Dm', 'Bb', 'C7', 'F'],
+  layers: { spr: true, sum: false, aut: false, danger: false, top: false, busy: false },
+  tracks: [
+    { inst: 'kick', pat: 'x.....o.....', vol: 0.4 },
+    { inst: 'shaker', pat: 'x.o.o.x.o.o.', vol: 0.55 },
+    { inst: 'sub', chord: 'R.....5.....', vol: 0.7 },
+    { inst: 'pluck', chord: ['..3.5...3.5.', '..3.5...5.8.'], oct: 4, vol: 0.4 },
+    { inst: 'flute', seq: MEL_PLAY, vol: 1.25 },
+    // 春：卡林巴琴往上分解和弦
+    { inst: 'kalimba', arp: 'up', rate: 2, oct: 4, layer: 'spr', vol: 0.55 },
+    // 夏：木琴跟著主旋律、拍手
+    { inst: 'marimba', seq: MEL_PLAY, layer: 'sum', vol: 0.5 },
+    { inst: 'kalimba', arp: 'updown', rate: 2, oct: 4, layer: 'sum', vol: 0.48 },
+    { inst: 'clap', pat: '......x.....', layer: 'sum', vol: 0.25 },
+    // 秋：弦樂長音、卡林巴往下
+    { inst: 'strings', chord: 'hold', oct: 4, layer: 'aut', vol: 0.45 },
+    { inst: 'kalimba', arp: 'down', rate: 2, oct: 4, layer: 'aut', vol: 0.5 },
+    // 帶著花蜜：多一點節奏
+    { inst: 'hat', pat: '..o...o...o.', layer: 'busy', vol: 0.45 },
+    // 虎頭蜂追過來：低音撥弦＋小鼓
+    { inst: 'pluck', chord: 'R.R.R.R.R.R.', oct: 3, layer: 'danger', vol: 0.3 },
+    { inst: 'tom', pat: 'x.....x..x..', layer: 'danger', vol: 0.3, pitch: 120 },
+    // 最後衝刺：鈴聲
+    { inst: 'bell', arp: 'up', rate: 6, oct: 5, layer: 'top', vol: 0.4 }
+  ]
+};
+// 標題／選關：6/8 拍，比較輕快的卡林巴琴
+const MEL_TITLE = [
+  'C5 - F5 A5 - F5', 'E5 - D5 A4 - D5', 'F5 - D5 Bb4 - D5', 'E5 - - C5 - .',
+  'A4 - C5 F5 - A5', 'G5 - E5 C5 - E5', 'F5 - D5 Bb4 - G4', 'E5 - - G4 - .'
+];
+const SONG_TITLE = {
+  bpm: 200, steps: 12, swing: 0,
+  chords: ['F', 'Dm', 'Bb', 'C', 'F', 'Am', 'Gm7', 'C7'],
+  tracks: [
+    { inst: 'shaker', pat: 'x.o.o.x.o.o.', vol: 0.4 },
+    { inst: 'sub', chord: 'R.....5.....', vol: 0.7 },
+    { inst: 'pluck', chord: '..3.5...3.5.', oct: 4, vol: 0.38 },
+    { inst: 'kalimba', seq: MEL_TITLE, vol: 1.35 },
+    { inst: 'flute', seq: ['', '', '', '', 'A4 - - - - -', 'C5 - - - - -', 'Bb4 - - - - -', 'C5 - - - - -'], vol: 0.45 },
+    { inst: 'pad', chord: 'hold', oct: 4, vol: 0.45 }
+  ]
+};
+// 蜂巢小屋：安靜的 3/4 圓舞曲（降 B 大調，四分音符 = 88）
+const SONG_HIVE = {
+  bpm: 117, steps: 12, swing: 0,
+  chords: ['Bb', 'Gm', 'Eb', 'F', 'Bb', 'Eb', 'Cm7', 'F7'],
+  tracks: [
+    { inst: 'sub', chord: 'R...........', vol: 0.65 },
+    { inst: 'kalimba', chord: '....3...3...', oct: 4, vol: 0.45 },
+    { inst: 'kalimba', chord: '....5...5...', oct: 4, vol: 0.4 },
+    { inst: 'flute', seq: ['F4 - Bb4 - D5 -', 'D5 - - C5 Bb4 -', 'G4 - Bb4 - Eb5 -', 'C5 - - - - -', 'D5 - F5 - D5 -', 'Eb5 - - D5 C5 -', 'Bb4 - G4 - Eb5 -', 'C5 - - A4 - .'], vol: 1.0 },
+    { inst: 'pad', chord: 'hold', oct: 4, vol: 0.4 },
+    { inst: 'bell', seq: ['', 'D5 - - - - -', '', 'A4 - - - - -', '', 'G4 - - - - -', '', 'Eb5 - - - - -'], vol: 0.3 }
+  ]
+};
+function playSong(s) { if (M) M.play(s); }
+function jingleClear() {
+  if (!sfxOn || !M) return;
+  M.jingle({ bpm: 190, inst: 'kalimba', vol: 0.7, notes: [['C5', 1], ['F5', 1], ['A5', 1], ['G5', 1], ['A5', 1], ['C6', 3]], bass: [['F3', 3, 0], ['C3', 2, 3], ['F3', 3, 5]], bassVol: 0.1 });
+  M.jingle({ bpm: 190, inst: 'flute', vol: 0.4, notes: [['A4', 3], ['C5', 2], ['F5', 3]] });
+}
+function jingleGoal() { if (sfxOn && M) M.jingle({ bpm: 200, inst: 'bell', vol: 0.65, notes: [['F5', 1], ['A5', 1], ['C6', 2]] }); }
+function jingleStart() { if (sfxOn && M) M.jingle({ bpm: 180, inst: 'kalimba', vol: 0.7, notes: [['F4', 1], ['A4', 1], ['C5', 1], ['F5', 2]], bass: [['F3', 4, 0]], bassVol: 0.1 }); }
+
+/* 翅膀嗡嗡聲：跟著飛行速度，濾得很柔 */
+let buzz = null;
+function startBuzz() { if (buzz || !S || !sfxOn) return; try { buzz = S.loop('hum'); buzz.set(0, 0); } catch (e) { buzz = null; } }
+function stopBuzz() { if (buzz) { try { buzz.stop(); } catch (e) { /* 忽略 */ } buzz = null; } }
+
+/* =====================================================================
+ * 資料：花的顏色、季節、關卡、小知識、商店
+ * ===================================================================== */
+const COLORS = [
+  { name: '紅', hex: '#ff6f86', dark: '#c93b56', light: '#ffc2cc', fruit: '草莓' },
+  { name: '橘', hex: '#ffa24a', dark: '#c96a14', light: '#ffd7ae', fruit: '橘子' },
+  { name: '黃', hex: '#ffd83a', dark: '#c79a07', light: '#fff1a8', fruit: '檸檬' },
+  { name: '藍', hex: '#69b6ff', dark: '#2f78c4', light: '#c4e3ff', fruit: '藍莓' },
+  { name: '紫', hex: '#b58cff', dark: '#7650c4', light: '#e0d0ff', fruit: '葡萄' },
+  { name: '粉紅', hex: '#ff9dd2', dark: '#cf5b9b', light: '#ffd6ec', fruit: '桃子' }
+];
+const SEASONS = [
+  {
+    name: '春天花園', sky: ['#a9dcff', '#d8f0ff', '#ffe5f1'], sun: '#fff3b0',
+    far: '#bfe3c8', mid: '#9fd89a', near: '#86c972', ground: '#7dbf63', groundDark: '#5fa44a', dirt: '#d9b58a',
+    canopy: ['#ffc4da', '#ffb0cd', '#ffd8e7'], trunk: '#9a6a4a', fall: ['#ffc6dc', '#ffe0ec', '#ffffff'], fallShape: SH_PETAL,
+    kinds: [0, 1], title: '#f57aa6'
+  },
+  {
+    name: '夏日果園', sky: ['#7cc8ff', '#bfe6ff', '#fff3c4'], sun: '#fff09a',
+    far: '#a9dcb0', mid: '#7fca7c', near: '#69b85a', ground: '#63ae4c', groundDark: '#4b923a', dirt: '#d1a36e',
+    canopy: ['#5fb85a', '#78c966', '#4fa54c'], trunk: '#8a5a3a', fall: ['#fffbe0', '#ffffff'], fallShape: SH_DOT,
+    kinds: [0, 2], title: '#3fae5a'
+  },
+  {
+    name: '秋天山坡', sky: ['#ffcf9e', '#ffe2c4', '#efd9ff'], sun: '#ffe3a0',
+    far: '#e8c9a8', mid: '#e3b07a', near: '#cf9a5c', ground: '#c49a52', groundDark: '#a67c3c', dirt: '#b98a5c',
+    canopy: ['#ff9c4a', '#ffb85c', '#f27a48'], trunk: '#7d4f33', fall: ['#ff9c4a', '#f27a48', '#ffc85c', '#d9603a'], fallShape: SH_LEAF,
+    kinds: [2, 0], title: '#e8763a'
+  }
+];
+/* 關卡：w 世界寬度、n 花的數量、col 顏色、goal 花蜜／果實、危險物 */
+const LEVELS = [
+  { s: 0, w: 1050, n: 7, col: [0, 2], nectar: 5, fruit: 0, hint: '飛到花朵上停一下，就能吸花蜜！' },
+  { s: 0, w: 1250, n: 8, col: [0, 2, 5], nectar: 4, fruit: 2, hint: '先吸一朵花沾上花粉，再飛到「同顏色」的花，就會結出果實！' },
+  { s: 0, w: 1450, n: 9, col: [0, 2, 5], nectar: 6, fruit: 2, web: 2, hint: '小心蜘蛛網，碰到會被黏住，花蜜也會掉！' },
+  { s: 0, w: 1700, n: 11, col: [0, 3, 5, 2], nectar: 8, fruit: 3, web: 3 },
+  { s: 0, w: 1900, n: 11, col: [0, 3, 4], nectar: 8, fruit: 3, web: 2, hornet: 1, hint: '生氣的虎頭蜂來了！看到牠就快點飛走。' },
+  { s: 1, w: 1800, n: 11, col: [1, 2, 4], nectar: 8, fruit: 3, hornet: 1, rain: 1, hint: '雲變黑就要下雨了，躲開雨滴！' },
+  { s: 1, w: 2000, n: 12, col: [0, 1, 2], nectar: 10, fruit: 4, frog: 1, rain: 1, web: 1, hint: '青蛙會吐舌頭，經過池塘要飛高一點！' },
+  { s: 1, w: 2200, n: 13, col: [1, 3, 4, 5], nectar: 10, fruit: 4, frog: 1, hornet: 1, web: 2, hive: 'mid' },
+  { s: 1, w: 2400, n: 14, col: [0, 1, 2, 4], nectar: 12, fruit: 5, rain: 2, frog: 1, hornet: 1, hive: 'mid' },
+  { s: 1, w: 2600, n: 15, col: [0, 1, 2, 3, 4], nectar: 12, fruit: 5, hornet: 2, frog: 1, rain: 1, web: 2, hive: 'mid' },
+  { s: 2, w: 2200, n: 13, col: [1, 4, 5], nectar: 10, fruit: 4, wind: 1, web: 2, hornet: 1, hive: 'mid', hint: '秋天起風了！風會把你吹走，要用力飛喔。' },
+  { s: 2, w: 2400, n: 14, col: [0, 1, 2, 4], nectar: 12, fruit: 5, wind: 1, rain: 1, frog: 1, hive: 'mid' },
+  { s: 2, w: 2600, n: 15, col: [1, 2, 3, 5], nectar: 12, fruit: 5, hornet: 2, web: 3, hive: 'mid' },
+  { s: 2, w: 2800, n: 16, col: [0, 1, 2, 3, 4], nectar: 14, fruit: 6, wind: 1, rain: 2, frog: 1, hornet: 1, hive: 'mid' },
+  { s: 2, w: 3000, n: 17, col: [0, 1, 2, 3, 4, 5], nectar: 15, fruit: 6, wind: 1, rain: 1, frog: 1, hornet: 2, web: 3, hive: 'mid' }
+];
+const FACTS = [
+  '蜜蜂有五隻眼睛：兩隻大大的複眼，還有頭頂上三隻小小的單眼。',
+  '蜜蜂把花粉從一朵花帶到另一朵同種的花，花才能結出果實，這叫做「授粉」。',
+  '找到好多花的蜜蜂，回家會跳「搖擺舞」，告訴同伴花在哪個方向、有多遠。',
+  '一隻蜜蜂一輩子只能做出大約一小滴的蜂蜜，所以蜜蜂們要一起合作。',
+  '蜜蜂的翅膀一秒鐘可以拍兩百多下，所以我們會聽到「嗡嗡嗡」的聲音。',
+  '蜂巢的格子是六角形，用最少的蜂蠟就能做出又大又堅固的房間。',
+  '工蜂的後腳上有「花粉籃」，可以把花粉揉成小球帶回家。',
+  '台灣的春天龍眼花開，蜜蜂採的「龍眼蜜」香香甜甜，非常有名。',
+  '蜜蜂看得見紫外線，花瓣上有我們看不到的花紋，像箭頭一樣幫蜜蜂找花蜜。',
+  '蜜蜂用長長的舌頭吸花蜜，就像用吸管喝飲料一樣。',
+  '工蜂會一起搧動翅膀，把花蜜裡的水分搧乾，花蜜就慢慢變成濃濃的蜂蜜。',
+  '冬天很冷的時候，蜜蜂會擠成一大團，抖動身體互相取暖。',
+  '蜜蜂靠太陽認路，就算陰天也找得到回家的路。',
+  '我們吃的很多水果和蔬菜，像蘋果、西瓜、芒果，都要靠蜜蜂幫忙授粉。',
+  '蜜蜂只有覺得危險時才會螫人。看到蜜蜂不要揮手拍打，慢慢走開就好。'
+];
+const DECOS = [
+  { id: 'pots', name: '小花盆', price: 15 },
+  { id: 'flags', name: '彩色小旗', price: 25 },
+  { id: 'sign', name: '木頭招牌', price: 30 },
+  { id: 'mush', name: '蘑菇燈', price: 40 },
+  { id: 'swing', name: '小鞦韆', price: 50 },
+  { id: 'mill', name: '小風車', price: 60 },
+  { id: 'pond', name: '小水池', price: 70 },
+  { id: 'rainbow', name: '彩虹', price: 90 }
+];
+const OUTFITS = [
+  { id: 'none', name: '原本的樣子', price: 0 },
+  { id: 'bow', name: '紅蝴蝶結', price: 20 },
+  { id: 'straw', name: '小草帽', price: 30 },
+  { id: 'scarf', name: '小圍巾', price: 35 },
+  { id: 'wreath', name: '花圈', price: 45 },
+  { id: 'goggles', name: '飛行員眼鏡', price: 55 },
+  { id: 'wizard', name: '魔法帽', price: 70 },
+  { id: 'crown', name: '小皇冠', price: 90 }
+];
+const CAP = 5; // 一次最多帶 5 滴花蜜
+
+/* ---------- 存檔 ---------- */
+let stars = Save.get('stars', []);
+if (!Array.isArray(stars)) stars = [];
+let honeyBank = Save.get('honey', 0) | 0;      // 可以花的蜂蜜
+let honeyTotal = Save.get('honeyTotal', 0) | 0; // 一共收集過的蜂蜜（蜂巢格子）
+let owned = Save.get('owned', { none: 1 }) || { none: 1 };
+let outfit = Save.get('outfit', 'none');
+let decoOn = Save.get('decoOn', {}) || {};
+let bestTime = Save.get('times', []) || [];
+function totalStars() { let n = 0; for (let i = 0; i < LEVELS.length; i++) n += stars[i] || 0; return n; }
+function unlocked(i) { return i === 0 || (stars[i - 1] || 0) > 0; }
+function saveAll() {
+  Save.set('stars', stars); Save.set('honey', honeyBank); Save.set('honeyTotal', honeyTotal);
+  Save.set('owned', owned); Save.set('outfit', outfit); Save.set('decoOn', decoOn); Save.set('times', bestTime);
+}
+
+/* =====================================================================
+ * 世界：高度固定 540，地面在 470
+ * ===================================================================== */
+const WH = 540, GROUND = 470;
+let SC = 1, camX = 0, camY = 0, viewW = 300, viewH = 540;
+const G = {
+  lvl: 0, def: LEVELS[0], season: SEASONS[0], w: 1000, sub: 'card', t: 0,
+  flowers: [], webs: [], hornets: [], clouds: [], frogs: [], decor: [], drops: [],
+  wind: null, hive: { x: 140 }, honey: 0, fruits: 0, hits: 0, delivered: 0, done: false,
+  cardT: 0, endT: 0, firstSip: false, firstPollen: false, tutorial: 0, stretch: false, danger: false
+};
+const bee = { x: 140, y: 250, vx: 0, vy: 0, face: 1, nectar: 0, pollen: -1, from: -1, stuck: 0, stuckWeb: null, inv: 0, sipF: null, sipP: 0, sipTick: 0, flap: 0, tilt: 0, squash: 1, depT: 0, wob: 0 };
+
+function buildLevel(i) {
+  const d = LEVELS[i], rnd = mulberry(4021 + i * 7919);
+  const w = d.w;
+  G.lvl = i; G.def = d; G.season = SEASONS[d.s]; G.w = w;
+  G.flowers = []; G.webs = []; G.hornets = []; G.clouds = []; G.frogs = []; G.decor = []; G.drops = [];
+  G.honey = 0; G.fruits = 0; G.hits = 0; G.delivered = 0; G.done = false; G.t = 0; G.endT = 0;
+  G.firstSip = false; G.firstPollen = false; G.stretch = false; G.danger = false;
+  const hiveX = d.hive === 'mid' ? Math.round(w / 2) : 150;
+  G.hive = { x: hiveX, y: 252, ex: hiveX, ey: 282, wob: 0, fill: 0 };
+  // 先放危險物的位置（彼此分開、離蜂巢遠一點）
+  const taken = [];
+  function pickX(minHive, sep) {
+    for (let k = 0; k < 60; k++) {
+      const x = 260 + rnd() * (w - 420);
+      if (Math.abs(x - hiveX) < minHive) continue;
+      if (taken.some(t => Math.abs(t - x) < sep)) continue;
+      taken.push(x); return x;
+    }
+    const x = clamp(hiveX + (rnd() < 0.5 ? -1 : 1) * (minHive + 80), 200, w - 200); taken.push(x); return x;
+  }
+  const ponds = [];
+  for (let k = 0; k < (d.frog || 0); k++) {
+    const x = pickX(330, 330);
+    ponds.push(x);
+    G.frogs.push({ x, y: GROUND - 6, state: 'idle', t: 0, cd: 1.5, tx: 0, ty: 0, len: 0, blink: rand(1, 4) });
+  }
+  for (let k = 0; k < (d.hornet || 0); k++) {
+    const x = pickX(380, 360);
+    G.hornets.push({ cx: x, x0: x - 180, x1: x + 180, yb: 150 + rnd() * 70, x, y: 170, vx: 0, vy: 0, state: 'patrol', t: rnd() * 10, st: 0, face: 1, warn: 0, cd: 0 });
+  }
+  for (let k = 0; k < (d.rain || 0); k++) {
+    const x = pickX(420, 300);
+    G.clouds.push({ cx: x, x, y: 74, dir: rnd() < 0.5 ? -1 : 1, phase: 'dry', t: 1 + rnd() * 2.5, spawn: 0, dark: 0 });
+  }
+  // 花：平均分布，避開蜂巢和池塘
+  const spots = [];
+  const minX = 90, maxX = w - 80;
+  for (let x = minX; x <= maxX; x += 14) {
+    if (Math.abs(x - hiveX) < 95) continue;
+    if (ponds.some(p => Math.abs(p - x) < 120)) continue;
+    spots.push(x);
+  }
+  const n = d.n;
+  const gapBase = (spots.length - 1) / Math.max(1, n - 1);
+  let colorsList = [];
+  for (let k = 0; k < n; k++) colorsList.push(d.col[Math.floor(k / 2) % d.col.length]);
+  for (let k = colorsList.length - 1; k > 0; k--) { const j = Math.floor(rnd() * (k + 1)); const t = colorsList[k]; colorsList[k] = colorsList[j]; colorsList[j] = t; }
+  for (let k = 0; k < n; k++) {
+    const si = clamp(Math.round(k * gapBase + (rnd() - 0.5) * gapBase * 0.4), 0, spots.length - 1);
+    const x = spots[si];
+    const kinds = G.season.kinds;
+    G.flowers.push({
+      id: k, x, h: 130 + rnd() * 130, c: colorsList[k], kind: kinds[Math.floor(rnd() * kinds.length)],
+      size: 22 + rnd() * 6, petals: 5 + Math.floor(rnd() * 3), ph: rnd() * TAU, nectar: true, regen: 0, fruit: false, grow: 0,
+      cool: 0, hx: x, hy: 0, bob: 0, glow: 0, pulse: 0, lean: (rnd() - 0.5) * 0.12
+    });
+  }
+  // 蜘蛛網：放在兩朵花中間，高度避開花朵
+  if (d.web) {
+    const fl = G.flowers.slice().sort((a, b) => a.x - b.x);
+    const gaps = [];
+    for (let k = 0; k < fl.length - 1; k++) {
+      const mx = (fl[k].x + fl[k + 1].x) / 2;
+      if (Math.abs(mx - hiveX) < 220 || fl[k + 1].x - fl[k].x < 70) continue;
+      gaps.push({ mx, a: fl[k], b: fl[k + 1] });
+    }
+    for (let k = gaps.length - 1; k > 0; k--) { const j = Math.floor(rnd() * (k + 1)); const t = gaps[k]; gaps[k] = gaps[j]; gaps[j] = t; }
+    let placed = 0;
+    for (const g of gaps) {
+      if (placed >= d.web) break;
+      if (G.webs.some(wb => Math.abs(wb.x - g.mx) < 260)) continue;
+      const ys = [];
+      for (let y = 120; y <= 380; y += 10) {
+        const ok = G.flowers.every(f => Math.abs(f.x - g.mx) > 120 || Math.abs((GROUND - f.h) - y) > 92 || Math.abs(f.x - g.mx) > 95);
+        if (ok) ys.push(y);
+      }
+      if (!ys.length) continue;
+      G.webs.push({ x: g.mx, y: ys[Math.floor(rnd() * ys.length)], r: 42, cool: 0, ph: rnd() * TAU, wob: 0 });
+      placed++;
+    }
+  }
+  // 裝飾：草叢、石頭、蘑菇、向日葵、籬笆
+  for (let x = 40; x < w; x += 70 + rnd() * 90) {
+    if (ponds.some(p => Math.abs(p - x) < 110)) continue;
+    const r = rnd();
+    let type = r < 0.45 ? 'bush' : r < 0.65 ? 'stone' : r < 0.82 ? (d.s === 2 ? 'mush' : d.s === 1 ? 'hay' : 'tulipbed') : 'fence';
+    G.decor.push({ type, x, s: 0.8 + rnd() * 0.5, ph: rnd() * TAU });
+  }
+  G.wind = d.wind ? { state: 'calm', t: 3, dir: 1, k: 0 } : null;
+  G.par = Math.round(25 + d.nectar * 5 + d.fruit * 6 + w / 70);
+  // 蜜蜂從蜂巢出發
+  Object.assign(bee, { x: hiveX + 40, y: 240, vx: 0, vy: 0, face: 1, nectar: 0, pollen: -1, from: -1, stuck: 0, stuckWeb: null, inv: 0, sipF: null, sipP: 0, flap: 0, tilt: 0, squash: 1, depT: 0, wob: 0 });
+  for (const p of parts) p.on = false;
+  banner.t = banner.dur = 9; banner.prio = 0; beePop.t = 9;
+}
+
+/* =====================================================================
+ * 遊戲進行
+ * ===================================================================== */
+let scene = 'title', sceneT = 0, paused = false;
+const MAXV = 300, SIP_R = 40, SIP_TIME = 0.7;
+const ptr = { active: false, sx: 0, sy: 0, touch: false, id: null };
+const keys = { l: 0, r: 0, u: 0, d: 0 };
+const butterflies = [];
+for (let i = 0; i < 4; i++) butterflies.push({ x: 0, y: 0, vx: 0, vy: 0, ph: Math.random() * TAU, c: ['#ffffff', '#ffd1ec', '#cfe6ff', '#fff2a8'][i], t: Math.random() * 5 });
+let ambT = 0;
+
+function toWorld(sx, sy) { return [sx / SC + camX, sy / SC + camY]; }
+function toScreen(wx, wy) { return [(wx - camX) * SC, (wy - camY) * SC]; }
+function onScreen(wx, m) { return wx > camX - (m || 60) && wx < camX + viewW + (m || 60); }
+
+function updateCamera(snap, dt) {
+  viewW = W / SC; viewH = H / SC;
+  let cx = camX;
+  const bx = bee.x + bee.vx * 0.35;
+  if (snap) cx = bee.x - viewW * 0.4;
+  if (bx - cx < viewW * 0.36) cx = bx - viewW * 0.36;
+  if (bx - cx > viewW * 0.64) cx = bx - viewW * 0.64;
+  if (G.w <= viewW) cx = (G.w - viewW) / 2;
+  else cx = clamp(cx, 0, G.w - viewW);
+  camX = snap ? cx : lerp(camX, cx, Math.min(1, (dt || 0.016) * 6));
+  if (G.w > viewW) camX = clamp(camX, 0, G.w - viewW);
+  if (viewH >= WH) camY = WH - viewH;
+  else {
+    const cy = clamp(bee.y - viewH * 0.45, 0, WH - viewH);
+    camY = snap ? cy : lerp(camY, cy, Math.min(1, (dt || 0.016) * 5));
+  }
+}
+
+function startLevel(i) {
+  buildLevel(i);
+  scene = 'play'; sceneT = 0; paused = false; Result.hide();
+  G.sub = 'card'; G.cardT = 0; focusId = null;
+  ptr.active = false;
+  updateCamera(true);
+  playSong(SONG_PLAY); setSeasonLayers();
+  stopBuzz();
+  sfx('bee_full', { vol: 0.8 });
+  after(0.35, () => { if (scene === 'play' && G.sub === 'card' && G.lvl === i) say('小知識。' + FACTS[i]); });
+}
+function setSeasonLayers() {
+  if (!M) return;
+  const s = G.def.s;
+  M.setLayer('spr', s === 0); M.setLayer('sum', s === 1); M.setLayer('aut', s === 2);
+  M.setLayer('danger', false); M.setLayer('top', false); M.setLayer('busy', false);
+  M.setTempo(1);
+  layerState.danger = false; layerState.busy = false;
+}
+const layerState = { danger: false, busy: false };
+function beginPlay() {
+  if (G.sub !== 'card') return;
+  G.sub = 'play';
+  stopSay();
+  jingleStart();
+  startBuzz();
+  const d = G.def;
+  if (d.hint) { after(0.5, () => { if (scene === 'play' && G.sub === 'play') { showBanner(d.hint, 5, 1); say(d.hint); } }); }
+  G.tutorial = G.lvl === 0 ? 1 : 0;
+}
+
+function visitable(f) {
+  if (f.fruit || f.cool > 0) return false;
+  if (f.nectar && bee.nectar < CAP) return true;
+  return pollenAct(f) !== 'none';
+}
+function pollenAct(f) {
+  if (bee.pollen === f.c) return bee.from !== f.id ? 'pollinate' : 'none';
+  return 'pick';
+}
+function visit(f) {
+  const pan = panW(f.hx);
+  let gotNectar = false;
+  if (f.nectar && bee.nectar < CAP) {
+    bee.nectar++; f.nectar = false; f.regen = 9; gotNectar = true;
+    sfx('bee_sip', { pan });
+    showPop('+1 花蜜', '#fff3a0', '#b36a05');
+    burst(f.hx, f.hy, { n: 6, colors: ['#ffd84a', '#ffb627', '#fff3b0'], shape: SH_DROP, speed: 60, g: -40, size: 4, life: 0.6, up: 40 });
+    if (!G.firstSip) {
+      G.firstSip = true;
+      if (G.lvl === 0) { showBanner('好棒！把花蜜帶回蜂巢！', 3.5, 1); say('好棒！把花蜜帶回蜂巢。'); G.tutorial = 2; }
+    }
+    if (bee.nectar >= CAP) { showBanner('裝滿了！飛回蜂巢吧', 2.4, 2); sfx('bee_full', { vol: 0.9 }); }
+  } else if (f.nectar && bee.nectar >= CAP) {
+    showBanner('裝滿了！先回蜂巢', 1.8, 1);
+  }
+  const act = pollenAct(f);
+  if (act === 'pollinate') {
+    f.fruit = true; f.grow = 0; f.pulse = 1;
+    tween(f, { grow: 1 }, 0.9, 'outBack', 0.15);
+    G.fruits++;
+    bee.from = f.id;
+    sfx('bee_bloom', { pitch: SCALE_HZ[f.c] / 523.25, exact: true, pan, vol: 0.9 });
+    after(0.3, () => sfx('bee_fruit', { pan }));
+    const col = COLORS[f.c];
+    burst(f.hx, f.hy, { n: 12, colors: [col.hex, col.light, '#ffffff'], shape: SH_PETAL, speed: 160, g: 160, size: 7, life: 1.1 });
+    burst(f.hx, f.hy, { n: 8, colors: ['#fff6a8', '#ffffff'], shape: SH_SPARK, speed: 130, g: 0, size: 8, life: 0.6 });
+    ring(f.hx, f.hy, col.hex, 60, 0.6);
+    showBanner('授粉成功！長出' + col.fruit + '了', 2.4, 3, col.dark);
+    if (!G.firstPollen) { G.firstPollen = true; if (G.lvl <= 2) say('授粉成功！長出' + col.fruit + '了！'); }
+    if (G.fruits === G.def.fruit && G.def.fruit > 0) after(0.6, () => { if (!G.done) { showBanner('果實都長出來了！', 2.2, 2, '#3f8a2a'); jingleGoal(); } });
+  } else if (act === 'pick') {
+    bee.pollen = f.c; bee.from = f.id;
+    sfx('bee_pollen', { pan, vol: gotNectar ? 0.8 : 1 });
+    burst(bee.x, bee.y + 8, { n: 8, colors: [COLORS[f.c].hex, COLORS[f.c].light], shape: SH_DOT, speed: 70, g: 60, size: 3, life: 0.6 });
+    if (G.def.fruit > 0 && G.fruits < G.def.fruit && !gotNectar) showBanner('沾到' + COLORS[f.c].name + '色花粉！找同色的花', 2.4, 1, COLORS[f.c].dark);
+    else if (G.def.fruit > 0 && G.fruits < G.def.fruit && G.lvl <= 3 && banner.prio < 2) showBanner('沾到' + COLORS[f.c].name + '色花粉！找同色的花', 2.4, 1, COLORS[f.c].dark);
+  }
+  f.cool = 1.4; f.pulse = Math.max(f.pulse, 0.6);
+}
+
+function hitBee(fx, fy, kind) {
+  if (bee.inv > 0 || G.done) return false;
+  G.hits++;
+  const n = bee.nectar;
+  if (n > 0) {
+    for (let k = 0; k < n; k++) burst(bee.x + rand(-8, 8), bee.y + 10, { n: 1, colors: ['#ffc23a'], shape: SH_DROP, speed: 60, g: 520, size: 6, life: 1.2, angle: Math.PI / 2, spread: 1.2 });
+    bee.nectar = 0;
+    sfx('bee_drip', { pan: panW(bee.x) });
+    showBanner('哎呀！花蜜掉了', 1.8, 2, '#c0601e');
+  } else showBanner('小心！', 1.2, 2, '#c0601e');
+  sfx('bee_oops', { pan: panW(bee.x) });
+  if (kind !== 'web') {
+    const dx = bee.x - fx, dy = bee.y - fy, d = Math.hypot(dx, dy) || 1;
+    bee.vx = dx / d * 330; bee.vy = dy / d * 330 - 60;
+  }
+  bee.inv = 1.6; bee.squash = 0.65; bee.sipP = 0; bee.sipF = null;
+  shake(5, 0.25); KG.vibrate(40);
+  burst(bee.x, bee.y, { n: 8, colors: ['#ffffff', '#ffe9a8'], shape: SH_STAR, speed: 160, g: 0, size: 6, life: 0.5 });
+  return true;
+}
+
+function updateBee(dt) {
+  let dvx = 0, dvy = 0;
+  const kx = keys.r - keys.l, ky = keys.d - keys.u;
+  let target = null;
+  if (kx || ky) {
+    const n = Math.hypot(kx, ky);
+    dvx = kx / n * MAXV; dvy = ky / n * MAXV;
+    ptr.active = ptr.active && !ptr.touch ? false : ptr.active;
+  } else if (ptr.active) {
+    let [tx, ty] = toWorld(ptr.sx, ptr.sy - (ptr.touch ? 44 : 0));
+    // 觸控寬鬆：目標靠近花朵或蜂巢就吸過去
+    let best = null, bd = 58;
+    for (const f of G.flowers) { if (f.fruit) continue; const d = Math.hypot(f.hx - tx, f.hy - ty); if (d < bd) { bd = d; best = f; } }
+    if (best) { tx = best.hx; ty = best.hy - 4; }
+    else if (Math.hypot(G.hive.ex - tx, G.hive.ey - ty) < 70) { tx = G.hive.ex; ty = G.hive.ey; }
+    target = [tx, ty];
+    const dx = tx - bee.x, dy = ty - bee.y, d = Math.hypot(dx, dy);
+    if (d > 3) { const sp = Math.min(MAXV, d * 3.4); dvx = dx / d * sp; dvy = dy / d * sp; }
+  }
+  if (bee.stuck > 0) {
+    bee.stuck -= dt;
+    const w = bee.stuckWeb;
+    if (w) { bee.x = lerp(bee.x, w.x, Math.min(1, dt * 6)); bee.y = lerp(bee.y, w.y, Math.min(1, dt * 6)); }
+    bee.vx = 0; bee.vy = 0; bee.wob += dt * 30;
+    if (bee.stuck <= 0) {
+      bee.stuck = 0; bee.stuckWeb = null;
+      if (w) { w.cool = 2.2; bee.vy = 160; }
+      sfx('pop', { vol: 0.5 });
+    }
+    return;
+  }
+  const k = Math.min(1, dt * 4.2);
+  bee.vx += (dvx - bee.vx) * k; bee.vy += (dvy - bee.vy) * k;
+  bee.x += bee.vx * dt; bee.y += bee.vy * dt;
+  if (G.wind && G.wind.k > 0.01) bee.x += G.wind.dir * G.wind.k * 95 * dt;
+  if (bee.x < 24) { bee.x = 24; bee.vx = Math.max(0, bee.vx); }
+  if (bee.x > G.w - 24) { bee.x = G.w - 24; bee.vx = Math.min(0, bee.vx); }
+  if (bee.y < 34) { bee.y = 34; bee.vy = Math.max(0, bee.vy); }
+  if (bee.y > GROUND - 22) { bee.y = GROUND - 22; bee.vy = Math.min(0, bee.vy); }
+  if (Math.abs(bee.vx) > 25) bee.face = bee.vx > 0 ? 1 : -1;
+  else if (target && Math.abs(target[0] - bee.x) > 6) bee.face = target[0] > bee.x ? 1 : -1;
+  bee.tilt = lerp(bee.tilt, clamp(bee.vx / MAXV, -1, 1) * 0.3 + clamp(bee.vy / MAXV, -1, 1) * 0.12 * bee.face, Math.min(1, dt * 8));
+}
+
+function updateSip(dt) {
+  if (bee.stuck > 0 || G.done) { bee.sipP = 0; bee.sipF = null; return; }
+  let best = null, bd = SIP_R;
+  for (const f of G.flowers) {
+    if (!visitable(f)) continue;
+    const d = Math.hypot(f.hx - bee.x, f.hy - 4 - bee.y);
+    if (d < bd) { bd = d; best = f; }
+  }
+  const sp = Math.hypot(bee.vx, bee.vy);
+  if (best && sp < 280) {
+    if (bee.sipF !== best) { bee.sipF = best; bee.sipP = 0; }
+    bee.sipP += dt / SIP_TIME;
+    // 輕輕被花吸過去
+    bee.x = lerp(bee.x, best.hx, Math.min(1, dt * 3)); bee.y = lerp(bee.y, best.hy - 4, Math.min(1, dt * 3));
+    bee.sipTick -= dt;
+    if (bee.sipTick <= 0) { bee.sipTick = 0.16; sfx('bee_sipTick', { vol: 0.8, pitch: 1 + bee.sipP * 0.6, pan: panW(best.hx) }); }
+    if (bee.sipP >= 1) { visit(best); bee.sipP = 0; bee.sipF = null; }
+  } else {
+    bee.sipP = Math.max(0, bee.sipP - dt * 3);
+    if (bee.sipP <= 0) bee.sipF = null;
+  }
+}
+
+function updateHive(dt) {
+  const h = G.hive;
+  h.wob = Math.max(0, h.wob - dt * 3);
+  const d = Math.hypot(bee.x - h.ex, bee.y - h.ey);
+  if (d < 54 && bee.nectar > 0 && bee.stuck <= 0 && !G.done) {
+    bee.depT -= dt;
+    bee.x = lerp(bee.x, h.ex, Math.min(1, dt * 3)); bee.y = lerp(bee.y, h.ey, Math.min(1, dt * 3));
+    if (bee.depT <= 0) {
+      bee.depT = 0.24;
+      bee.nectar--; G.honey++; G.delivered++;
+      h.wob = 1;
+      sfx('bee_plop', { pitch: 1 + Math.min(10, G.honey) * 0.05, exact: true, pan: panW(h.ex) });
+      burst(h.ex, h.ey - 6, { n: 5, colors: ['#ffd84a', '#ffb627'], shape: SH_DROP, speed: 90, g: 300, size: 4, life: 0.6, up: 80 });
+      showPop('+1 蜂蜜', '#ffe27a', '#a8650a');
+      if (G.honey === G.def.nectar) {
+        if (G.fruits < G.def.fruit) { showBanner('蜂蜜收集完成！再去授粉吧', 2.6, 2, '#a8650a'); jingleGoal(); }
+      } else if (G.tutorial === 2 && G.honey === 1) { showBanner('就是這樣！再去採更多花蜜', 3, 1); G.tutorial = 3; }
+    }
+  } else bee.depT = 0.12;
+}
+
+function updateHazards(dt) {
+  // 蜘蛛網
+  for (const w of G.webs) {
+    w.cool = Math.max(0, w.cool - dt); w.wob = Math.max(0, w.wob - dt * 1.5);
+    if (bee.stuck <= 0 && bee.inv <= 0 && w.cool <= 0 && !G.done && Math.hypot(bee.x - w.x, bee.y - w.y) < w.r * 0.78 + 10) {
+      hitBee(w.x, w.y, 'web');
+      bee.stuck = 1.3; bee.stuckWeb = w; bee.inv = 2.8; w.wob = 1;
+      sfx('bee_web', { pan: panW(w.x) });
+      showBanner('被蜘蛛網黏住了！', 1.8, 2, '#7650c4');
+    }
+  }
+  // 虎頭蜂
+  let danger = false;
+  for (const h of G.hornets) {
+    h.t += dt; h.st += dt; h.warn = Math.max(0, h.warn - dt);
+    const dx = bee.x - h.x, dy = bee.y - h.y, d = Math.hypot(dx, dy) || 1;
+    if (h.state === 'patrol') {
+      const tx = h.cx + Math.sin(h.t * 0.55) * 170, ty = h.yb + Math.sin(h.t * 1.4) * 28;
+      const ox = h.x;
+      h.x = lerp(h.x, tx, Math.min(1, dt * 2)); h.y = lerp(h.y, ty, Math.min(1, dt * 2));
+      if (Math.abs(h.x - ox) > 0.05) h.face = h.x > ox ? 1 : -1;
+      h.cd -= dt;
+      if (h.cd <= 0 && d < 210 && bee.inv <= 0 && !G.done && bee.x > h.x0 - 120 && bee.x < h.x1 + 120) {
+        h.state = 'alert'; h.st = 0; h.warn = 1;
+        if (onScreen(h.x)) sfx('bee_hornet', { pan: panW(h.x), gap: 600 });
+        showBanner('虎頭蜂生氣了！快飛走', 1.6, 2, '#c0601e');
+      }
+    } else if (h.state === 'alert') {
+      h.face = dx > 0 ? 1 : -1;
+      if (h.st > 0.8) { h.state = 'chase'; h.st = 0; }
+    } else if (h.state === 'chase') {
+      const sp = 150 + G.lvl * 3;
+      h.vx += (dx / d * sp - h.vx) * Math.min(1, dt * 2.5); h.vy += (dy / d * sp - h.vy) * Math.min(1, dt * 2.5);
+      h.x += h.vx * dt; h.y += h.vy * dt; h.y = clamp(h.y, 40, GROUND - 30);
+      h.face = h.vx > 0 ? 1 : -1;
+      if (Math.floor(h.st / 0.9) !== Math.floor((h.st - dt) / 0.9) && onScreen(h.x)) sfx('bee_hornet', { pan: panW(h.x), vol: 0.7, gap: 500 });
+      if (d < 32 && bee.stuck <= 0) { hitBee(h.x, h.y, 'hornet'); h.state = 'retreat'; h.st = 0; }
+      else if (h.st > 3.2 || bee.inv > 0 || bee.x < h.x0 - 260 || bee.x > h.x1 + 260 || G.done) { h.state = 'retreat'; h.st = 0; }
+    } else {
+      const tx = h.cx + Math.sin(h.t * 0.55) * 170, ty = h.yb;
+      const ox = h.x;
+      h.x = lerp(h.x, tx, Math.min(1, dt * 1.2)); h.y = lerp(h.y, ty, Math.min(1, dt * 1.2));
+      h.face = h.x > ox ? 1 : -1; h.vx = 0; h.vy = 0;
+      if (h.st > 1.8) { h.state = 'patrol'; h.cd = 2.2; }
+    }
+    if (h.state === 'alert' || h.state === 'chase') danger = true;
+  }
+  G.danger = danger;
+  // 青蛙
+  for (const f of G.frogs) {
+    f.blink -= dt; if (f.blink < -0.15) f.blink = rand(2, 5);
+    f.t += dt;
+    const mx = f.x, my = GROUND - 34;
+    if (f.state === 'idle') {
+      f.cd -= dt; f.len = 0;
+      if (f.cd <= 0 && Math.abs(bee.x - f.x) < 190 && bee.y > GROUND - 250 && bee.inv <= 0 && !G.done) {
+        f.state = 'crouch'; f.t = 0; f.face = bee.x > f.x ? 1 : -1;
+        sfx('bee_croak', { pan: panW(f.x) });
+      }
+    } else if (f.state === 'crouch') {
+      if (f.t > 0.75) {
+        let tx = bee.x - mx, ty = bee.y - my; const d = Math.hypot(tx, ty) || 1, L = Math.min(d, 230);
+        f.tx = tx / d * L; f.ty = ty / d * L;
+        f.state = 'tongue'; f.t = 0;
+        sfx('bee_tongue', { pan: panW(f.x) });
+      }
+    } else if (f.state === 'tongue') {
+      f.len = f.t < 0.16 ? f.t / 0.16 : f.t < 0.28 ? 1 : Math.max(0, 1 - (f.t - 0.28) / 0.22);
+      const tipx = mx + f.tx * f.len, tipy = my + f.ty * f.len;
+      if (f.len > 0.5 && Math.hypot(tipx - bee.x, tipy - bee.y) < 26) hitBee(tipx, tipy + 20, 'frog');
+      if (f.t > 0.52) { f.state = 'idle'; f.cd = 2.4; f.len = 0; }
+    }
+  }
+  // 雨雲
+  for (const c of G.clouds) {
+    c.x = c.cx + Math.sin(G.t * 0.22 + c.cx * 0.01) * 110 * c.dir;
+    c.t -= dt;
+    if (c.phase === 'dry') { c.dark = Math.max(0, c.dark - dt); if (c.t <= 0) { c.phase = 'warn'; c.t = 1.2; } }
+    else if (c.phase === 'warn') {
+      c.dark = Math.min(1, c.dark + dt * 1.2);
+      if (Math.random() < dt * 3) spawnDrop(c);
+      if (c.t <= 0) { c.phase = 'rain'; c.t = 3.2; }
+    } else {
+      c.spawn += dt * 15;
+      while (c.spawn >= 1) { c.spawn -= 1; spawnDrop(c); }
+      if (c.t <= 0) { c.phase = 'dry'; c.t = 3.5 + Math.random() * 1.5; }
+    }
+  }
+  for (let i = G.drops.length - 1; i >= 0; i--) {
+    const r = G.drops[i];
+    r.y += r.vy * dt;
+    let gone = false;
+    if (Math.hypot(r.x - bee.x, r.y - bee.y) < 17 && bee.inv <= 0 && !G.done) { hitBee(r.x, r.y - 30, 'rain'); gone = true; }
+    if (!gone && r.y > GROUND - 2) {
+      gone = true;
+      if (onScreen(r.x, 10)) {
+        burst(r.x, GROUND - 2, { n: 3, colors: ['#bfe3ff', '#ffffff'], shape: SH_DOT, speed: 70, g: 400, size: 2, life: 0.35, angle: -Math.PI / 2, spread: 1 });
+        if (Math.random() < 0.35) sfx('bee_rain', { pan: panW(r.x), gap: 90, vol: 0.8 });
+      }
+    }
+    if (!gone) for (const f of G.flowers) { if (Math.abs(f.hx - r.x) < f.size * 0.8 && Math.abs(f.hy - r.y) < 10) { gone = true; f.pulse = 0.5; if (onScreen(f.hx, 0)) sfx('bee_rain', { pan: panW(r.x), gap: 120, pitch: 0.8, vol: 0.8 }); break; } }
+    if (gone) G.drops.splice(i, 1);
+  }
+  // 風
+  const wd = G.wind;
+  if (wd) {
+    wd.t -= dt;
+    if (wd.state === 'calm') { wd.k = Math.max(0, wd.k - dt * 0.8); if (wd.t <= 0) { wd.state = 'gust'; wd.t = 2.8; wd.dir = Math.random() < 0.5 ? -1 : 1; sfx('bee_gust', { pan: wd.dir * 0.5 }); } }
+    else { wd.k = Math.min(1, wd.k + dt * 1.2); if (wd.t <= 0) { wd.state = 'calm'; wd.t = 4 + Math.random() * 2.5; } if (Math.random() < dt * 8) spawnWindLeaf(wd.dir); }
+  }
+}
+function spawnDrop(c) { if (G.drops.length < 80) G.drops.push({ x: c.x + rand(-70, 70), y: c.y + 22, vy: rand(300, 360) }); }
+function spawnWindLeaf(dir) {
+  const p = allocP();
+  const s = G.season;
+  p.on = true; p.world = false; p.x = dir > 0 ? -10 : W + 10; p.y = rand(H * 0.15, H * 0.8);
+  p.vx = dir * rand(260, 380); p.vy = rand(-30, 30); p.life = 0; p.max = 3; p.size = rand(5, 8);
+  p.color = s.fall[Math.floor(Math.random() * s.fall.length)]; p.shape = s.fallShape === SH_DOT ? SH_PETAL : s.fallShape; p.rot = rand(0, TAU); p.vr = rand(-6, 6); p.g = 10; p.drag = 1;
+}
+
+function updateFlowers(dt) {
+  const wk = G.wind ? G.wind.k * G.wind.dir : 0;
+  for (const f of G.flowers) {
+    f.cool = Math.max(0, f.cool - dt);
+    f.pulse = Math.max(0, f.pulse - dt * 1.5);
+    if (!f.nectar && !f.fruit) { f.regen -= dt; if (f.regen <= 0) { f.nectar = true; if (onScreen(f.hx, 0)) burst(f.hx, f.hy, { n: 4, colors: ['#fff6a8'], shape: SH_SPARK, speed: 40, g: 0, size: 5, life: 0.5 }); } }
+    const sway = Math.sin(time * 1.5 + f.ph) * 5 * (f.h / 220) + wk * 14 * (f.h / 220) + Math.sin(time * 3.1 + f.ph) * wk * 3;
+    f.hx = f.x + sway + f.lean * f.h;
+    f.hy = GROUND - f.h + Math.abs(sway) * 0.15;
+    const want = bee.pollen === f.c && bee.from !== f.id && !f.fruit ? 1 : 0;
+    f.glow = lerp(f.glow, want, Math.min(1, dt * 4));
+  }
+}
+function updateAmbient(dt) {
+  // 蝴蝶在鏡頭附近飛
+  for (const b of butterflies) {
+    b.t += dt;
+    if (b.y === 0) { b.x = camX + Math.random() * viewW; b.y = rand(120, GROUND - 120); b.vx = rand(-30, 30); }
+    else if (b.x < camX - 140) { b.x = camX + viewW + 60; b.y = rand(120, GROUND - 120); }
+    else if (b.x > camX + viewW + 140) { b.x = camX - 60; b.y = rand(120, GROUND - 120); }
+    b.vx += Math.sin(b.t * 0.7 + b.ph) * 20 * dt; b.vy = Math.sin(b.t * 1.9 + b.ph) * 30 + Math.cos(b.t * 0.6) * 12;
+    b.vx = clamp(b.vx, -45, 45);
+    b.x += b.vx * dt; b.y = clamp(b.y + b.vy * dt, 90, GROUND - 60);
+  }
+  // 飄落的花瓣、葉子、光點
+  ambT += dt;
+  const rate = KG.lowEnd ? 0.9 : 1.6;
+  while (ambT > 1 / rate) {
+    ambT -= 1 / rate;
+    const s = G.season, p = allocP();
+    p.on = true; p.world = false; p.x = rand(-20, W + 20); p.y = -10; p.vx = rand(-15, 25); p.vy = rand(25, 45);
+    p.life = 0; p.max = (H + 40) / 35; p.size = s.fallShape === SH_DOT ? rand(1.5, 3) : rand(4, 6.5);
+    p.color = s.fall[Math.floor(Math.random() * s.fall.length)]; p.shape = s.fallShape; p.rot = rand(0, TAU); p.vr = rand(-2, 2); p.g = 0; p.drag = 1;
+  }
+}
+
+function updatePlay(dt) {
+  updateFlowers(dt);
+  updateAmbient(dt);
+  if (G.sub === 'card') { G.cardT += dt; updateCamera(false, dt); return; }
+  if (G.sub === 'play') G.t += dt;
+  bee.inv = Math.max(0, bee.inv - dt);
+  bee.squash = lerp(bee.squash, 1, Math.min(1, dt * 6));
+  bee.flap += dt * (34 + Math.hypot(bee.vx, bee.vy) * 0.04);
+  if (beePop.t < 9) beePop.t += dt;
+  if (G.sub === 'done') {
+    G.endT += dt;
+    // 開心地繞圈圈
+    bee.vx = Math.cos(G.endT * 4) * 140; bee.vy = Math.sin(G.endT * 4) * 140;
+    bee.x += bee.vx * dt; bee.y = clamp(bee.y + bee.vy * dt, 60, GROUND - 40);
+    bee.face = bee.vx > 0 ? 1 : -1;
+    updateCamera(false, dt);
+    if (G.endT > 1.8 && !Result.on) finishLevel();
+    if (buzz) buzz.set(0, 0);
+    return;
+  }
+  updateBee(dt);
+  updateCamera(false, dt);
+  updateSip(dt);
+  updateHive(dt);
+  updateHazards(dt);
+  // 音樂跟著遊戲變化
+  const d = G.def;
+  const prog = (Math.min(G.honey, d.nectar) + Math.min(G.fruits, d.fruit)) / (d.nectar + d.fruit);
+  if (!G.stretch && prog >= 0.75) { G.stretch = true; if (M) { M.setTempo(1.06); M.setLayer('top', true); } }
+  const busy = bee.nectar > 0;
+  if (busy !== layerState.busy) { layerState.busy = busy; if (M) M.setLayer('busy', busy); }
+  if (G.danger !== layerState.danger) { layerState.danger = G.danger; if (M) M.setLayer('danger', G.danger); }
+  // 翅膀聲（音效重新打開時再接上）
+  if (!buzz && sfxOn) startBuzz();
+  if (buzz) {
+    G.buzzT = (G.buzzT || 0) - dt;
+    if (G.buzzT <= 0) {
+      G.buzzT = 0.07;
+      const sp = clamp(Math.hypot(bee.vx, bee.vy) / MAXV, 0, 1);
+      if (bee.stuck > 0) buzz.set(0.32, 0.05); else buzz.set(0.04 + sp * 0.2, 0.018 + sp * 0.04);
+    }
+  }
+  if (!G.done && G.honey >= d.nectar && G.fruits >= d.fruit) {
+    G.done = true; G.sub = 'done'; G.endT = 0;
+    jingleClear();
+    showBanner('過關了！', 3, 3, '#3f8a2a');
+    const [sx, sy] = toScreen(bee.x, bee.y);
+    burst(sx, sy, { n: 30, colors: ['#ffd84a', '#ff9dd2', '#69b6ff', '#b6f5a6', '#ffffff'], shape: SH_STAR, speed: 320, g: 260, size: 8, life: 1.4, world: false });
+    if (M) M.setLayer('danger', false);
+  }
+}
+
+function finishLevel() {
+  const d = G.def, i = G.lvl;
+  let st = 1;
+  if (G.t <= G.par) st++;
+  if (G.hits === 0) st++;
+  const earned = G.delivered + G.fruits * 2 + st * 5;
+  const first = !(stars[i] > 0);
+  honeyBank += earned; honeyTotal += G.delivered;
+  stars[i] = Math.max(stars[i] || 0, st);
+  const prevBest = bestTime[i];
+  if (!prevBest || G.t < prevBest) bestTime[i] = Math.round(G.t * 10) / 10;
+  saveAll();
+  stopBuzz();
+  Result.show({ stars: st, earned, time: G.t, par: G.par, hits: G.hits, fruits: G.fruits, honey: G.delivered, first, last: i === LEVELS.length - 1 });
+  after(2.6, () => { if (Result.on) playSong(SONG_TITLE); });
+}
+
+function setPaused(p) {
+  if (scene !== 'play' || Result.on || p === paused || G.sub === 'done') return;
+  paused = p;
+  if (p) {
+    if (M) M.pause();
+    if (buzz) buzz.set(0, 0);
+    ptr.active = false; keys.l = keys.r = keys.u = keys.d = 0;
+    focusId = null;
+    stopSay();
+  } else if (M) M.resume();
+  sfx('ui');
+}
+function goTitle() { scene = 'title'; sceneT = 0; paused = false; Result.hide(); stopBuzz(); playSong(SONG_TITLE); demoInit(); }
+function goMap() { scene = 'map'; sceneT = 0; paused = false; Result.hide(); stopBuzz(); playSong(SONG_TITLE); }
+function goHive() { scene = 'hive'; sceneT = 0; paused = false; Result.hide(); stopBuzz(); playSong(SONG_HIVE); }
+
+/* =====================================================================
+ * 畫世界：天空、遠山、樹、地面、花、蜂巢、危險物、蜜蜂
+ * ===================================================================== */
+const gradCache = {};
+function skyGrad(si) {
+  const key = si + ':' + H;
+  if (!gradCache[key]) {
+    const s = SEASONS[si], g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, s.sky[0]); g.addColorStop(0.55, s.sky[1]); g.addColorStop(1, s.sky[2]);
+    gradCache[key] = g;
+  }
+  return gradCache[key];
+}
+let sunCanvas = null;
+function buildSun() {
+  sunCanvas = document.createElement('canvas');
+  sunCanvas.width = sunCanvas.height = 256;
+  const g = sunCanvas.getContext('2d');
+  const rg = g.createRadialGradient(128, 128, 10, 128, 128, 128);
+  rg.addColorStop(0, 'rgba(255,250,220,1)'); rg.addColorStop(0.25, 'rgba(255,240,170,0.85)'); rg.addColorStop(0.5, 'rgba(255,236,160,0.25)'); rg.addColorStop(1, 'rgba(255,236,160,0)');
+  g.fillStyle = rg; g.fillRect(0, 0, 256, 256);
+}
+function hash(k) { const x = Math.sin(k * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); }
+function wy(y) { return (y - camY) * SC; }
+
+function drawSkyLayers(si) {
+  const s = SEASONS[si];
+  ctx.fillStyle = skyGrad(si); ctx.fillRect(0, 0, W, H);
+  // 太陽和光束
+  const sx = W * 0.8, sy = Math.max(70, wy(70));
+  const R = Math.max(90, Math.min(W, H) * 0.32);
+  if (!sunCanvas) buildSun();
+  ctx.drawImage(sunCanvas, sx - R, sy - R, R * 2, R * 2);
+  ctx.save(); ctx.translate(sx, sy); ctx.rotate(time * 0.05);
+  ctx.fillStyle = 'rgba(255,248,210,0.16)';
+  for (let i = 0; i < 10; i++) { ctx.rotate(TAU / 10); ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-R * 0.13, R * 1.3); ctx.lineTo(R * 0.13, R * 1.3); ctx.closePath(); ctx.fill(); }
+  ctx.restore();
+  ctx.beginPath(); circ(sx, sy, R * 0.22); ctx.fillStyle = s.sun; ctx.fill();
+  ctx.save(); ctx.globalAlpha = 0.06 + Math.sin(time * 0.6) * 0.02; ctx.fillStyle = '#fffbe0';
+  for (let i = 0; i < 3; i++) {
+    const bx = sx - i * W * 0.25 - W * 0.15;
+    ctx.beginPath(); ctx.moveTo(bx, 0); ctx.lineTo(bx + W * 0.08, 0); ctx.lineTo(bx - W * 0.35, H); ctx.lineTo(bx - W * 0.5, H); ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+  // 雲（視差 0.15）
+  const p = 0.15;
+  for (let k = Math.floor((camX * p - 300) / 380); k < Math.floor((camX * p + viewW + 300) / 380) + 1; k++) {
+    const u = k * 380 + hash(k) * 200 + time * 6;
+    const x = (u - camX * p) * SC, y = wy(40 + hash(k + 9) * 90);
+    if (x < -200 || x > W + 200) continue;
+    drawCloud(x, y, (0.7 + hash(k + 3) * 0.6) * SC, '#ffffff', 0.85);
+  }
+  // 遠山
+  hills(0.25, 330, 46, 0.0042, 0.011, s.far, 1.7);
+  // 遠處的樹
+  trees(0.55, s);
+  hills(0.55, 395, 26, 0.006, 0.017, s.mid, 4.1);
+}
+function drawCloud(x, y, k, col, a) {
+  ctx.save(); ctx.globalAlpha = a; ctx.fillStyle = col;
+  ctx.beginPath(); circ(x, y, 26 * k); circ(x + 28 * k, y + 6 * k, 22 * k); circ(x - 28 * k, y + 8 * k, 20 * k); circ(x + 8 * k, y - 14 * k, 22 * k);
+  ctx.moveTo(x - 36 * k, y + 6 * k); ctx.rect(x - 36 * k, y + 6 * k, 76 * k, 20 * k);
+  ctx.fill();
+  ctx.restore();
+}
+function hills(p, base, amp, f1, f2, col, ph) {
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  const step = 14;
+  for (let sx = 0; sx <= W + step; sx += step) {
+    const u = sx / SC + camX * p;
+    const y = base - amp * (0.6 * Math.sin(u * f1 + ph) + 0.4 * Math.sin(u * f2 + ph * 2.3));
+    ctx.lineTo(sx, wy(y));
+  }
+  ctx.lineTo(W, H); ctx.closePath();
+  ctx.fillStyle = col; ctx.fill();
+}
+function trees(p, s) {
+  const sp = 250;
+  for (let k = Math.floor((camX * p - 200) / sp); k < Math.floor((camX * p + viewW + 200) / sp) + 1; k++) {
+    const u = k * sp + hash(k + 50) * 140;
+    const x = (u - camX * p) * SC;
+    if (x < -150 || x > W + 150) continue;
+    const sc = (0.8 + hash(k + 20) * 0.35) * SC * 0.9;
+    drawTree(x, wy(392), sc, s, k);
+  }
+}
+function drawTree(x, y, k, s, seed) {
+  const sw = Math.sin(time * 0.9 + seed) * 2 * k;
+  ctx.fillStyle = s.trunk;
+  ctx.beginPath(); ctx.moveTo(x - 7 * k, y); ctx.lineTo(x - 4 * k + sw, y - 70 * k); ctx.lineTo(x + 4 * k + sw, y - 70 * k); ctx.lineTo(x + 7 * k, y); ctx.closePath(); ctx.fill();
+  const c = s.canopy;
+  ctx.fillStyle = c[0]; ctx.beginPath(); circ(x + sw - 26 * k, y - 78 * k, 28 * k); circ(x + sw + 26 * k, y - 80 * k, 27 * k); circ(x + sw, y - 102 * k, 34 * k); ctx.fill();
+  ctx.fillStyle = c[1]; ctx.beginPath(); circ(x + sw - 10 * k, y - 112 * k, 20 * k); circ(x + sw + 16 * k, y - 96 * k, 18 * k); ctx.fill();
+  ctx.fillStyle = c[2]; ctx.beginPath(); circ(x + sw - 14 * k, y - 118 * k, 8 * k); circ(x + sw + 22 * k, y - 100 * k, 6 * k); ctx.fill();
+  // 夏天的果樹有果子
+  if (s === SEASONS[1]) {
+    ctx.fillStyle = seed % 2 ? '#ff8a3d' : '#ff5a6a';
+    ctx.beginPath(); for (let i = 0; i < 6; i++) circ(x + sw + Math.cos(i * 2.1 + seed) * 28 * k, y - 92 * k + Math.sin(i * 1.7 + seed) * 18 * k, 4.5 * k); ctx.fill();
+  }
+}
+function drawGround() {
+  const s = G.season;
+  const gy = wy(GROUND);
+  const g = ctx.createLinearGradient(0, gy, 0, H);
+  g.addColorStop(0, s.ground); g.addColorStop(0.35, s.groundDark); g.addColorStop(1, s.dirt);
+  ctx.fillStyle = g; ctx.fillRect(0, gy, W, H - gy + 2);
+  // 草的邊
+  ctx.fillStyle = s.near;
+  ctx.beginPath(); ctx.moveTo(0, gy + 6);
+  const x0 = Math.floor(camX / 9) * 9;
+  for (let x = x0; x <= camX + viewW + 9; x += 9) {
+    const h = 9 + hash(x * 0.37) * 9, sw = Math.sin(time * 2 + x * 0.05) * 2.5;
+    ctx.lineTo((x - camX) * SC, gy + 4); ctx.lineTo((x + 4.5 - camX + sw) * SC, gy - h * SC); ctx.lineTo((x + 9 - camX) * SC, gy + 4);
+  }
+  ctx.lineTo(W, gy + 8); ctx.lineTo(0, gy + 8); ctx.closePath(); ctx.fill();
+}
+
+/* ----- 裝飾 ----- */
+function drawDecor(d) {
+  const x = d.x, y = GROUND, k = d.s;
+  if (d.type === 'bush') {
+    ctx.fillStyle = shade(G.season.near, -12);
+    ctx.beginPath(); circ(x - 16 * k, y - 8 * k, 16 * k); circ(x + 14 * k, y - 8 * k, 15 * k); circ(x, y - 18 * k, 18 * k); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.18)'; ctx.beginPath(); circ(x - 4 * k, y - 26 * k, 7 * k); ctx.fill();
+    if (G.def.s === 0) { ctx.fillStyle = '#fff'; ctx.beginPath(); for (let i = 0; i < 4; i++) circ(x - 16 * k + i * 11 * k, y - 12 * k - (i % 2) * 10 * k, 2.4 * k); ctx.fill(); }
+  } else if (d.type === 'stone') {
+    ctx.fillStyle = '#b9b2a8'; ctx.beginPath(); ctx.ellipse(x, y - 4 * k, 14 * k, 9 * k, 0, Math.PI, 0); ctx.fill();
+    ctx.fillStyle = '#d6d0c6'; ctx.beginPath(); ctx.ellipse(x - 4 * k, y - 8 * k, 5 * k, 2.5 * k, -0.3, 0, TAU); ctx.fill();
+  } else if (d.type === 'mush') {
+    ctx.fillStyle = '#fff4e0'; ctx.fillRect(x - 3 * k, y - 14 * k, 6 * k, 14 * k);
+    ctx.fillStyle = '#e8603a'; ctx.beginPath(); ctx.ellipse(x, y - 14 * k, 12 * k, 9 * k, 0, Math.PI, 0); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); circ(x - 5 * k, y - 18 * k, 2 * k); circ(x + 4 * k, y - 20 * k, 2.4 * k); ctx.fill();
+  } else if (d.type === 'hay') {
+    ctx.fillStyle = '#f2cf6a'; ctx.strokeStyle = '#c99a3a'; ctx.lineWidth = 2;
+    rr(x - 20 * k, y - 22 * k, 40 * k, 22 * k, 6 * k); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x - 20 * k, y - 11 * k); ctx.lineTo(x + 20 * k, y - 11 * k); ctx.moveTo(x - 8 * k, y - 22 * k); ctx.lineTo(x - 8 * k, y); ctx.moveTo(x + 8 * k, y - 22 * k); ctx.lineTo(x + 8 * k, y); ctx.stroke();
+    ctx.fillStyle = '#ff8a3d'; ctx.beginPath(); circ(x + 13 * k, y - 26 * k, 5 * k); circ(x + 4 * k, y - 25 * k, 4.5 * k); ctx.fill();
+  } else if (d.type === 'sunflower') {
+    const sw = Math.sin(time * 1.2 + d.ph) * 3, hx = x + sw, hy = y - 120 * k;
+    ctx.strokeStyle = '#4f9a3a'; ctx.lineWidth = 4 * k; ctx.beginPath(); ctx.moveTo(x, y); ctx.quadraticCurveTo(x, y - 60 * k, hx, hy); ctx.stroke();
+    ctx.fillStyle = '#5fae48'; ctx.beginPath(); ctx.ellipse(x + 9 * k, y - 50 * k, 11 * k, 5 * k, -0.5, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#ffcf2e';
+    for (let i = 0; i < 12; i++) { const a = i * TAU / 12 + time * 0.1; ctx.beginPath(); ctx.ellipse(hx + Math.cos(a) * 15 * k, hy + Math.sin(a) * 15 * k, 9 * k, 4 * k, a, 0, TAU); ctx.fill(); }
+    ctx.fillStyle = '#8a5a2a'; ctx.beginPath(); circ(hx, hy, 10 * k); ctx.fill();
+  } else if (d.type === 'tulipbed') {
+    for (let i = 0; i < 3; i++) {
+      const tx = x + (i - 1) * 10 * k, th = (22 + i * 6 % 10) * k;
+      ctx.strokeStyle = '#5aa84a'; ctx.lineWidth = 2 * k; ctx.beginPath(); ctx.moveTo(tx, y); ctx.lineTo(tx, y - th); ctx.stroke();
+      ctx.fillStyle = ['#ffb3c7', '#fff0a0', '#d9c4ff'][i]; ctx.beginPath(); ctx.ellipse(tx, y - th - 4 * k, 4.5 * k, 6 * k, 0, 0, TAU); ctx.fill();
+    }
+  } else if (d.type === 'fence') {
+    ctx.fillStyle = '#f3e3c3'; ctx.strokeStyle = '#c9a46a'; ctx.lineWidth = 1.5;
+    for (let i = 0; i < 3; i++) { const fx = x + i * 16 * k; ctx.beginPath(); ctx.moveTo(fx - 4 * k, y); ctx.lineTo(fx - 4 * k, y - 26 * k); ctx.lineTo(fx, y - 31 * k); ctx.lineTo(fx + 4 * k, y - 26 * k); ctx.lineTo(fx + 4 * k, y); ctx.closePath(); ctx.fill(); ctx.stroke(); }
+    ctx.fillRect(x - 6 * k, y - 21 * k, 44 * k, 4 * k); ctx.fillRect(x - 6 * k, y - 11 * k, 44 * k, 4 * k);
+  }
+}
+
+/* ----- 花 ----- */
+function drawFlower(f) {
+  const col = COLORS[f.c];
+  const bx = f.x, by = GROUND, hx = f.hx, hy = f.hy;
+  // 莖和葉子
+  ctx.strokeStyle = '#4f9a3a'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(bx, by + 4); ctx.quadraticCurveTo(bx + (hx - bx) * 0.2, by - f.h * 0.5, hx, hy); ctx.stroke();
+  ctx.fillStyle = '#62b04c';
+  const ly = by - f.h * 0.32, lx = lerp(bx, hx, 0.12);
+  ctx.beginPath(); ctx.ellipse(lx + 11, ly, 13, 5, -0.5, 0, TAU); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(lerp(bx, hx, 0.3) - 10, by - f.h * 0.55, 11, 4.5, 0.5, 0, TAU); ctx.fill();
+  const s = f.size * (1 + f.pulse * 0.12 * Math.sin(time * 18));
+  // 同色花粉的提示光圈
+  if (f.glow > 0.02) {
+    ctx.save(); ctx.globalAlpha = f.glow * (0.35 + Math.sin(time * 5) * 0.15);
+    ctx.fillStyle = col.light; ctx.beginPath(); circ(hx, hy, s * 1.9); ctx.fill();
+    ctx.globalAlpha = f.glow; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2.5; ctx.setLineDash([6, 6]); ctx.lineDashOffset = -time * 20;
+    ctx.beginPath(); ctx.arc(hx, hy, s * 1.6, 0, TAU); ctx.stroke(); ctx.setLineDash([]);
+    ctx.restore();
+  }
+  if (f.fruit) {
+    const g = f.grow;
+    if (g < 0.6) { ctx.save(); ctx.globalAlpha = 1 - g / 0.6; drawFlowerHead(f, hx, hy, s * (1 - g * 0.5), col); ctx.restore(); }
+    drawFruit(f.c, hx, hy + 6, s * 0.95 * g, f.ph);
+    return;
+  }
+  drawFlowerHead(f, hx, hy, s, col);
+}
+function drawFlowerHead(f, hx, hy, s, col) {
+  const droop = f.nectar ? 1 : 0.88;
+  s *= droop;
+  ctx.lineWidth = 2; ctx.strokeStyle = col.dark;
+  const rot = Math.sin(time * 1.5 + f.ph) * 0.12;
+  if (f.kind === 1) {
+    // 鬱金香
+    ctx.save(); ctx.translate(hx, hy); ctx.rotate(rot);
+    ctx.fillStyle = col.hex;
+    ctx.beginPath(); ctx.moveTo(-s * 0.75, -s * 0.45); ctx.quadraticCurveTo(-s * 0.9, s * 0.7, 0, s * 0.75); ctx.quadraticCurveTo(s * 0.9, s * 0.7, s * 0.75, -s * 0.45);
+    ctx.lineTo(s * 0.4, -s * 0.05); ctx.lineTo(0, -s * 0.6); ctx.lineTo(-s * 0.4, -s * 0.05); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = col.light; ctx.beginPath(); ctx.moveTo(-s * 0.3, -s * 0.1); ctx.quadraticCurveTo(0, s * 0.5, s * 0.3, -s * 0.1); ctx.quadraticCurveTo(0, s * 0.2, -s * 0.3, -s * 0.1); ctx.fill();
+    if (f.nectar) { ctx.fillStyle = '#ffd84a'; ctx.beginPath(); circ(0, -s * 0.15, s * 0.16); ctx.fill(); }
+    ctx.restore();
+  } else {
+    const n = f.kind === 2 ? f.petals + 1 : f.petals + 3;
+    ctx.save(); ctx.translate(hx, hy); ctx.rotate(rot + f.ph);
+    ctx.fillStyle = col.hex;
+    for (let i = 0; i < n; i++) {
+      const a = i * TAU / n;
+      ctx.save(); ctx.rotate(a);
+      ctx.beginPath();
+      if (f.kind === 2) ctx.ellipse(s * 0.62, 0, s * 0.52, s * 0.36, 0, 0, TAU);
+      else ctx.ellipse(s * 0.6, 0, s * 0.55, s * 0.22, 0, 0, TAU);
+      ctx.fill(); ctx.stroke();
+      if (f.kind === 2) { ctx.strokeStyle = col.light; ctx.beginPath(); ctx.moveTo(s * 0.3, 0); ctx.lineTo(s * 0.85, 0); ctx.stroke(); ctx.strokeStyle = col.dark; }
+      ctx.restore();
+    }
+    ctx.restore();
+    ctx.fillStyle = f.nectar ? (f.kind === 2 ? '#ffb627' : '#ffd84a') : '#d9c49a';
+    ctx.beginPath(); circ(hx, hy, s * 0.36); ctx.fill();
+    ctx.strokeStyle = '#c98a10'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.fillStyle = 'rgba(160,90,10,0.45)';
+    ctx.beginPath(); for (let i = 0; i < 5; i++) circ(hx + Math.cos(i * 2.4) * s * 0.18, hy + Math.sin(i * 2.4) * s * 0.18, 1.4); ctx.fill();
+  }
+  // 有花蜜：一閃一閃
+  if (f.nectar && !f.fruit) {
+    const tw = (Math.sin(time * 3 + f.ph * 3) + 1) / 2;
+    ctx.fillStyle = 'rgba(255,255,255,' + (0.4 + tw * 0.6) + ')';
+    const sx = hx + s * 0.25, sy = hy - s * 0.3, r = 2 + tw * 3;
+    ctx.beginPath(); ctx.moveTo(sx, sy - r * 1.6); ctx.lineTo(sx + r * 0.4, sy); ctx.lineTo(sx, sy + r * 1.6); ctx.lineTo(sx - r * 0.4, sy); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(sx - r * 1.6, sy); ctx.lineTo(sx, sy + r * 0.4); ctx.lineTo(sx + r * 1.6, sy); ctx.lineTo(sx, sy - r * 0.4); ctx.closePath(); ctx.fill();
+  }
+}
+function drawFruit(c, x, y, s, ph) {
+  if (s <= 0.5) return;
+  ctx.save(); ctx.translate(x, y); ctx.rotate(Math.sin(time * 1.3 + ph) * 0.08);
+  ctx.lineWidth = 2;
+  const leaf = (lx, ly, r) => { ctx.fillStyle = '#5fb04a'; ctx.beginPath(); ctx.ellipse(lx, ly, s * 0.32, s * 0.14, r, 0, TAU); ctx.fill(); };
+  if (c === 0) { // 草莓
+    ctx.fillStyle = '#ff4d63'; ctx.strokeStyle = '#b82a40';
+    ctx.beginPath(); ctx.moveTo(0, s * 0.8); ctx.bezierCurveTo(-s * 0.9, s * 0.2, -s * 0.75, -s * 0.55, 0, -s * 0.45); ctx.bezierCurveTo(s * 0.75, -s * 0.55, s * 0.9, s * 0.2, 0, s * 0.8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#fff3a0'; ctx.beginPath(); for (let i = 0; i < 7; i++) circ(Math.cos(i * 2.2) * s * 0.35, Math.sin(i * 2.2) * s * 0.25 + s * 0.05, s * 0.05); ctx.fill();
+    leaf(-s * 0.22, -s * 0.5, -0.4); leaf(s * 0.22, -s * 0.5, 0.4);
+  } else if (c === 1) { // 橘子
+    ctx.fillStyle = '#ff9a2e'; ctx.strokeStyle = '#c4620e';
+    ctx.beginPath(); circ(0, 0, s * 0.7); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.beginPath(); ctx.ellipse(-s * 0.25, -s * 0.25, s * 0.18, s * 0.1, -0.6, 0, TAU); ctx.fill();
+    leaf(s * 0.2, -s * 0.72, 0.3);
+  } else if (c === 2) { // 檸檬
+    ctx.fillStyle = '#ffe23a'; ctx.strokeStyle = '#c7a10a';
+    ctx.beginPath(); ctx.ellipse(0, 0, s * 0.78, s * 0.56, 0.2, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#ffe23a'; ctx.beginPath(); circ(s * 0.78, s * 0.14, s * 0.12); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.45)'; ctx.beginPath(); ctx.ellipse(-s * 0.25, -s * 0.2, s * 0.2, s * 0.09, -0.3, 0, TAU); ctx.fill();
+    leaf(-s * 0.4, -s * 0.6, -0.5);
+  } else if (c === 3) { // 藍莓
+    ctx.fillStyle = '#4f7fe0'; ctx.strokeStyle = '#2c4fa0';
+    [[-0.32, 0.12], [0.32, 0.12], [0, -0.28]].forEach(([a, b]) => { ctx.beginPath(); circ(a * s, b * s, s * 0.38); ctx.fill(); ctx.stroke(); });
+    ctx.fillStyle = '#2c4fa0'; [[-0.32, 0.12], [0.32, 0.12], [0, -0.28]].forEach(([a, b]) => { starPath(a * s, b * s - s * 0.05, s * 0.1, s * 0.05, 0); ctx.fill(); });
+  } else if (c === 4) { // 葡萄
+    ctx.fillStyle = '#9b5fe0'; ctx.strokeStyle = '#6a34a8';
+    const pts = [[-0.36, -0.3], [0, -0.32], [0.36, -0.3], [-0.18, 0.02], [0.18, 0.02], [0, 0.34]];
+    for (const [a, b] of pts) { ctx.beginPath(); circ(a * s, b * s, s * 0.24); ctx.fill(); ctx.stroke(); }
+    ctx.fillStyle = 'rgba(255,255,255,0.4)'; for (const [a, b] of pts) { ctx.beginPath(); circ(a * s - s * 0.07, b * s - s * 0.07, s * 0.06); ctx.fill(); }
+    ctx.strokeStyle = '#7a5a2a'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(0, -s * 0.5); ctx.lineTo(0, -s * 0.75); ctx.stroke();
+    leaf(s * 0.25, -s * 0.66, 0.4);
+  } else { // 桃子
+    ctx.fillStyle = '#ffb3a6'; ctx.strokeStyle = '#d9707a';
+    ctx.beginPath(); circ(0, 0, s * 0.7); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,90,120,0.35)'; ctx.beginPath(); circ(s * 0.22, s * 0.15, s * 0.36); ctx.fill();
+    ctx.strokeStyle = '#d9707a'; ctx.beginPath(); ctx.moveTo(0, -s * 0.6); ctx.quadraticCurveTo(-s * 0.2, 0, 0, s * 0.62); ctx.stroke();
+    leaf(s * 0.25, -s * 0.7, 0.5);
+  }
+  ctx.restore();
+}
+
+/* ----- 蜂巢 ----- */
+function drawHive(h, k) {
+  k = k || 1;
+  const x = h.x, y = h.y;
+  const wob = h.wob ? Math.sin(time * 30) * h.wob * 0.05 : 0;
+  // 木柱
+  ctx.fillStyle = '#a0704a'; ctx.strokeStyle = '#6e4628'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.rect(x - 7 * k, y + 30 * k, 14 * k, GROUND - y - 30 * k + 4); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#b8865a'; ctx.beginPath(); ctx.rect(x - 34 * k, y + 32 * k, 68 * k, 9 * k); ctx.fill(); ctx.stroke();
+  ctx.save(); ctx.translate(x, y + 32 * k); ctx.scale(1 + wob, 1 - wob); ctx.translate(-x, -(y + 32 * k));
+  // 草編蜂巢（一圈一圈）
+  const bands = 5;
+  for (let i = bands - 1; i >= 0; i--) {
+    const t = (i + 0.5) / bands;
+    const bw = (26 + Math.sin(t * Math.PI * 0.95 + 0.15) * 26) * k;
+    const by = y - 40 * k + i * 15 * k;
+    rr(x - bw, by, bw * 2, 17 * k, 8.5 * k);
+    ctx.fillStyle = i % 2 ? '#f2c25a' : '#f7cf6e'; ctx.fill();
+    ctx.strokeStyle = '#b8862a'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.strokeStyle = 'rgba(184,134,42,0.4)'; ctx.lineWidth = 1;
+    ctx.beginPath(); for (let j = -3; j <= 3; j++) { ctx.moveTo(x + j * bw / 4, by + 3 * k); ctx.lineTo(x + j * bw / 4 + 3 * k, by + 14 * k); } ctx.stroke();
+  }
+  ctx.fillStyle = '#f7cf6e'; ctx.beginPath(); ctx.ellipse(x, y - 42 * k, 12 * k, 6 * k, 0, 0, TAU); ctx.fill(); ctx.strokeStyle = '#b8862a'; ctx.lineWidth = 2; ctx.stroke();
+  // 入口
+  ctx.fillStyle = '#5a3412'; ctx.beginPath(); ctx.ellipse(x, y + 22 * k, 11 * k, 8 * k, 0, 0, TAU); ctx.fill();
+  ctx.fillStyle = 'rgba(255,190,60,0.5)'; ctx.beginPath(); ctx.ellipse(x, y + 24 * k, 6 * k, 3 * k, 0, 0, TAU); ctx.fill();
+  // 蜂蜜滴
+  ctx.fillStyle = '#ffb21e';
+  for (let i = 0; i < 3; i++) {
+    const dx = (i - 1) * 22 * k, ph = (time * 0.4 + i * 0.37) % 1;
+    const len = 4 * k + ph * 9 * k;
+    ctx.beginPath(); ctx.ellipse(x + dx, y + 30 * k, 4 * k, 3 * k, 0, 0, Math.PI); ctx.fill();
+    ctx.fillRect(x + dx - 1.6 * k, y + 30 * k, 3.2 * k, len);
+    if (ph > 0.75) { ctx.globalAlpha = (1 - ph) * 4; dropPath(x + dx, y + 30 * k + len + (ph - 0.75) * 50 * k, 3.4 * k); ctx.fill(); ctx.globalAlpha = 1; }
+    else { ctx.beginPath(); circ(x + dx, y + 30 * k + len, 2.6 * k); ctx.fill(); }
+  }
+  ctx.restore();
+}
+
+/* ----- 危險物 ----- */
+function drawWeb(w) {
+  const wb = w.wob ? Math.sin(time * 25) * w.wob * 5 : 0;
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth = 1.4;
+  ctx.beginPath(); ctx.moveTo(w.x, w.y - w.r); ctx.lineTo(w.x + Math.sin(time) * 2, camY - 20); ctx.stroke();
+  const n = 8;
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) { const a = i * TAU / n + 0.2; ctx.moveTo(w.x, w.y + wb * 0.3); ctx.lineTo(w.x + Math.cos(a) * w.r, w.y + Math.sin(a) * w.r + wb); }
+  for (let r = 1; r <= 4; r++) {
+    const rad = w.r * r / 4.3;
+    for (let i = 0; i <= n; i++) {
+      const a = i * TAU / n + 0.2, sag = 0.92;
+      const px = w.x + Math.cos(a) * rad, py = w.y + Math.sin(a) * rad + wb * r / 4;
+      if (i === 0) ctx.moveTo(px, py);
+      else { const am = (i - 0.5) * TAU / n + 0.2; ctx.quadraticCurveTo(w.x + Math.cos(am) * rad * sag, w.y + Math.sin(am) * rad * sag + wb * r / 4, px, py); }
+    }
+  }
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(200,220,255,0.35)'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(w.x, w.y, w.r * 0.95, 0, TAU); ctx.stroke();
+  // 小蜘蛛（可愛）
+  const sy = w.y - w.r * 0.5 + Math.sin(time * 1.6 + w.ph) * 6, sx = w.x + w.r * 0.45;
+  ctx.strokeStyle = '#4a3a5a'; ctx.lineWidth = 1.6;
+  ctx.beginPath(); for (let i = 0; i < 4; i++) { const a = -0.6 + i * 0.4; ctx.moveTo(sx, sy); ctx.lineTo(sx + 11 * Math.cos(a), sy + 9 * Math.sin(a) + 4); ctx.moveTo(sx, sy); ctx.lineTo(sx - 11 * Math.cos(a), sy + 9 * Math.sin(a) + 4); } ctx.stroke();
+  ctx.fillStyle = '#7a5aa8'; ctx.beginPath(); circ(sx, sy, 7); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.beginPath(); circ(sx - 2.5, sy - 1.5, 2.4); circ(sx + 2.5, sy - 1.5, 2.4); ctx.fill();
+  ctx.fillStyle = '#222'; ctx.beginPath(); circ(sx - 2.2, sy - 1, 1.1); circ(sx + 2.8, sy - 1, 1.1); ctx.fill();
+  ctx.fillStyle = '#ff9dc0'; ctx.beginPath(); circ(sx - 4.5, sy + 2.5, 1.3); circ(sx + 4.5, sy + 2.5, 1.3); ctx.fill();
+  ctx.restore();
+}
+function drawHornet(h) {
+  const alert = h.state === 'alert' || h.state === 'chase';
+  const shakeX = h.state === 'alert' ? Math.sin(time * 60) * 2 : 0;
+  ctx.save(); ctx.translate(h.x + shakeX, h.y + Math.sin(time * 6) * 2); ctx.scale(h.face, 1);
+  // 翅膀
+  const fl = 0.5 + Math.abs(Math.sin(time * 48)) * 0.5;
+  ctx.fillStyle = 'rgba(235,240,255,0.7)'; ctx.strokeStyle = 'rgba(120,130,160,0.6)'; ctx.lineWidth = 1.2;
+  ctx.save(); ctx.translate(-2, -14); ctx.scale(1, fl); ctx.beginPath(); ctx.ellipse(-6, -10, 9, 16, -0.5, 0, TAU); ctx.fill(); ctx.stroke(); ctx.beginPath(); ctx.ellipse(6, -10, 7, 13, 0.3, 0, TAU); ctx.fill(); ctx.stroke(); ctx.restore();
+  // 身體
+  ctx.fillStyle = '#ff9c33'; ctx.strokeStyle = '#6a3a14'; ctx.lineWidth = 2.2;
+  ctx.beginPath(); ctx.ellipse(-6, 2, 22, 14, 0.1, 0, TAU); ctx.fill();
+  ctx.save(); ctx.clip(); ctx.fillStyle = '#5a3412'; ctx.fillRect(-14, -16, 6, 34); ctx.fillRect(-25, -16, 5, 34); ctx.restore();
+  ctx.beginPath(); ctx.ellipse(-6, 2, 22, 14, 0.1, 0, TAU); ctx.stroke();
+  ctx.fillStyle = '#5a3412'; ctx.beginPath(); ctx.moveTo(-27, 4); ctx.lineTo(-35, 7); ctx.lineTo(-26, 9); ctx.fill();
+  // 頭
+  ctx.fillStyle = '#ffb547'; ctx.beginPath(); circ(17, -2, 12); ctx.fill(); ctx.stroke();
+  // 生氣的眉毛和眼睛
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.ellipse(21, -4, 5, 5.5, 0, 0, TAU); ctx.fill();
+  ctx.fillStyle = '#2a1a0a'; ctx.beginPath(); circ(22.5, -3, 2.6); ctx.fill();
+  ctx.strokeStyle = '#3a2008'; ctx.lineWidth = 2.6; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(15, -12); ctx.lineTo(26, -8); ctx.stroke();
+  ctx.lineWidth = 1.8; ctx.beginPath(); ctx.moveTo(18, 6); ctx.quadraticCurveTo(22, 3, 26, 6); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(14, -13); ctx.quadraticCurveTo(14, -24, 20, -26); ctx.moveTo(18, -13); ctx.quadraticCurveTo(22, -22, 28, -22); ctx.stroke();
+  ctx.restore();
+  if (alert || h.warn > 0) {
+    const bx = h.x, by = h.y - 44 + Math.sin(time * 10) * 2;
+    ctx.fillStyle = '#fff'; ctx.strokeStyle = '#e8503a'; ctx.lineWidth = 2.5;
+    ctx.beginPath(); circ(bx, by, 11); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#e8503a'; ctx.fillRect(bx - 1.8, by - 7, 3.6, 8.5); ctx.beginPath(); circ(bx, by + 5, 2); ctx.fill();
+  }
+}
+function drawCloudHazard(c) {
+  const dk = c.dark;
+  const col = mix('#f4f7ff', '#8f9bb8', dk);
+  drawCloud(c.x, c.y, 1.6, col, 0.96);
+  // 臉
+  ctx.strokeStyle = mix('#8a9ac0', '#4a5470', dk); ctx.lineWidth = 2.2; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.arc(c.x - 14, c.y + 4, 5, 0.2, Math.PI - 0.2); ctx.moveTo(c.x + 19, c.y + 4); ctx.arc(c.x + 14, c.y + 4, 5, 0.2, Math.PI - 0.2); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,150,170,0.5)'; ctx.beginPath(); circ(c.x - 24, c.y + 14, 4); circ(c.x + 24, c.y + 14, 4); ctx.fill();
+  if (c.phase !== 'dry') { ctx.beginPath(); ctx.arc(c.x, c.y + 20, 4, Math.PI + 0.3, -0.3); ctx.stroke(); }
+}
+function drawDrops() {
+  ctx.fillStyle = '#7cc0ff';
+  for (const r of G.drops) { if (!onScreen(r.x, 10)) continue; dropPath(r.x, r.y, 5); ctx.fill(); }
+}
+function drawPond(f) {
+  ctx.fillStyle = '#7ec8e8'; ctx.beginPath(); ctx.ellipse(f.x, GROUND + 6, 84, 16, 0, 0, TAU); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.ellipse(f.x - 40, GROUND + 6, 12 + (time * 10 % 10), 3, 0, 0, TAU); ctx.stroke();
+  ctx.fillStyle = '#5fb04a'; ctx.beginPath(); ctx.ellipse(f.x, GROUND + 2, 34, 9, 0, 0.3, TAU - 0.1); ctx.lineTo(f.x, GROUND + 2); ctx.fill();
+  // 蘆葦
+  ctx.strokeStyle = '#6aa84a'; ctx.lineWidth = 3;
+  for (let i = 0; i < 3; i++) { const rx = f.x + 60 + i * 8, sw = Math.sin(time * 1.5 + i) * 3; ctx.beginPath(); ctx.moveTo(rx, GROUND + 4); ctx.quadraticCurveTo(rx, GROUND - 30, rx + sw, GROUND - 50 - i * 6); ctx.stroke(); }
+  ctx.fillStyle = '#9a6a3a'; for (let i = 0; i < 3; i++) { const rx = f.x + 60 + i * 8 + Math.sin(time * 1.5 + i) * 3; ctx.beginPath(); ctx.ellipse(rx, GROUND - 50 - i * 6, 3, 8, 0, 0, TAU); ctx.fill(); }
+}
+function drawFrog(f) {
+  const x = f.x, y = GROUND - 4;
+  const crouch = f.state === 'crouch' ? Math.min(1, f.t / 0.5) : 0;
+  const face = f.face || 1;
+  ctx.save(); ctx.translate(x, y);
+  ctx.scale(1 + crouch * 0.12, 1 - crouch * 0.15);
+  // 身體
+  ctx.fillStyle = '#6cc35a'; ctx.strokeStyle = '#3a7a2a'; ctx.lineWidth = 2.2;
+  ctx.beginPath(); ctx.ellipse(0, -18, 26, 20, 0, 0, TAU); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#e6f5b0'; ctx.beginPath(); ctx.ellipse(0, -12, 16, 12, 0, 0, TAU); ctx.fill();
+  // 腳
+  ctx.fillStyle = '#5ab048'; ctx.beginPath(); ctx.ellipse(-20, -2, 10, 5, 0, 0, TAU); ctx.ellipse(20, -2, 10, 5, 0, 0, TAU); ctx.fill();
+  // 鼓起的喉嚨
+  if (crouch > 0) { ctx.fillStyle = 'rgba(255,170,190,0.9)'; ctx.beginPath(); circ(0, -10, 6 + crouch * 9); ctx.fill(); }
+  // 眼睛
+  for (const ex of [-12, 12]) {
+    ctx.fillStyle = '#6cc35a'; ctx.beginPath(); circ(ex, -36, 9); ctx.fill(); ctx.strokeStyle = '#3a7a2a'; ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); circ(ex, -37, 6); ctx.fill();
+    if (f.blink > 0) { ctx.fillStyle = '#222'; ctx.beginPath(); circ(ex + face * 2, -37, 3); ctx.fill(); ctx.fillStyle = '#fff'; ctx.beginPath(); circ(ex + face * 2 - 1, -38.5, 1); ctx.fill(); }
+    else { ctx.strokeStyle = '#3a7a2a'; ctx.beginPath(); ctx.moveTo(ex - 5, -37); ctx.lineTo(ex + 5, -37); ctx.stroke(); }
+  }
+  ctx.strokeStyle = '#2f6a22'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(0, -24, 10, 0.25, Math.PI - 0.25); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,140,160,0.6)'; ctx.beginPath(); circ(-17, -22, 3.5); circ(17, -22, 3.5); ctx.fill();
+  ctx.restore();
+  // 舌頭
+  if (f.len > 0) {
+    const mx = x, my = GROUND - 34, tx = mx + f.tx * f.len, ty = my + f.ty * f.len;
+    ctx.strokeStyle = '#ff7a9a'; ctx.lineWidth = 6; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(mx, my + 8); ctx.lineTo(tx, ty); ctx.stroke();
+    ctx.fillStyle = '#ff5a86'; ctx.beginPath(); circ(tx, ty, 8); ctx.fill();
+  }
+}
+
+/* ----- 蜜蜂（也用在標題、蜂巢小屋） ----- */
+function drawBee(x, y, s, o) {
+  o = o || {};
+  const face = o.face || 1, flap = o.flap != null ? o.flap : time * 34;
+  ctx.save();
+  ctx.translate(x, y);
+  if (o.tilt) ctx.rotate(o.tilt);
+  ctx.scale(s * face, s * (o.squash || 1));
+  if (o.squash && o.squash !== 1) ctx.scale(1 / Math.sqrt(o.squash), 1);
+  // 翅膀（後面那片）
+  const fl = 0.35 + Math.abs(Math.sin(flap)) * 0.65;
+  ctx.fillStyle = 'rgba(225,245,255,0.75)'; ctx.strokeStyle = 'rgba(110,150,190,0.8)'; ctx.lineWidth = 1.5;
+  ctx.save(); ctx.translate(-2, -12); ctx.scale(1, fl);
+  ctx.beginPath(); ctx.ellipse(-8, -12, 9, 15, -0.45, 0, TAU); ctx.fill(); ctx.stroke();
+  ctx.restore();
+  // 腳＋花粉籃
+  ctx.strokeStyle = '#4a3020'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(-6, 12); ctx.lineTo(-9, 19); ctx.moveTo(2, 13); ctx.lineTo(1, 20); ctx.moveTo(9, 11); ctx.lineTo(11, 18); ctx.stroke();
+  if (o.pollen != null && o.pollen >= 0) {
+    const pc = COLORS[o.pollen];
+    ctx.fillStyle = pc.hex; ctx.strokeStyle = pc.dark; ctx.lineWidth = 1.2;
+    ctx.beginPath(); circ(-9, 19, 4); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); circ(1, 20.5, 3.6); ctx.fill(); ctx.stroke();
+  }
+  // 小蜜罐
+  if (o.nectar > 0) {
+    const p = o.nectar / CAP;
+    ctx.fillStyle = '#fff6dc'; ctx.strokeStyle = '#a8650a'; ctx.lineWidth = 1.6;
+    rr(-3, 15, 14, 13, 4); ctx.fill();
+    ctx.save(); rr(-3, 15, 14, 13, 4); ctx.clip(); ctx.fillStyle = '#ffb627'; ctx.fillRect(-3, 28 - 13 * p, 14, 13 * p); ctx.restore();
+    rr(-3, 15, 14, 13, 4); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-4, 15); ctx.lineTo(12, 15); ctx.stroke();
+  }
+  // 身體
+  const g = ctx.createLinearGradient(0, -15, 0, 15);
+  g.addColorStop(0, '#ffe680'); g.addColorStop(0.6, '#ffc93a'); g.addColorStop(1, '#f0a020');
+  ctx.fillStyle = g; ctx.strokeStyle = '#5a3a14'; ctx.lineWidth = 2.2;
+  ctx.beginPath(); ctx.ellipse(-3, 0, 20, 15, 0, 0, TAU); ctx.fill();
+  ctx.save(); ctx.clip();
+  ctx.fillStyle = '#4a3020'; ctx.fillRect(-9, -16, 6, 32); ctx.fillRect(-20, -16, 5.5, 32);
+  ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.beginPath(); ctx.ellipse(-2, -9, 11, 4, -0.1, 0, TAU); ctx.fill();
+  ctx.restore();
+  ctx.beginPath(); ctx.ellipse(-3, 0, 20, 15, 0, 0, TAU); ctx.stroke();
+  ctx.fillStyle = '#4a3020'; ctx.beginPath(); ctx.moveTo(-22, -2); ctx.lineTo(-28, 1); ctx.lineTo(-22, 4); ctx.fill();
+  // 翅膀（前面那片）
+  ctx.fillStyle = 'rgba(235,250,255,0.8)'; ctx.strokeStyle = 'rgba(110,150,190,0.8)'; ctx.lineWidth = 1.5;
+  ctx.save(); ctx.translate(2, -13); ctx.scale(1, fl);
+  ctx.beginPath(); ctx.ellipse(-2, -13, 10, 17, -0.15, 0, TAU); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = 'rgba(150,190,220,0.6)'; ctx.beginPath(); ctx.moveTo(-2, 0); ctx.lineTo(-3, -24); ctx.stroke();
+  ctx.restore();
+  // 頭
+  if (o.outfit === 'scarf') drawOutfit('scarf-back');
+  ctx.fillStyle = '#ffd24a'; ctx.strokeStyle = '#5a3a14'; ctx.lineWidth = 2.2;
+  ctx.beginPath(); circ(15, -3, 12.5); ctx.fill(); ctx.stroke();
+  // 觸角
+  ctx.strokeStyle = '#4a3020'; ctx.lineWidth = 1.8;
+  ctx.beginPath(); ctx.moveTo(13, -14); ctx.quadraticCurveTo(10, -24, 6, -27); ctx.moveTo(18, -14); ctx.quadraticCurveTo(21, -24, 25, -26); ctx.stroke();
+  ctx.fillStyle = '#4a3020'; ctx.beginPath(); circ(6, -27, 2.6); circ(25, -26, 2.6); ctx.fill();
+  // 眼睛
+  const blink = (time * 0.4 + (o.seed || 0)) % 3 < 0.06;
+  if (o.sad) { ctx.strokeStyle = '#2a1a0a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(15, -5); ctx.lineTo(23, -3); ctx.moveTo(15, -1); ctx.lineTo(23, -3); ctx.stroke(); }
+  else if (blink) { ctx.strokeStyle = '#2a1a0a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(15, -4); ctx.lineTo(24, -4); ctx.stroke(); }
+  else {
+    ctx.fillStyle = '#2a1a0a'; ctx.beginPath(); ctx.ellipse(19.5, -4, 4.4, 5.4, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); circ(21, -6, 1.9); circ(18.5, -2, 0.9); ctx.fill();
+  }
+  ctx.fillStyle = 'rgba(255,120,140,0.55)'; ctx.beginPath(); circ(20, 4, 3.2); ctx.fill();
+  ctx.strokeStyle = '#5a3a14'; ctx.lineWidth = 1.8;
+  ctx.beginPath(); if (o.sad) ctx.arc(22, 9, 3, Math.PI + 0.4, -0.4); else ctx.arc(22, 3, 3.6, 0.2, Math.PI - 0.6); ctx.stroke();
+  if (o.outfit && o.outfit !== 'none') drawOutfit(o.outfit);
+  ctx.restore();
+}
+/** 蜜蜂的造型（座標以蜜蜂頭為準：頭中心 15,-3，半徑 12.5） */
+function drawOutfit(id) {
+  ctx.save();
+  ctx.lineWidth = 1.6; ctx.lineJoin = 'round';
+  if (id === 'bow') {
+    ctx.fillStyle = '#ff4d6d'; ctx.strokeStyle = '#a8203c';
+    ctx.beginPath(); ctx.moveTo(10, -15); ctx.lineTo(0, -22); ctx.lineTo(1, -10); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(10, -15); ctx.lineTo(19, -24); ctx.lineTo(20, -12); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); circ(10, -15, 3.2); ctx.fill(); ctx.stroke();
+  } else if (id === 'straw') {
+    ctx.fillStyle = '#f5d27a'; ctx.strokeStyle = '#a8803a';
+    ctx.beginPath(); ctx.ellipse(15, -14, 18, 4.5, -0.1, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(15, -18, 10, 7, -0.1, Math.PI, 0); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#ff6f86'; ctx.fillRect(5.5, -17, 19, 3);
+  } else if (id === 'scarf-back') {
+    ctx.fillStyle = '#ff6f86'; ctx.strokeStyle = '#b8406e';
+    const fl = Math.sin(time * 10) * 3;
+    ctx.beginPath(); ctx.moveTo(4, 2); ctx.lineTo(-8, 6 + fl); ctx.lineTo(-10, 12 + fl); ctx.lineTo(4, 8); ctx.closePath(); ctx.fill(); ctx.stroke();
+  } else if (id === 'scarf') {
+    ctx.fillStyle = '#ff6f86'; ctx.strokeStyle = '#b8406e';
+    rr(2, 3, 20, 7, 3.5); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.fillRect(8, 3.5, 3, 6); ctx.fillRect(15, 3.5, 3, 6);
+  } else if (id === 'wreath') {
+    const cols = ['#ff9dd2', '#fff0a0', '#c4e3ff', '#ffb3a6', '#e0d0ff'];
+    for (let i = 0; i < 5; i++) {
+      const a = Math.PI + 0.3 + i * 0.6, fx = 15 + Math.cos(a) * 12, fy = -5 + Math.sin(a) * 12;
+      ctx.fillStyle = '#6cbf5a'; ctx.beginPath(); ctx.ellipse(fx + 3, fy + 1, 3, 1.5, a, 0, TAU); ctx.fill();
+      ctx.fillStyle = cols[i]; ctx.beginPath(); for (let j = 0; j < 5; j++) circ(fx + Math.cos(j * 1.26) * 2.6, fy + Math.sin(j * 1.26) * 2.6, 2); ctx.fill();
+      ctx.fillStyle = '#ffd84a'; ctx.beginPath(); circ(fx, fy, 1.5); ctx.fill();
+    }
+  } else if (id === 'goggles') {
+    ctx.strokeStyle = '#7a4a22'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(15, -3, 12.5, Math.PI * 1.05, Math.PI * 1.75); ctx.stroke();
+    ctx.fillStyle = '#9ad8ff'; ctx.strokeStyle = '#8a5a2a'; ctx.lineWidth = 2.2;
+    ctx.beginPath(); circ(12, -13, 4.5); ctx.fill(); ctx.stroke(); ctx.beginPath(); circ(21, -12, 4.5); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.8)'; ctx.beginPath(); circ(11, -14.5, 1.4); circ(20, -13.5, 1.4); ctx.fill();
+  } else if (id === 'wizard') {
+    ctx.fillStyle = '#8a5ae0'; ctx.strokeStyle = '#4a2a90';
+    ctx.beginPath(); ctx.ellipse(15, -14, 15, 4, -0.1, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(6, -15); ctx.quadraticCurveTo(14, -30, 8, -40); ctx.quadraticCurveTo(20, -30, 24, -15); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#ffe066'; starPath(15, -24, 3.5, 1.6, 0); ctx.fill(); starPath(10, -34, 2.2, 1, 0.3); ctx.fill();
+  } else if (id === 'crown') {
+    ctx.fillStyle = '#ffd23a'; ctx.strokeStyle = '#b8860b';
+    ctx.beginPath(); ctx.moveTo(5, -13); ctx.lineTo(5, -24); ctx.lineTo(10, -18); ctx.lineTo(15, -27); ctx.lineTo(20, -18); ctx.lineTo(25, -24); ctx.lineTo(25, -13); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#ff4d6d'; ctx.beginPath(); circ(15, -16, 2.2); ctx.fill();
+    ctx.fillStyle = '#69b6ff'; ctx.beginPath(); circ(8.5, -15.5, 1.6); circ(21.5, -15.5, 1.6); ctx.fill();
+  }
+  ctx.restore();
+}
+function drawButterfly(b) {
+  const fl = Math.abs(Math.sin(b.t * 9 + b.ph));
+  ctx.save(); ctx.translate(b.x, b.y); ctx.scale(b.vx >= 0 ? 1 : -1, 1);
+  ctx.fillStyle = b.c; ctx.strokeStyle = 'rgba(120,90,140,0.6)'; ctx.lineWidth = 1;
+  ctx.save(); ctx.scale(0.3 + fl * 0.7, 1);
+  ctx.beginPath(); ctx.ellipse(-6, -5, 7, 6, -0.4, 0, TAU); ctx.ellipse(6, -5, 7, 6, 0.4, 0, TAU); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(-5, 4, 4.5, 4, 0.4, 0, TAU); ctx.ellipse(5, 4, 4.5, 4, -0.4, 0, TAU); ctx.fill(); ctx.stroke();
+  ctx.restore();
+  ctx.fillStyle = '#5a4a6a'; ctx.fillRect(-1, -6, 2, 12);
+  ctx.restore();
+}
+
+/** 畫整個花園（標題畫面和遊戲中都用） */
+function drawWorld() {
+  const si = G.def.s;
+  drawSkyLayers(si);
+  let sx = 0, sy = 0;
+  if (shakeT > 0 && !paused) { const k = shakeAmt * Math.min(1, shakeT * 4); sx = (Math.random() * 2 - 1) * k; sy = (Math.random() * 2 - 1) * k; }
+  ctx.save();
+  ctx.translate(sx, sy);
+  drawGround();
+  ctx.scale(SC, SC); ctx.translate(-camX, -camY);
+  for (const c of G.clouds) if (onScreen(c.x, 120)) drawCloudHazard(c);
+  for (const f of G.frogs) if (onScreen(f.x, 120)) drawPond(f);
+  for (const d of G.decor) if (onScreen(d.x, 80)) drawDecor(d);
+  if (onScreen(G.hive.x, 80)) drawHive(G.hive);
+  for (const f of G.flowers) if (onScreen(f.x, 60)) drawFlower(f);
+  for (const w of G.webs) if (onScreen(w.x, 60)) drawWeb(w);
+  for (const f of G.frogs) if (onScreen(f.x, 260)) drawFrog(f);
+  drawDrops();
+  for (const b of butterflies) drawButterfly(b);
+  drawParts(true);
+  // 蜜蜂
+  if (scene === 'play') drawPlayerBee();
+  else if (scene === 'title') drawBee(bee.x, bee.y + Math.sin(time * 3) * 4, 1.15, { face: bee.face, tilt: bee.tilt, outfit, flap: time * 34, nectar: bee.nectar, pollen: bee.pollen });
+  for (const h of G.hornets) if (onScreen(h.x, 80)) drawHornet(h);
+  ctx.restore();
+  // 起風時的風線
+  if (G.wind && G.wind.k > 0.05) {
+    ctx.save(); ctx.globalAlpha = G.wind.k * 0.5; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2.5; ctx.lineCap = 'round';
+    for (let i = 0; i < 7; i++) {
+      const y = H * (0.15 + i * 0.11) + Math.sin(time * 2 + i) * 10;
+      const len = 60 + (i % 3) * 30, xx = ((time * 520 * G.wind.dir + i * 173) % (W + 200) + W + 200) % (W + 200) - 100;
+      ctx.beginPath(); ctx.moveTo(xx, y); ctx.quadraticCurveTo(xx + len * 0.5, y - 8, xx + len, y); ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+function drawPlayerBee() {
+  const b = bee;
+  const bob = Math.sin(time * 3.2) * 3 * (1 - Math.min(1, Math.hypot(b.vx, b.vy) / 200));
+  ctx.save();
+  if (b.inv > 0 && b.stuck <= 0 && Math.floor(time * 14) % 2 === 0) ctx.globalAlpha = 0.45;
+  let tilt = b.tilt;
+  if (b.stuck > 0) tilt += Math.sin(b.wob) * 0.25;
+  // 影子
+  ctx.fillStyle = 'rgba(60,40,10,0.12)'; ctx.beginPath(); ctx.ellipse(b.x, GROUND + 2, 16 * (1 - (GROUND - b.y) / 700), 4, 0, 0, TAU); ctx.fill();
+  drawBee(b.x, b.y + bob, 1, { face: b.face, tilt, squash: b.squash, flap: b.flap, nectar: b.nectar, pollen: b.pollen, outfit, sad: b.stuck > 0 });
+  ctx.restore();
+  // 吸花蜜的小量表
+  const ks = Math.max(1, 0.95 / SC);
+  if (b.sipP > 0.02) {
+    const x = b.x, y = b.y + bob - 30 - 12 * ks, r = 13 * ks;
+    ctx.fillStyle = 'rgba(255,253,240,0.95)'; ctx.beginPath(); circ(x, y, r); ctx.fill();
+    ctx.strokeStyle = 'rgba(168,101,10,0.25)'; ctx.lineWidth = 4 * ks; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.stroke();
+    ctx.strokeStyle = '#f5a50b'; ctx.lineWidth = 4 * ks; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.arc(x, y, r, -Math.PI / 2, -Math.PI / 2 + TAU * Math.min(1, b.sipP)); ctx.stroke();
+    honeyDrop(x, y - ks, 6 * ks, true);
+  }
+  // 「+1」小字（只有一個）
+  if (beePop.t < 1) {
+    const k = beePop.t;
+    ctx.save(); ctx.globalAlpha = k < 0.7 ? 1 : (1 - k) / 0.3;
+    txt(beePop.text, b.x, b.y - 46 - 14 * ks - k * 24, 15 * ks, beePop.color, { stroke: beePop.stroke, sw: 4 * ks, shadow: false });
+    ctx.restore();
+  }
+}
+
+/* =====================================================================
+ * 畫面：遊戲中的 HUD、小知識卡、暫停、結算
+ * ===================================================================== */
+function fmtTime(t) { t = Math.max(0, Math.round(t)); return Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0'); }
+function drawHUD() {
+  const d = G.def;
+  const w = Math.min(W - 132, 470), x = (W - w) / 2, y = 10, h = 44;
+  pill(x, y, w, h, '#e8a020');
+  const fs = w > 330 ? 19 : 16;
+  const secs = d.fruit > 0 ? 3 : 2;
+  const sw = w / secs;
+  let cx = x + sw / 2;
+  // 蜂蜜目標
+  honeyHex(cx - 26, y + h / 2, 13, Math.min(1, G.honey / d.nectar));
+  txt(Math.min(G.honey, 99) + '/' + d.nectar, cx + 12, y + h / 2 + 1, fs, G.honey >= d.nectar ? '#3f8a2a' : INK, { shadow: false });
+  if (G.honey >= d.nectar) drawIcon('check', cx - 26, y + h / 2, 12, '#3f8a2a');
+  cx += sw;
+  if (d.fruit > 0) {
+    drawFruit(d.col[0], cx - 26, y + h / 2 + 1, 24, 0);
+    txt(G.fruits + '/' + d.fruit, cx + 12, y + h / 2 + 1, fs, G.fruits >= d.fruit ? '#3f8a2a' : INK, { shadow: false });
+    cx += sw;
+  }
+  // 身上帶的花蜜
+  const ds = w > 330 ? 7 : 5.6, gap = ds * 2.3;
+  for (let i = 0; i < CAP; i++) honeyDrop(cx - gap * 2 + i * gap, y + h / 2 + 1, ds, i < bee.nectar);
+  // 分隔線
+  ctx.strokeStyle = 'rgba(200,140,40,0.3)'; ctx.lineWidth = 2;
+  ctx.beginPath(); for (let i = 1; i < secs; i++) { ctx.moveTo(x + sw * i, y + 10); ctx.lineTo(x + sw * i, y + h - 10); } ctx.stroke();
+  // 暫停鍵（🔊 下面）
+  button('pause', W - 56, 62, 44, 44, { icon: 'pause', color: 'white', radius: 22, size: 18, onClick: () => setPaused(true) });
+  // 小地圖
+  if (G.w > viewW * 1.05) {
+    const mw = Math.min(W - 48, 440), mx = (W - mw) / 2, my = H - 20;
+    rr(mx - 4, my - 8, mw + 8, 16, 8); ctx.fillStyle = 'rgba(255,253,240,0.75)'; ctx.fill();
+    const toM = wx => mx + (wx / G.w) * mw;
+    ctx.fillStyle = 'rgba(232,160,32,0.25)'; rr(toM(camX), my - 6, Math.max(6, viewW / G.w * mw), 12, 6); ctx.fill();
+    for (const f of G.flowers) { ctx.fillStyle = f.fruit ? '#5fb04a' : COLORS[f.c].hex; ctx.beginPath(); circ(toM(f.x), my, 2.6); ctx.fill(); }
+    ctx.fillStyle = '#8a5a2a';
+    for (const hz of G.hornets) { ctx.beginPath(); circ(toM(hz.x), my - 1, 2.6); ctx.fill(); }
+    drawIcon('hive', toM(G.hive.x), my, 13, '#d9901a');
+    ctx.fillStyle = '#ffd84a'; ctx.strokeStyle = '#5a3a14'; ctx.lineWidth = 1.5; ctx.beginPath(); circ(toM(bee.x), my, 4.5); ctx.fill(); ctx.stroke();
+  }
+  drawEdgeArrows();
+  drawBanner(y + h + 34);
+}
+/** 文字提示（只有一個，新的取代舊的） */
+function drawBanner(by, cx, maxW) {
+  cx = cx == null ? W / 2 : cx;
+  if (banner.t < banner.dur) {
+    const k = banner.t, a = Math.min(1, k * 6, (banner.dur - k) * 3);
+    const sc = k < 0.25 ? Ease.outBack(k / 0.25) : 1;
+    const bf = Math.min(18, (W - 40) / 15);
+    setFont(bf);
+    const lines = wrapText(banner.text, Math.min(maxW || W - 60, 520), bf);
+    const tw = Math.max(...lines.map(l => ctx.measureText(l).width));
+    const bh = lines.length * bf * 1.35 + 16;
+    ctx.save(); ctx.globalAlpha = a; ctx.translate(cx, by + bh / 2 - 12); ctx.scale(sc, sc);
+    rr(-tw / 2 - 18, -bh / 2, tw + 36, bh, Math.min(22, bh / 2)); ctx.fillStyle = 'rgba(255,253,240,0.95)'; ctx.fill();
+    ctx.strokeStyle = banner.color; ctx.lineWidth = 3; ctx.stroke();
+    lines.forEach((l, i) => txt(l, 0, -bh / 2 + 8 + bf * 0.68 + i * bf * 1.35, bf, banner.color, { shadow: false, weight: '800' }));
+    ctx.restore();
+  }
+}
+function edgeArrow(sx, sy, col, icon, fruitC) {
+  const side = sx < 0 ? -1 : 1;
+  const x = side < 0 ? 30 : W - 30, y = clamp(sy, 130, H - 70);
+  const bob = Math.sin(time * 6) * 4 * side;
+  ctx.save(); ctx.translate(x + bob, y);
+  ctx.fillStyle = col; ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(side * 28, 0); ctx.lineTo(side * 10, -14); ctx.lineTo(side * 10, 14); ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); circ(0, 0, 19); ctx.fill(); ctx.stroke();
+  if (icon === 'hive') drawIcon('hive', 0, 0, 22, '#fff');
+  else { ctx.fillStyle = COLORS[fruitC].light; ctx.beginPath(); for (let i = 0; i < 5; i++) circ(Math.cos(i * 1.26) * 6, Math.sin(i * 1.26) * 6, 5); ctx.fill(); ctx.fillStyle = '#ffd84a'; ctx.beginPath(); circ(0, 0, 4); ctx.fill(); }
+  ctx.restore();
+  return y;
+}
+function drawEdgeArrows() {
+  if (G.sub !== 'play') return;
+  let used = null;
+  if (bee.nectar > 0) {
+    const [hx, hy] = toScreen(G.hive.ex, G.hive.ey);
+    if (hx < -10 || hx > W + 10) used = { y: edgeArrow(hx, hy, '#f0a020', 'hive'), side: hx < 0 ? -1 : 1 };
+  }
+  if (bee.pollen >= 0 && G.fruits < G.def.fruit) {
+    let best = null, bd = 1e9;
+    for (const f of G.flowers) { if (f.fruit || f.c !== bee.pollen || f.id === bee.from) continue; const d = Math.abs(f.x - bee.x); if (d < bd) { bd = d; best = f; } }
+    if (best) {
+      const [fx, fy] = toScreen(best.hx, best.hy);
+      if (fx < -10 || fx > W + 10) {
+        let y = fy;
+        const side = fx < 0 ? -1 : 1;
+        if (used && used.side === side && Math.abs(clamp(y, 130, H - 70) - used.y) < 56) y = used.y + (used.y > H / 2 ? -60 : 60);
+        edgeArrow(fx, y, COLORS[best.c].dark, 'flower', best.c);
+      }
+    }
+  }
+}
+function drawTutorial() {
+  if (G.sub !== 'play') return;
+  let tx = null, ty = null, label = '';
+  if (G.lvl === 0 && !G.firstSip) {
+    let best = null, bd = 1e9;
+    for (const f of G.flowers) { if (!f.nectar || f.fruit) continue; const d = Math.abs(f.x - bee.x); if (d < bd) { bd = d; best = f; } }
+    if (best) { [tx, ty] = toScreen(best.hx, best.hy - 34); label = '吸花蜜'; }
+  } else if (G.lvl === 0 && G.tutorial === 2 && bee.nectar > 0) { [tx, ty] = toScreen(G.hive.x, G.hive.y - 66); label = '回蜂巢'; }
+  if (tx == null || tx < 0 || tx > W) return;
+  const b = Math.abs(Math.sin(time * 5)) * 10;
+  ctx.save(); ctx.translate(tx, ty - b);
+  ctx.fillStyle = '#ff6f86'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(-10, -18); ctx.lineTo(10, -18); ctx.lineTo(10, -4); ctx.lineTo(18, -4); ctx.lineTo(0, 14); ctx.lineTo(-18, -4); ctx.lineTo(-10, -4); ctx.closePath(); ctx.fill(); ctx.stroke();
+  txt(label, 0, -34, 16, '#fff', { stroke: '#e0506e', sw: 5, shadow: false });
+  ctx.restore();
+}
+
+function hazardNames(d) {
+  const a = [];
+  if (d.web) a.push('蜘蛛網'); if (d.hornet) a.push('虎頭蜂'); if (d.rain) a.push('雨滴'); if (d.frog) a.push('青蛙舌頭'); if (d.wind) a.push('大風');
+  return a;
+}
+function drawCard() {
+  const d = G.def, k = Math.min(1, G.cardT * 3);
+  ctx.fillStyle = 'rgba(70,45,10,' + (0.42 * k) + ')'; ctx.fillRect(0, 0, W, H);
+  const wide = W > H;
+  const pw = Math.min(W - 28, wide ? 620 : 440);
+  const haz = hazardNames(d);
+  const goalLines = 1 + (d.fruit > 0 ? 1 : 0) + (haz.length ? 1 : 0);
+  const bh = clamp(H * 0.1, 40, 54);
+  let fs = clamp(Math.min(pw / 22, H / 24), 14, 19), factLines, ph;
+  const minY = wide ? 30 : 64;
+  for (;;) {
+    factLines = wrapText(FACTS[G.lvl], pw - 64 - (wide ? 70 : 0), fs);
+    ph = 50 + goalLines * fs * 1.6 + 10 + (factLines.length * fs * 1.4 + 42) + 14 + bh + 22;
+    if (ph <= H - minY - 8 || fs <= 12) break;
+    fs -= 0.5;
+  }
+  const px = (W - pw) / 2, py = Math.max(minY, (H - ph) / 2 + 10);
+  const sc = Ease.outBack(Math.min(1, G.cardT * 2.6));
+  ctx.save(); ctx.translate(W / 2, py + ph / 2); ctx.scale(sc, sc); ctx.translate(-W / 2, -(py + ph / 2));
+  rr(px, py + 8, pw, ph, 26); ctx.fillStyle = 'rgba(90,50,10,0.25)'; ctx.fill();
+  rr(px, py, pw, ph, 26); ctx.fillStyle = '#fffaf0'; ctx.fill(); ctx.strokeStyle = G.season.title; ctx.lineWidth = 6; ctx.stroke();
+  // 標題緞帶
+  const rw = Math.min(pw - 40, 320), rh = 40;
+  rr(W / 2 - rw / 2, py - rh / 2, rw, rh, 14); ctx.fillStyle = G.season.title; ctx.fill(); ctx.strokeStyle = shade(G.season.title, -50); ctx.lineWidth = 3; ctx.stroke();
+  txt('第 ' + (G.lvl + 1) + ' 關．' + G.season.name, W / 2, py + 1, Math.min(21, rw / 10), '#fff', { stroke: shade(G.season.title, -60), sw: 5 });
+  let y = py + 44;
+  const gx = px + 34;
+  honeyHex(gx + 10, y + fs * 0.5, fs * 0.72, 0.6);
+  txt('帶 ' + d.nectar + ' 滴花蜜回蜂巢', gx + 30, y + fs * 0.55, fs, INK, { align: 'left', shadow: false, weight: '800' });
+  if (bestTime[G.lvl]) txt('最快 ' + fmtTime(bestTime[G.lvl]), px + pw - 26, y + fs * 0.55, fs * 0.85, '#b06a00', { align: 'right', shadow: false, weight: '800' });
+  y += fs * 1.6;
+  if (d.fruit > 0) {
+    drawFruit(d.col[0], gx + 10, y + fs * 0.55, fs * 1.35, 0);
+    txt('幫同色的花授粉，結出 ' + d.fruit + ' 個果實', gx + 30, y + fs * 0.55, fs, INK, { align: 'left', shadow: false, weight: '800' });
+    y += fs * 1.6;
+  }
+  if (haz.length) {
+    ctx.fillStyle = '#ff8a6a'; ctx.beginPath(); circ(gx + 10, y + fs * 0.5, fs * 0.6); ctx.fill();
+    txt('!', gx + 10, y + fs * 0.55, fs * 0.9, '#fff', { shadow: false });
+    const ht = '小心：' + haz.join('、');
+    setFont(fs, '800');
+    const hw = ctx.measureText(ht).width, avail = px + pw - 20 - (gx + 30);
+    txt(ht, gx + 30, y + fs * 0.55, hw > avail ? Math.floor(fs * avail / hw) : fs, '#c0502a', { align: 'left', shadow: false, weight: '800' });
+    y += fs * 1.6;
+  }
+  y += 6;
+  // 小知識
+  const fh = factLines.length * fs * 1.4 + 42;
+  rr(px + 18, y, pw - 36, fh, 18); ctx.fillStyle = '#fff1c4'; ctx.fill(); ctx.strokeStyle = '#f0b43a'; ctx.lineWidth = 2.5; ctx.setLineDash([7, 5]); ctx.stroke(); ctx.setLineDash([]);
+  drawBee(px + 44, y + 20, 0.62, { face: 1, outfit, seed: 1 });
+  txt('小知識', px + 66, y + 20, fs * 1.05, '#b06a00', { align: 'left', shadow: false });
+  factLines.forEach((l, i) => txt(l, px + 32, y + 44 + i * fs * 1.4, fs, INK, { align: 'left', shadow: false, weight: '700' }));
+  if (wide) drawBee(px + pw - 62, y + fh / 2 + 6, 1.1, { face: -1, outfit, seed: 2, nectar: 3, pollen: d.col[0] });
+  y += fh + 14;
+  const bw = Math.min((pw - 60) / 2, 200);
+  button('cardSay', W / 2 - bw - 8, y, bw, bh, { label: '唸給我聽', icon: 'speaker', color: 'purple', size: Math.min(18, bw / 6.5), onClick: () => say(FACTS[G.lvl]) });
+  button('cardGo', W / 2 + 8, y, bw, bh, { label: '出發！', icon: 'play', color: 'green', pulse: true, def: true, size: Math.min(20, bw / 5), onClick: beginPlay });
+  ctx.restore();
+}
+
+function toggleRow(x, y, w, h) {
+  const gw = (w - 16) / 3;
+  const mOn = M ? M.isEnabled() : false;
+  const fz = Math.min(16, gw / 5);
+  button('tgM', x, y, gw, h, { label: '音樂 ' + (mOn ? '開' : '關'), color: mOn ? 'green' : 'white', size: fz, onClick: () => { if (M) M.setEnabled(!M.isEnabled()); } });
+  button('tgS', x + gw + 8, y, gw, h, { label: '音效 ' + (sfxOn ? '開' : '關'), color: sfxOn ? 'green' : 'white', size: fz, onClick: () => { sfxOn = !sfxOn; Save.set('sfx', sfxOn); if (sfxOn) sfx('ui'); else stopBuzz(); } });
+  button('tgV', x + (gw + 8) * 2, y, gw, h, { label: '語音 ' + (voiceOn ? '開' : '關'), color: voiceOn ? 'green' : 'white', size: fz, onClick: () => { voiceOn = !voiceOn; Save.set('voice', voiceOn); if (voiceOn) say('語音開了'); else stopSay(); } });
+}
+function drawPause() {
+  ctx.fillStyle = 'rgba(70,45,10,0.5)'; ctx.fillRect(0, 0, W, H);
+  const bh = Math.round(clamp(H * 0.1, 40, 54)), gap = Math.round(clamp(H * 0.022, 8, 14));
+  const pw = Math.min(W - 40, 360), ph = 64 + (bh + gap) * 3 + bh * 0.85 + 40;
+  const px = (W - pw) / 2, py = Math.max(8, (H - ph) / 2);
+  rr(px, py + 8, pw, ph, 28); ctx.fillStyle = 'rgba(90,50,10,0.3)'; ctx.fill();
+  rr(px, py, pw, ph, 28); ctx.fillStyle = '#fffaf0'; ctx.fill(); ctx.strokeStyle = '#f0a020'; ctx.lineWidth = 6; ctx.stroke();
+  txt('暫停一下', W / 2, py + 34, 26, INK, { shadow: false });
+  const bw = pw - 60, bx = px + 30;
+  let y = py + 62;
+  button('resume', bx, y, bw, bh, { label: '繼續', icon: 'play', color: 'green', def: true, onClick: () => setPaused(false) }); y += bh + gap;
+  button('restart', bx, y, bw, bh, { label: '重新開始', icon: 'replay', color: 'honey', onClick: () => { paused = false; if (M) M.resume(); startLevel(G.lvl); } }); y += bh + gap;
+  button('quit', bx, y, bw, bh, { label: '回關卡', icon: 'menu', color: 'blue', onClick: () => { paused = false; if (M) M.resume(); goMap(); } }); y += bh + gap + 4;
+  toggleRow(px + 16, y, pw - 32, Math.round(bh * 0.85));
+}
+
+/* ---------- 結算 ---------- */
+const Result = {
+  on: false, t: 0, o: null, shown: 0, panel: { s: 0 },
+  show(o) { this.on = true; this.t = 0; this.o = o; this.shown = 0; this.panel.s = 0; killTweens(this.panel); tween(this.panel, { s: 1 }, 0.5, 'outBack'); focusId = null; },
+  hide() { this.on = false; },
+  update(dt) {
+    if (!this.on) return;
+    this.t += dt;
+    while (this.shown < 3 && this.t > 0.7 + this.shown * 0.38) {
+      if (this.shown < this.o.stars) {
+        sfx('star', { pitch: 1 + this.shown * 0.12, exact: true });
+        const p = this.starPos(this.shown);
+        burst(p[0], p[1], { n: 14, colors: ['#ffe066', '#fff', '#ffb02e'], speed: 240, g: 300, size: 7, world: false });
+      }
+      this.shown++;
+    }
+  },
+  geom() { const pw = Math.min(W - 32, 420), ph = Math.min(H - 76, 400); return { x: (W - pw) / 2, y: Math.max(58, (H - ph) / 2 + 14), w: pw, h: ph }; },
+  starPos(i) { const g = this.geom(); return [W / 2 + (i - 1) * g.w * 0.22, g.y + g.h * 0.2 - (i === 1 ? 10 : 0)]; },
+  draw() {
+    if (!this.on) return;
+    const o = this.o, g = this.geom(), k = g.h / 400;
+    ctx.fillStyle = 'rgba(70,45,10,' + (0.45 * Math.min(1, this.t * 3)) + ')'; ctx.fillRect(0, 0, W, H);
+    const s = this.panel.s;
+    ctx.save();
+    ctx.translate(W / 2, g.y + g.h / 2); ctx.scale(s, s); ctx.translate(-W / 2, -(g.y + g.h / 2));
+    ctx.save(); ctx.translate(W / 2, g.y + g.h * 0.2); ctx.rotate(time * 0.4);
+    ctx.fillStyle = 'rgba(255,230,150,0.22)';
+    for (let i = 0; i < 12; i++) { ctx.rotate(TAU / 12); ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-26, g.w * 0.7); ctx.lineTo(26, g.w * 0.7); ctx.fill(); }
+    ctx.restore();
+    rr(g.x, g.y + 10, g.w, g.h, 30); ctx.fillStyle = 'rgba(90,50,10,0.3)'; ctx.fill();
+    rr(g.x, g.y, g.w, g.h, 30); ctx.fillStyle = '#fffaf0'; ctx.fill(); ctx.lineWidth = 7; ctx.strokeStyle = '#f0a020'; ctx.stroke();
+    const title = o.last && o.first ? '全部完成了！' : (o.stars === 3 ? '太完美了！' : '過關了！');
+    const bw = g.w * 0.8, bh = 48 * k, by = g.y - bh * 0.5;
+    rr(W / 2 - bw / 2, by, bw, bh, 14); ctx.fillStyle = '#f9b522'; ctx.fill(); ctx.strokeStyle = '#b0730a'; ctx.lineWidth = 3; ctx.stroke();
+    txt(title, W / 2, by + bh / 2 + 1, Math.min(26 * k, bw / 7), '#fff', { stroke: '#a0600a', sw: 6 });
+    for (let i = 0; i < 3; i++) {
+      const p = this.starPos(i), on = i < this.shown && i < o.stars;
+      let kk = 1;
+      if (on) { const tt = this.t - (0.7 + i * 0.38); kk = tt < 0.4 ? Ease.outElastic(clamp(tt / 0.4, 0, 1)) : 1 + Math.sin(time * 3 + i) * 0.03; }
+      glossyStar(p[0], p[1], (i === 1 ? 40 : 33) * k * (on ? kk : 1), on, on ? Math.sin(time * 2 + i) * 0.08 : 0);
+    }
+    // 三顆星的條件
+    const lf = Math.min(17 * k, (g.w - 40) / 14);
+    const rows = [['完成任務', true], ['在 ' + fmtTime(o.par) + ' 內完成（用了 ' + fmtTime(o.time) + '）', o.time <= o.par], ['沒有被碰到', o.hits === 0]];
+    let ty = g.y + g.h * 0.38;
+    const lx = g.x + Math.max(24, g.w * 0.08);
+    for (const [label, ok] of rows) {
+      ctx.fillStyle = ok ? '#52c25e' : 'rgba(120,90,40,0.2)'; ctx.beginPath(); circ(lx + 10, ty, 10); ctx.fill();
+      if (ok) drawIcon('check', lx + 10, ty, 12, '#fff');
+      txt(label, lx + 28, ty + 1, lf, ok ? INK : 'rgba(90,58,20,0.55)', { align: 'left', shadow: false, weight: '800' });
+      ty += lf * 1.75;
+    }
+    ty += 4;
+    honeyDrop(W / 2 - 54 * k, ty, 10 * k, true);
+    txt('蜂蜜 +' + o.earned, W / 2 + 6 * k, ty + 1, 21 * k, '#b06a00', { stroke: '#fff', sw: 5, shadow: false });
+    const bh2 = Math.max(44, 54 * k), by2 = g.y + g.h - bh2 - 22 * k;
+    const btns = [];
+    btns.push({ id: 'rmenu', icon: 'menu', color: 'blue', cb: () => goMap() });
+    btns.push({ id: 'rretry', icon: 'replay', color: 'honey', cb: () => startLevel(G.lvl), wide: o.last });
+    if (!o.last) btns.push({ id: 'rnext', icon: 'play', color: 'green', cb: () => startLevel(G.lvl + 1), wide: true });
+    const unit = 70 * k, wideW = 118 * k, gb = 12;
+    const totw = btns.reduce((a, b) => a + (b.wide ? wideW : unit), 0) + gb * (btns.length - 1);
+    let bx = W / 2 - totw / 2;
+    const ready = this.t > 0.5;
+    btns.forEach(b => {
+      const w = b.wide ? wideW : unit;
+      button(b.id, bx, by2, w, bh2, { icon: b.icon, color: b.color, pulse: b.wide, disabled: !ready, def: b.wide, onClick: () => { this.hide(); b.cb(); } });
+      bx += w + gb;
+    });
+    ctx.restore();
+  }
+};
+
+function drawPlay() {
+  drawWorld();
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  drawParts(false);
+  if (G.sub === 'card') { btnReg = []; drawCard(); return; }
+  drawTutorial();
+  drawHUD();
+}
+
+/* =====================================================================
+ * 標題畫面（蜜蜂在花園裡自己飛）
+ * ===================================================================== */
+const demo = { idx: 0, wait: 0 };
+function demoInit() {
+  buildLevel(0);
+  G.sub = 'demo';
+  bee.x = 200; bee.y = 240; demo.idx = 1; demo.wait = 0;
+  updateCamera(true);
+}
+function updateTitle(dt) {
+  updateFlowers(dt); updateAmbient(dt);
+  const fl = G.flowers[demo.idx % G.flowers.length];
+  const tx = fl.hx, ty = fl.hy - 6, dx = tx - bee.x, dy = ty - bee.y, d = Math.hypot(dx, dy);
+  let dvx = 0, dvy = 0;
+  if (d > 6) { const sp = Math.min(170, d * 2.4); dvx = dx / d * sp; dvy = dy / d * sp; }
+  else {
+    demo.wait += dt;
+    if (demo.wait > 1.2) { demo.wait = 0; bee.pollen = fl.c; bee.nectar = (bee.nectar + 1) % (CAP + 1); demo.idx = (demo.idx + 1 + Math.floor(Math.random() * 2)) % G.flowers.length; }
+  }
+  const k = Math.min(1, dt * 3);
+  bee.vx += (dvx - bee.vx) * k; bee.vy += (dvy - bee.vy) * k;
+  bee.x += bee.vx * dt; bee.y += bee.vy * dt;
+  if (Math.abs(bee.vx) > 20) bee.face = bee.vx > 0 ? 1 : -1;
+  bee.tilt = lerp(bee.tilt, clamp(bee.vx / MAXV, -1, 1) * 0.3, Math.min(1, dt * 6));
+  updateCamera(false, dt);
+}
+function drawTitle() {
+  drawWorld();
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  drawParts(false);
+  const wide = W > H * 1.1;
+  const ls = Math.min(W * 0.15, H * 0.13, 88);
+  const ly = wide ? Math.max(80, H * 0.2) : Math.max(110, H * 0.17);
+  logo('蜜蜂採蜜', W / 2, ly, ls);
+  const sub = '吸花蜜、幫花授粉、裝滿蜂巢！';
+  const sf = Math.min(19, W / 19);
+  setFont(sf, '800');
+  const sw = ctx.measureText(sub).width + 30;
+  pill(W / 2 - sw / 2, ly + ls * 0.78, sw, sf * 1.9, '#f0a020');
+  txt(sub, W / 2, ly + ls * 0.78 + sf * 0.95, sf, INK, { shadow: false, weight: '800' });
+  const bh = Math.round(clamp(H * 0.085, 44, 60)), gap = Math.round(clamp(H * 0.02, 8, 14));
+  const bw = Math.min(W - 60, 300);
+  let y = H - (bh + gap) * 2 - bh * 0.85 - 58;
+  if (wide) y = Math.max(ly + ls * 0.78 + sf * 2.6, H - (bh + gap) * 2 - bh * 0.85 - 40);
+  const bx = (W - bw) / 2;
+  button('tStart', bx, y, bw, bh, { label: '開始玩', icon: 'play', color: 'honey', pulse: true, def: true, onClick: () => goMap() }); y += bh + gap;
+  button('tHive', bx, y, bw, bh, { label: '我的蜂巢', icon: 'hive', color: 'pink', onClick: () => { hiveFrom = 'title'; goHive(); } }); y += bh + gap;
+  toggleRow(bx - 10, y, bw + 20, Math.round(bh * 0.8));
+  y += bh * 0.8 + 16;
+  const ts = totalStars();
+  const st = '★ ' + ts + ' / 45　蜂蜜 ' + honeyBank;
+  if (y + 10 < H) txt(st, W / 2, Math.min(H - 14, y + 6), 15, '#7a4a0c', { stroke: '#fffaf0', sw: 4, shadow: false });
+}
+
+/* =====================================================================
+ * 選關
+ * ===================================================================== */
+let hiveFrom = 'map';
+function drawBgPan(si) {
+  camX = time * 14; viewW = W / SC; viewH = H / SC; camY = viewH >= WH ? WH - viewH : 0;
+  drawSkyLayers(si);
+  const gy = wy(GROUND);
+  ctx.fillStyle = SEASONS[si].ground; ctx.fillRect(0, gy, W, H - gy);
+}
+function drawMap() {
+  drawBgPan(0);
+  drawParts(false);
+  const wide = W > H * 1.1;
+  txt('選擇關卡', W / 2, 34, Math.min(28, W / 12), '#fff', { stroke: '#b0730a', sw: 7 });
+  const ts = totalStars();
+  setFont(15, '800');
+  const stTxt = '★ ' + ts + '/45   蜂蜜 ' + honeyBank;
+  const sw = ctx.measureText(stTxt).width + 28;
+  pill(W / 2 - sw / 2, 52, sw, 26, '#f0a020');
+  txt(stTxt, W / 2, 65, 15, INK, { shadow: false, weight: '800' });
+  const top = 88, bottom = H - 70;
+  const nextLv = (() => { for (let i = 0; i < LEVELS.length; i++) if (!(stars[i] > 0)) return i; return -1; })();
+  for (let s = 0; s < 3; s++) {
+    let px, py, pw, ph;
+    if (wide) { const gw = (W - 32 - 24) / 3; px = 16 + s * (gw + 12); py = top; pw = gw; ph = bottom - top; }
+    else { const gh = (bottom - top - 24) / 3; px = 14; py = top + s * (gh + 12); pw = W - 28; ph = gh; }
+    const se = SEASONS[s];
+    rr(px, py + 5, pw, ph, 22); ctx.fillStyle = 'rgba(90,50,10,0.18)'; ctx.fill();
+    rr(px, py, pw, ph, 22); ctx.fillStyle = 'rgba(255,250,240,0.93)'; ctx.fill(); ctx.strokeStyle = se.title; ctx.lineWidth = 4; ctx.stroke();
+    const hf = Math.min(20, pw / 10);
+    // 季節小圖
+    ctx.save(); ctx.translate(px + 26, py + 22);
+    ctx.fillStyle = se.canopy[0]; ctx.beginPath(); circ(0, 0, 11); ctx.fill(); ctx.fillStyle = se.canopy[1]; ctx.beginPath(); circ(-6, -3, 6); circ(6, 2, 5); ctx.fill();
+    ctx.restore();
+    txt(se.name, px + 44, py + 23, hf, se.title, { align: 'left', stroke: '#fff', sw: 4, shadow: false });
+    let ss = 0; for (let i = s * 5; i < s * 5 + 5; i++) ss += stars[i] || 0;
+    txt('★ ' + ss + '/15', px + pw - 16, py + 23, 14, '#b0730a', { align: 'right', shadow: false, weight: '800' });
+    const areaY = py + 42, areaH = ph - 50;
+    const perRow = wide ? 3 : 5, rows = wide ? 2 : 1;
+    const dd = Math.min(62, (pw - 20) / perRow - 12, areaH / rows - 22);
+    for (let j = 0; j < 5; j++) {
+      const i = s * 5 + j;
+      const r = wide ? (j < 3 ? 0 : 1) : 0, c = wide ? (j < 3 ? j : j - 3) : j;
+      const inRow = wide ? (r === 0 ? 3 : 2) : 5;
+      const cellW = (pw - 20) / perRow;
+      const cx = px + pw / 2 + (c - (inRow - 1) / 2) * cellW;
+      const cy = areaY + (areaH / rows) * (r + 0.5) - 8;
+      const ok = unlocked(i);
+      if (ok) button('lv' + i, cx - dd / 2, cy - dd / 2, dd, dd, { label: String(i + 1), color: stars[i] > 0 ? 'honey' : 'green', radius: dd / 2, size: dd * 0.45, pulse: i === nextLv, onClick: () => startLevel(i) });
+      else button('lv' + i, cx - dd / 2, cy - dd / 2, dd, dd, { icon: 'lock', color: 'white', radius: dd / 2, size: dd * 0.36, onClick: () => { sfx('error'); showBanner('先完成第 ' + i + ' 關喔！', 1.6, 2, '#c0601e'); } });
+      for (let k = 0; k < 3; k++) glossyStar(cx + (k - 1) * dd * 0.3, cy + dd / 2 + 14, Math.max(5, dd * 0.12), k < (stars[i] || 0), 0);
+    }
+  }
+  const bh = 46;
+  button('mBack', 16, H - bh - 14, Math.min(130, W * 0.32), bh, { label: '返回', icon: 'back', color: 'white', size: 18, onClick: () => goTitle() });
+  button('mHive', W - 16 - Math.min(170, W * 0.42), H - bh - 14, Math.min(170, W * 0.42), bh, { label: '我的蜂巢', icon: 'hive', color: 'pink', size: 18, onClick: () => { hiveFrom = 'map'; goHive(); } });
+  drawBanner(H * 0.42);
+}
+
+/* =====================================================================
+ * 蜂巢小屋：用蜂蜜買裝飾和蜜蜂造型
+ * ===================================================================== */
+let shopTab = 'deco';
+function drawDeco(id, x, y, k) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(k, k);
+  ctx.lineWidth = 2; ctx.lineJoin = 'round';
+  if (id === 'pots') {
+    for (const [dx, c] of [[-14, '#ff6f86'], [14, '#b58cff']]) {
+      ctx.strokeStyle = '#4f9a3a'; ctx.beginPath(); ctx.moveTo(dx, -18); ctx.lineTo(dx, -34); ctx.stroke();
+      ctx.fillStyle = c; ctx.beginPath(); for (let i = 0; i < 5; i++) circ(dx + Math.cos(i * 1.26) * 5, -38 + Math.sin(i * 1.26) * 5, 4.5); ctx.fill();
+      ctx.fillStyle = '#ffd84a'; ctx.beginPath(); circ(dx, -38, 3); ctx.fill();
+      ctx.fillStyle = '#d9784a'; ctx.strokeStyle = '#9a4a2a'; ctx.beginPath(); ctx.moveTo(dx - 11, -20); ctx.lineTo(dx + 11, -20); ctx.lineTo(dx + 8, 0); ctx.lineTo(dx - 8, 0); ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+  } else if (id === 'flags') {
+    ctx.strokeStyle = '#8a5a2a'; ctx.beginPath(); ctx.moveTo(-60, -30); ctx.quadraticCurveTo(0, -5, 60, -30); ctx.stroke();
+    const cols = ['#ff6f86', '#ffd83a', '#69b6ff', '#b6f5a6', '#b58cff'];
+    for (let i = 0; i < 5; i++) {
+      const t = (i + 0.5) / 5, fx = -60 + 120 * t, fy = -30 + (1 - Math.pow(2 * t - 1, 2)) * 12.5;
+      ctx.fillStyle = cols[i]; ctx.beginPath(); ctx.moveTo(fx - 8, fy); ctx.lineTo(fx + 8, fy); ctx.lineTo(fx + Math.sin(time * 3 + i) * 2, fy + 16); ctx.closePath(); ctx.fill();
+    }
+  } else if (id === 'sign') {
+    ctx.fillStyle = '#a0704a'; ctx.fillRect(-3, -30, 6, 30);
+    ctx.fillStyle = '#d9a86a'; ctx.strokeStyle = '#8a5a2a'; rr(-30, -52, 60, 26, 5); ctx.fill(); ctx.stroke();
+    txt('蜂蜜屋', 0, -39, 13, '#7a4a0c', { shadow: false });
+  } else if (id === 'mush') {
+    const glow = 0.3 + Math.sin(time * 2) * 0.1;
+    ctx.fillStyle = 'rgba(255,240,150,' + glow + ')'; ctx.beginPath(); circ(0, -26, 26); ctx.fill();
+    ctx.fillStyle = '#fff4e0'; ctx.fillRect(-5, -22, 10, 22);
+    ctx.fillStyle = '#ff7a5a'; ctx.strokeStyle = '#b8402a'; ctx.beginPath(); ctx.ellipse(0, -22, 20, 15, 0, Math.PI, 0); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); circ(-8, -29, 3.5); circ(6, -32, 4); circ(12, -25, 2.5); ctx.fill();
+  } else if (id === 'swing') {
+    ctx.strokeStyle = '#8a5a2a'; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(-28, 0); ctx.lineTo(-20, -62); ctx.lineTo(20, -62); ctx.lineTo(28, 0); ctx.stroke();
+    const a = Math.sin(time * 1.8) * 0.35;
+    ctx.save(); ctx.translate(0, -62); ctx.rotate(a);
+    ctx.lineWidth = 1.6; ctx.beginPath(); ctx.moveTo(-10, 0); ctx.lineTo(-10, 44); ctx.moveTo(10, 0); ctx.lineTo(10, 44); ctx.stroke();
+    ctx.fillStyle = '#ff9dd2'; ctx.fillRect(-14, 42, 28, 6);
+    ctx.restore();
+  } else if (id === 'mill') {
+    ctx.fillStyle = '#fff4e0'; ctx.strokeStyle = '#c9a46a'; ctx.beginPath(); ctx.moveTo(-10, 0); ctx.lineTo(-6, -46); ctx.lineTo(6, -46); ctx.lineTo(10, 0); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.save(); ctx.translate(0, -48); ctx.rotate(time * 1.5);
+    const cols = ['#ff6f86', '#69b6ff', '#ffd83a', '#b6f5a6'];
+    for (let i = 0; i < 4; i++) { ctx.rotate(TAU / 4); ctx.fillStyle = cols[i]; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(24, -6); ctx.lineTo(22, 6); ctx.closePath(); ctx.fill(); }
+    ctx.fillStyle = '#fff'; ctx.beginPath(); circ(0, 0, 3.5); ctx.fill();
+    ctx.restore();
+  } else if (id === 'pond') {
+    ctx.fillStyle = '#7ec8e8'; ctx.beginPath(); ctx.ellipse(0, -6, 46, 12, 0, 0, TAU); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.beginPath(); ctx.ellipse(-12, -6, 8 + (time * 8 % 8), 2.5, 0, 0, TAU); ctx.stroke();
+    ctx.fillStyle = '#5fb04a'; ctx.beginPath(); ctx.ellipse(16, -7, 11, 4, 0, 0.4, TAU - 0.2); ctx.lineTo(16, -7); ctx.fill();
+    ctx.fillStyle = '#ff9dd2'; ctx.beginPath(); circ(16, -11, 3.5); ctx.fill();
+  } else if (id === 'rainbow') {
+    const cols = ['#ff8fa3', '#ffc06a', '#fff07a', '#a6e6a0', '#8fcfff', '#c6a8ff'];
+    ctx.lineWidth = 7;
+    for (let i = 0; i < cols.length; i++) { ctx.strokeStyle = cols[i]; ctx.globalAlpha = 0.8; ctx.beginPath(); ctx.arc(0, 0, 60 - i * 7, Math.PI, 0); ctx.stroke(); }
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+}
+function shopItems() { return shopTab === 'deco' ? DECOS : OUTFITS; }
+function shopClick(it) {
+  if (shopTab === 'deco') {
+    if (owned[it.id]) { decoOn[it.id] = !decoOn[it.id]; sfx('bee_tab'); showBanner(decoOn[it.id] ? '擺出「' + it.name + '」' : '收起「' + it.name + '」', 1.4, 1); }
+    else if (honeyBank >= it.price) { honeyBank -= it.price; owned[it.id] = 1; decoOn[it.id] = true; sfx('bee_buy'); jingleGoal(); showBanner('買到了：' + it.name + '！', 1.8, 2, '#3f8a2a'); say('買到了' + it.name); KG.confetti(); }
+    else { sfx('error'); showBanner('蜂蜜不夠，再去採花蜜吧！', 1.8, 2, '#c0601e'); }
+  } else {
+    if (owned[it.id] || it.price === 0) { outfit = it.id; owned[it.id] = 1; sfx('bee_tab'); showBanner('換上「' + it.name + '」', 1.4, 1); }
+    else if (honeyBank >= it.price) { honeyBank -= it.price; owned[it.id] = 1; outfit = it.id; sfx('bee_buy'); jingleGoal(); showBanner('買到了：' + it.name + '！', 1.8, 2, '#3f8a2a'); say('買到了' + it.name); KG.confetti(); }
+    else { sfx('error'); showBanner('蜂蜜不夠，再去採花蜜吧！', 1.8, 2, '#c0601e'); }
+  }
+  saveAll();
+}
+function drawHiveScene() {
+  drawBgPan(0);
+  const wide = W > H * 1.05;
+  const tcx = wide ? W * 0.25 : W / 2;
+  txt('我的蜂巢', tcx, 30, Math.min(26, W / 13), '#fff', { stroke: '#b0730a', sw: 7 });
+  // 錢包
+  setFont(17, '900');
+  const wt = String(honeyBank), ww = ctx.measureText(wt).width + 52;
+  pill(tcx - ww / 2, 48, ww, 30, '#f0a020');
+  honeyDrop(tcx - ww / 2 + 18, 63, 8, true);
+  txt(wt, tcx + 10, 64, 17, '#a0600a', { shadow: false });
+  // 場景區
+  const sx = 0, sy = 84, sw = wide ? W * 0.48 : W, sh = wide ? H - sy - 70 : Math.max(150, H * 0.42 - 70);
+  const gy = sy + sh * 0.9, cx = sx + sw / 2;
+  ctx.fillStyle = SEASONS[0].near; ctx.beginPath(); ctx.ellipse(cx, gy + 6, sw * 0.46, 22, 0, 0, TAU); ctx.fill();
+  const k = Math.min(sh / 300, sw / 340);
+  ctx.save(); ctx.translate(cx, gy); ctx.scale(k, k);
+  if (decoOn.rainbow && owned.rainbow) drawDeco('rainbow', 0, -60, 2.6);
+  if (decoOn.flags && owned.flags) drawDeco('flags', 0, -150, 1.5);
+  ctx.translate(0, -GROUND);
+  drawHive({ x: 0, y: GROUND - 175, wob: 0 }, 1.25);
+  ctx.translate(0, GROUND);
+  const spots = { pots: [-80, 0, 1], sign: [-125, 0, 1], mush: [95, 0, 1], swing: [-170, 0, 0.9], mill: [150, 0, 1], pond: [40, 14, 1] };
+  for (const id in spots) if (decoOn[id] && owned[id]) drawDeco(id, spots[id][0], spots[id][1], spots[id][2]);
+  // 蜜蜂飛來飛去
+  const bx = Math.sin(time * 0.8) * 110, by = -150 + Math.sin(time * 1.7) * 26;
+  drawBee(bx, by, 1.3, { face: Math.cos(time * 0.8) >= 0 ? 1 : -1, outfit, tilt: Math.cos(time * 0.8) * 0.15 });
+  ctx.restore();
+  // 蜂巢格子：存了多少蜂蜜
+  const cells = 12, filled = Math.min(cells, Math.floor(honeyTotal / 8));
+  const hr = clamp(sw / 40, 7, 11), hx0 = sx + 22 + hr, hy0 = sy + 8 + hr;
+  for (let i = 0; i < cells; i++) {
+    const r = Math.floor(i / 4), c = i % 4;
+    honeyHex(hx0 + c * hr * 1.75 + (r % 2) * hr * 0.87, hy0 + r * hr * 1.52, hr, i < filled ? 1 : 0);
+  }
+  txt('存了 ' + honeyTotal + ' 滴', hx0 + hr * 2.6, hy0 + hr * 4.9, 13, '#a0600a', { stroke: '#fffaf0', sw: 4, shadow: false });
+  // 商品清單
+  const lx = wide ? W * 0.5 : 14, ly = wide ? 66 : sy + sh + 10, lw = wide ? W * 0.5 - 16 : W - 28, lh = wide ? H - ly - 12 : H - ly - 72;
+  rr(lx, ly, lw, lh, 20); ctx.fillStyle = 'rgba(255,250,240,0.95)'; ctx.fill(); ctx.strokeStyle = '#f0a020'; ctx.lineWidth = 4; ctx.stroke();
+  const tw = Math.min(140, (lw - 36) / 2), th = 38;
+  button('tabDeco', lx + lw / 2 - tw - 6, ly + 10, tw, th, { label: '裝飾', color: shopTab === 'deco' ? 'honey' : 'white', size: 17, onClick: () => { shopTab = 'deco'; sfx('bee_tab'); } });
+  button('tabOut', lx + lw / 2 + 6, ly + 10, tw, th, { label: '蜜蜂造型', color: shopTab === 'out' ? 'honey' : 'white', size: 17, onClick: () => { shopTab = 'out'; sfx('bee_tab'); } });
+  const items = shopItems();
+  const gx = lx + 12, gyy = ly + th + 26, gw = lw - 24, gh = ly + lh - 12 - gyy;
+  let cols = 2, rows = 4;
+  if ((gh - 24) / 4 < 50) { cols = 4; rows = 2; }
+  const vert = cols === 4;
+  const cw = (gw - 10 * (cols - 1)) / cols, ch = Math.min(vert ? 120 : 84, (gh - 8 * (rows - 1)) / rows);
+  items.forEach((it, i) => {
+    const c = i % cols, r = Math.floor(i / cols);
+    const x = gx + c * (cw + 10), y = gyy + r * (ch + 8);
+    const own = !!owned[it.id] || it.price === 0;
+    const active = shopTab === 'deco' ? (own && decoOn[it.id]) : outfit === it.id;
+    hotspot('it' + i, x, y, cw, ch, () => shopClick(it));
+    const isDown = pressed && pressed.id === 'it' + i;
+    rr(x, y + (isDown ? 2 : 0), cw, ch, 14); ctx.fillStyle = active ? '#fff1c4' : '#ffffff'; ctx.fill();
+    ctx.strokeStyle = active ? '#f0a020' : 'rgba(200,160,90,0.5)'; ctx.lineWidth = active ? 3.5 : 2; ctx.stroke();
+    if (kbMode && focusId === 'it' + i) { rr(x - 4, y - 4, cw + 8, ch + 8, 16); ctx.strokeStyle = '#7a4a0c'; ctx.setLineDash([7, 5]); ctx.lineWidth = 3; ctx.stroke(); ctx.setLineDash([]); }
+    // 直式卡片（橫向手機）：圖在上、字在下；一般：圖在左、字在右
+    const ic = vert ? Math.min(cw - 12, ch * 0.5) : ch * 0.8;
+    const icx = vert ? x + cw / 2 : x + 8 + ic / 2, icy = vert ? y + 5 + ic / 2 : y + ch / 2;
+    const bx0 = vert ? x + 6 : x + 6, by0 = y + 5, bw0 = vert ? cw - 12 : ic + 4, bh0 = vert ? ic : ch - 10;
+    ctx.save(); rr(bx0, by0, bw0, bh0, 10); ctx.fillStyle = '#e8f6ff'; ctx.fill(); ctx.clip();
+    if (shopTab === 'deco') drawDeco(it.id, icx + 2, by0 + bh0 - 4, (it.id === 'rainbow' ? 1 / 140 : it.id === 'flags' ? 1 / 130 : 1 / 70) * Math.min(ic, bh0 * 1.1));
+    else drawBee(icx - 2, icy + 4, Math.min(ic, bh0 * 1.1) / 62, { face: 1, outfit: it.id, seed: i });
+    ctx.restore();
+    const status = own ? (active ? (shopTab === 'deco' ? '已擺放' : '使用中') : (shopTab === 'deco' ? '點一下擺出來' : '點一下換上')) : null;
+    if (vert) {
+      const nf = Math.min(14, (cw - 8) / 5.5), ty = y + 5 + ic + (ch - ic - 5) * 0.33, ty2 = y + 5 + ic + (ch - ic - 5) * 0.72;
+      txt(it.name, x + cw / 2, ty, nf, INK, { shadow: false, weight: '800' });
+      if (own) txt(active ? status : (shopTab === 'deco' ? '擺出來' : '換上'), x + cw / 2, ty2, nf * 0.85, active ? '#3f8a2a' : '#a0804a', { shadow: false, weight: '700' });
+      else { honeyDrop(x + cw / 2 - 12, ty2 - 1, 5.5, true); txt(String(it.price), x + cw / 2 + 6, ty2, nf, honeyBank >= it.price ? '#a0600a' : '#c0a080', { shadow: false }); }
+    } else {
+      const tx = x + ic + 18, nf = Math.min(16, (cw - ic - 24) / 5.2);
+      txt(it.name, tx, y + ch * 0.34, nf, INK, { align: 'left', shadow: false, weight: '800' });
+      if (own) txt(status, tx, y + ch * 0.7, nf * 0.82, active ? '#3f8a2a' : '#a0804a', { align: 'left', shadow: false, weight: '700' });
+      else {
+        honeyDrop(tx + 6, y + ch * 0.68, 6.5, true);
+        txt(String(it.price), tx + 18, y + ch * 0.7, nf, honeyBank >= it.price ? '#a0600a' : '#c0a080', { align: 'left', shadow: false });
+      }
+    }
+  });
+  const bh = 46;
+  button('hBack', 16, H - bh - 14, Math.min(130, W * 0.32), bh, { label: '返回', icon: 'back', color: 'white', size: 18, onClick: () => { if (hiveFrom === 'title') goTitle(); else goMap(); } });
+  if (wide) drawBanner(H * 0.42, W * 0.25, W * 0.45 - 40); else drawBanner(sy + sh * 0.35);
+}
+
+/* =====================================================================
+ * 輸入
+ * ===================================================================== */
+function toLocal(e) {
+  const r = cv.getBoundingClientRect();
+  return [(e.clientX - r.left) * W / (r.width || W), (e.clientY - r.top) * H / (r.height || H)];
+}
+function canSteer() { return scene === 'play' && G.sub === 'play' && !paused && !Result.on; }
+cv.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  kbMode = false;
+  const [x, y] = toLocal(e);
+  const b = hitBtn(x, y);
+  if (b) { pressed = { id: b.id, pid: e.pointerId }; if (!b.silent) sfx('click', { vol: 0.7 }); return; }
+  if (canSteer()) {
+    ptr.active = true; ptr.sx = x; ptr.sy = y; ptr.touch = e.pointerType !== 'mouse'; ptr.id = e.pointerId;
+    try { cv.setPointerCapture(e.pointerId); } catch (er) { /* 忽略 */ }
+  }
+});
+cv.addEventListener('pointermove', (e) => {
+  if (!canSteer()) return;
+  const [x, y] = toLocal(e);
+  if (e.pointerType === 'mouse') { if (!pressed) { ptr.active = true; ptr.touch = false; ptr.sx = x; ptr.sy = y; ptr.id = e.pointerId; } }
+  else if (ptr.active && ptr.id === e.pointerId) { ptr.sx = x; ptr.sy = y; }
+});
+function endPointer(e, cancel) {
+  const [x, y] = toLocal(e);
+  if (pressed && pressed.pid === e.pointerId) {
+    const b = hitBtn(x, y), id = pressed.id;
+    pressed = null;
+    if (!cancel && b && b.id === id && b.onClick) { sfx('ui', { vol: 0.8 }); b.onClick(); }
+    return;
+  }
+  if (ptr.id === e.pointerId && ptr.touch) ptr.active = false;
+}
+cv.addEventListener('pointerup', (e) => endPointer(e, false));
+cv.addEventListener('pointercancel', (e) => endPointer(e, true));
+cv.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') ptr.active = false; });
+cv.addEventListener('contextmenu', (e) => e.preventDefault());
+const KEYMAP = { ArrowLeft: 'l', ArrowRight: 'r', ArrowUp: 'u', ArrowDown: 'd', a: 'l', d: 'r', w: 'u', s: 'd', A: 'l', D: 'r', W: 'u', S: 'd' };
+window.addEventListener('keydown', (e) => {
+  const k = e.key;
+  if (scene === 'play' && !Result.on) {
+    if (G.sub === 'card') {
+      if (k === 'Enter' || k === ' ') { e.preventDefault(); beginPlay(); return; }
+    } else if (G.sub === 'play') {
+      if (k === 'Escape' || k === 'p' || k === 'P') { e.preventDefault(); setPaused(!paused); kbMode = true; return; }
+      if (!paused && KEYMAP[k]) { keys[KEYMAP[k]] = 1; e.preventDefault(); ptr.active = false; return; }
+    }
+    if (!paused && G.sub !== 'card') return;
+  }
+  if (k === 'ArrowRight' || k === 'ArrowDown' || (k === 'Tab' && !e.shiftKey)) { kbMode = true; focusMove(1); e.preventDefault(); }
+  else if (k === 'ArrowLeft' || k === 'ArrowUp' || (k === 'Tab' && e.shiftKey)) { kbMode = true; focusMove(-1); e.preventDefault(); }
+  else if (k === 'Enter' || k === ' ') { e.preventDefault(); kbMode = true; focusPress(); }
+  else if (k === 'Escape') { if (scene === 'map') goTitle(); else if (scene === 'hive') { if (hiveFrom === 'title') goTitle(); else goMap(); } }
+});
+window.addEventListener('keyup', (e) => { if (KEYMAP[e.key]) keys[KEYMAP[e.key]] = 0; });
+window.addEventListener('blur', () => { keys.l = keys.r = keys.u = keys.d = 0; });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    if (buzz) buzz.set(0, 0);
+    if (scene === 'play' && G.sub === 'play' && !paused && !Result.on) setPaused(true);
+  }
+});
+
+/* =====================================================================
+ * 主迴圈
+ * ===================================================================== */
+function resize() {
+  const r = cv.getBoundingClientRect();
+  W = Math.max(1, r.width || innerWidth); H = Math.max(1, r.height || innerHeight);
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  U = clamp(Math.min(W / 400, H / 700), 0.75, 1.5);
+  SC = Math.min(H / 500, W / 300);
+  for (const k in gradCache) delete gradCache[k];
+  wrapCache.clear();
+  updateCamera(true);
+}
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 120));
+if (window.visualViewport) window.visualViewport.addEventListener('resize', resize);
+
+function step(dt) {
+  time += dt; sceneT += dt;
+  if (shakeT > 0) shakeT -= dt;
+  if (!paused) {
+    updateTweens(dt); updateTimers(dt); updateParts(dt);
+    if (banner.t < banner.dur) banner.t += dt;
+    if (scene === 'play') updatePlay(dt);
+    else if (scene === 'title') updateTitle(dt);
+    else if (Math.random() < dt * 1.2) {
+      const p = allocP();
+      p.on = true; p.world = false; p.x = rand(0, W); p.y = -10; p.vx = rand(-10, 20); p.vy = rand(25, 40); p.life = 0; p.max = H / 30;
+      p.size = rand(4, 6); p.color = SEASONS[0].fall[Math.floor(Math.random() * 3)]; p.shape = SH_PETAL; p.rot = rand(0, TAU); p.vr = rand(-2, 2); p.g = 0; p.drag = 1;
+    }
+  }
+  Result.update(dt);
+}
+function render() {
+  btnReg = [];
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (scene === 'title') drawTitle();
+  else if (scene === 'map') drawMap();
+  else if (scene === 'hive') drawHiveScene();
+  else if (scene === 'play') drawPlay();
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (scene === 'play' && Result.on) { btnReg = []; Result.draw(); drawParts(false); }
+  if (scene === 'play' && paused) { btnReg = []; drawPause(); }
+}
+let last = performance.now();
+const perfStat = { n: 0, sum: 0, max: 0 };
+function frame(now) {
+  const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
+  last = now;
+  const t0 = performance.now();
+  try { step(dt); render(); } catch (err) { console.error(err); }
+  const ft = performance.now() - t0;
+  perfStat.n++; perfStat.sum += ft; if (ft > perfStat.max) perfStat.max = ft;
+  requestAnimationFrame(frame);
+}
+resize();
+demoInit();
+playSong(SONG_TITLE);
+requestAnimationFrame((t) => { last = t; frame(t); });
+
+/* ---------- 測試用 ---------- */
+function autoTarget() {
+  const d = G.def;
+  const needHoney = d.nectar - G.honey;
+  if (bee.nectar >= CAP || (bee.nectar > 0 && bee.nectar >= needHoney)) return [G.hive.ex, G.hive.ey];
+  if (G.fruits < d.fruit && bee.pollen >= 0) {
+    let best = null, bd = 1e9;
+    for (const f of G.flowers) { if (f.fruit || f.c !== bee.pollen || f.id === bee.from || f.cool > 0) continue; const dd = Math.abs(f.x - bee.x); if (dd < bd) { bd = dd; best = f; } }
+    if (best) return [best.hx, best.hy - 4];
+  }
+  let best = null, bd = 1e9;
+  for (const f of G.flowers) {
+    if (!visitable(f)) continue;
+    if (needHoney <= 0 && !(G.fruits < d.fruit)) continue;
+    if (!f.nectar && G.fruits >= d.fruit) continue;
+    const pairs = G.flowers.filter(q => q.c === f.c && !q.fruit).length;
+    const dd = Math.abs(f.x - bee.x) + Math.abs(f.hy - bee.y) * 0.3 + (G.fruits < d.fruit && pairs < 2 ? 600 : 0);
+    if (dd < bd) { bd = dd; best = f; }
+  }
+  if (best) return [best.hx, best.hy - 4];
+  if (bee.nectar > 0) return [G.hive.ex, G.hive.ey];
+  return [bee.x, bee.y];
+}
+function autopilot() {
+  if (!canSteer()) return;
+  const [tx, ty] = autoTarget();
+  const [sx, sy] = toScreen(tx, ty);
+  ptr.active = true; ptr.touch = false; ptr.sx = sx; ptr.sy = sy;
+}
+window.__bee = {
+  state: () => ({
+    scene, lvl: G.lvl, sub: G.sub, paused, honey: G.honey, fruits: G.fruits, goal: [G.def.nectar, G.def.fruit], nectar: bee.nectar, pollen: bee.pollen,
+    hits: G.hits, t: +G.t.toFixed(1), par: G.par, result: Result.on, stars: Result.on ? Result.o.stars : null, music: M ? M.isPlaying() : null,
+    bee: [Math.round(bee.x), Math.round(bee.y)], cam: [Math.round(camX), Math.round(camY)], SC: +SC.toFixed(3), banner: banner.t < banner.dur ? banner.text : '',
+    honeyBank, honeyTotal, outfit, totalStars: totalStars(), danger: G.danger, buzz: !!buzz, sipP: +bee.sipP.toFixed(2)
+  }),
+  start: i => startLevel(i || 0),
+  begin: () => beginPlay(),
+  go: s => { if (s === 'title') goTitle(); else if (s === 'map') goMap(); else if (s === 'hive') { hiveFrom = 'map'; goHive(); } },
+  tick: (sec, auto) => { for (let i = 0; i < sec * 60; i++) { if (auto) autopilot(); step(1 / 60); } if (auto) ptr.active = false; },
+  autoTarget: () => { const [x, y] = autoTarget(); const [sx, sy] = toScreen(x, y); return { x: Math.round(sx), y: Math.round(sy) }; },
+  flowers: () => G.flowers.map(f => { const [sx, sy] = toScreen(f.hx, f.hy); return { id: f.id, c: f.c, x: Math.round(sx), y: Math.round(sy), nectar: f.nectar, fruit: f.fruit, wx: Math.round(f.x) }; }),
+  hive: () => { const [sx, sy] = toScreen(G.hive.ex, G.hive.ey); return { x: Math.round(sx), y: Math.round(sy) }; },
+  hazards: () => ({ webs: G.webs.map(w => [Math.round(w.x), w.y]), hornets: G.hornets.map(h => [Math.round(h.x), Math.round(h.y), h.state]), frogs: G.frogs.map(f => [Math.round(f.x), f.state]), clouds: G.clouds.map(c => [Math.round(c.x), c.phase]), wind: G.wind ? G.wind.state : null }),
+  setBee: (x, y) => { bee.x = x; bee.y = y; bee.vx = 0; bee.vy = 0; updateCamera(true); },
+  give: (n) => { honeyBank += n; saveAll(); },
+  unlockAll: () => { for (let i = 0; i < LEVELS.length; i++) stars[i] = Math.max(stars[i] || 0, 2); saveAll(); },
+  reset: () => { stars = []; honeyBank = 0; honeyTotal = 0; owned = { none: 1 }; outfit = 'none'; decoOn = {}; bestTime = []; saveAll(); },
+  shopTab: t => { shopTab = t; },
+  pause: p => setPaused(p),
+  btns: () => btnReg.map(b => ({ id: b.id, x: Math.round(b.x + b.w / 2), y: Math.round(b.y + b.h / 2) })),
+  levels: () => LEVELS.length,
+  perf: reset => { const r = { avg: perfStat.n ? +(perfStat.sum / perfStat.n).toFixed(2) : 0, max: +perfStat.max.toFixed(1), n: perfStat.n }; if (reset) { perfStat.n = 0; perfStat.sum = 0; perfStat.max = 0; } return r; }
+};
+})();
+</script>
+</body>
+</html>

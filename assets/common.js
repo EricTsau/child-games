@@ -45,6 +45,8 @@
     if (ctx.state === 'suspended') ctx.resume();
     return ctx;
   }
+  /** 共用的 AudioContext（kg-music.js 會用到） */
+  KG.audio = audio;
   // 第一次觸碰時解鎖音效（行動裝置需要）
   window.addEventListener('pointerdown', function () { audio(); }, { once: true, capture: true });
 

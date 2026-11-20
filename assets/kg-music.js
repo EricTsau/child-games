@@ -36,6 +36,8 @@
   var musicVol = 0.24, sfxVol = 0.9;
 
   function getCtx() {
+    // 使用者還沒點過畫面前不要建立聲音裝置（瀏覽器會警告）；音樂會等第一次點擊再開始
+    if (!A && navigator.userActivation && !navigator.userActivation.hasBeenActive) return null;
     var a = KG.audio ? KG.audio() : null;
     if (!a) return null;
     if (a !== A) { A = a; build(); }
@@ -340,7 +342,7 @@
   function start() {
     if (!song || playing || held || !musicEnabled || KG.isMuted() || document.hidden) return;
     var a = getCtx();
-    if (!a) return;
+    if (!a) { wantPlay = true; return; }
     if (a.state !== 'running') {
       wantPlay = true;
       try { a.resume().then(function () { if (wantPlay) start(); }); } catch (e) { /* 忽略 */ }

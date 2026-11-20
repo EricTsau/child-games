@@ -543,7 +543,7 @@
       var vol = 0;
       return {
         set: function (x, v) {
-          if (!A) return; x = Math.max(0, Math.min(1, x)); var t = A.currentTime;
+          if (!A) return; x = +x; if (!isFinite(x)) x = 0; x = Math.max(0, Math.min(1, x)); if (v != null && !isFinite(+v)) v = 0; var t = A.currentTime;
           if (nodes[0].frequency) { nodes[0].frequency.setTargetAtTime(base * (1 + x * 3), t, 0.05); if (nodes[1]) nodes[1].frequency.setTargetAtTime(base * 1.5 * (1 + x * 3), t, 0.05); }
           f.frequency.setTargetAtTime((kind === 'water' ? 600 : 400) + x * 2400, t, 0.08);
           vol = (v == null ? 0.12 : v) * (KG.isMuted() || document.hidden ? 0 : 1);

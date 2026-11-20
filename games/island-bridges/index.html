@@ -1,0 +1,2136 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>小島搭橋</title>
+<link rel="stylesheet" href="../../assets/common.css">
+<style>
+  html, body { height: 100%; overflow: hidden; background: #2bb5c9; overscroll-behavior: none; }
+  #game {
+    position: fixed; inset: 0; display: block;
+    width: 100vw; height: 100vh; height: 100dvh;
+    touch-action: none; outline: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" tabindex="0" aria-label="小島搭橋：把島嶼用橋連起來的邏輯遊戲"></canvas>
+<script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+ * 題目產生器與解題器（唯一解）：規則推理 + 回溯驗證
+ * ===================================================================== */
+function PuzzleLib() {
+  'use strict';
+  function rngOf(seed) {
+    let a = seed >>> 0;
+    return function () {
+      a = (a + 0x6D2B79F5) >>> 0;
+      let t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  const DR = [-1, 0, 1, 0], DC = [0, 1, 0, -1];
+
+  /** 由島嶼建立題目結構：鄰居邊、交叉表 */
+  function build(w, h, isl) {
+    const at = new Int16Array(w * h).fill(-1);
+    isl.forEach((s, i) => { at[s.r * w + s.c] = i; });
+    const edges = [], islEdges = isl.map(() => []), nb = isl.map(() => [-1, -1, -1, -1]);
+    isl.forEach((s, i) => {
+      for (const d of [1, 2]) {
+        let r = s.r + DR[d], c = s.c + DC[d];
+        while (r >= 0 && c >= 0 && r < h && c < w && at[r * w + c] < 0) { r += DR[d]; c += DC[d]; }
+        if (r >= 0 && c >= 0 && r < h && c < w) {
+          const j = at[r * w + c], e = edges.length;
+          edges.push({ a: i, b: j, horiz: d === 1, len: Math.abs(r - s.r) + Math.abs(c - s.c) });
+          islEdges[i].push(e); islEdges[j].push(e);
+          nb[i][d] = e; nb[j][(d + 2) % 4] = e;
+        }
+      }
+    });
+    const cross = edges.map(() => []);
+    for (let e = 0; e < edges.length; e++) {
+      const E = edges[e]; if (!E.horiz) continue;
+      const A = isl[E.a], B = isl[E.b], row = A.r, c0 = Math.min(A.c, B.c), c1 = Math.max(A.c, B.c);
+      for (let f = 0; f < edges.length; f++) {
+        const F = edges[f]; if (F.horiz) continue;
+        const P = isl[F.a], Q = isl[F.b], col = P.c, r0 = Math.min(P.r, Q.r), r1 = Math.max(P.r, Q.r);
+        if (col > c0 && col < c1 && row > r0 && row < r1) { cross[e].push(f); cross[f].push(e); }
+      }
+    }
+    const cap = edges.map(E => Math.min(2, isl[E.a].n, isl[E.b].n));
+    return { w, h, isl, edges, islEdges, cross, nb, cap };
+  }
+
+  /* ---------- 推理 ---------- */
+  // 回傳 false = 矛盾。log(e, kind, info) 在 lo 增加時呼叫（提示用）
+  function propagate(P, lo, hi, log) {
+    const { isl, edges, islEdges, cross } = P, N = isl.length;
+    let changed = true, guard = 0;
+    while (changed) {
+      changed = false;
+      if (++guard > 500) break;
+      // 交叉
+      for (let e = 0; e < edges.length; e++) if (lo[e] > 0) for (const f of cross[e]) { if (lo[f] > 0) return false; if (hi[f] > 0) { hi[f] = 0; changed = true; } }
+      // 孤立（兩島互相用完）
+      if (N > 2) for (let e = 0; e < edges.length; e++) {
+        if (lo[e] === hi[e] || hi[e] === 0) continue;
+        const v = hi[e], E = edges[e];
+        if (closesPair(P, lo, E.a, e, v) && closesPair(P, lo, E.b, e, v)) {
+          hi[e] = v - 1; changed = true;
+          if (lo[e] > hi[e]) return false;
+        }
+      }
+      // 島嶼數字
+      for (let i = 0; i < N; i++) {
+        const n = isl[i].n, es = islEdges[i];
+        let sl = 0, sh = 0;
+        for (const e of es) { sl += lo[e]; sh += hi[e]; }
+        if (sl > n || sh < n) return false;
+        for (const e of es) {
+          const nl = Math.max(lo[e], n - (sh - hi[e])), nh = Math.min(hi[e], n - (sl - lo[e]));
+          if (nl > nh) return false;
+          if (nh < hi[e]) { sh -= hi[e] - nh; hi[e] = nh; changed = true; }
+          if (nl > lo[e]) {
+            if (log) log(e, 'island', i, nl, sh - hi[e]);
+            sl += nl - lo[e]; lo[e] = nl; changed = true;
+            for (const f of cross[e]) { if (lo[f] > 0) return false; hi[f] = 0; }
+          }
+        }
+      }
+      if (changed) continue;
+      // 連通：可能的橋必須連通；割邊必須至少一座
+      const r = connectRule(P, lo, hi, log);
+      if (r === false) return false;
+      if (r === true) changed = true;
+    }
+    return true;
+  }
+  function closesPair(P, lo, i, e, v) {
+    let s = v;
+    for (const f of P.islEdges[i]) if (f !== e) { if (lo[f] > 0) return false; }
+    return s === P.isl[i].n;
+  }
+  function connectRule(P, lo, hi, log) {
+    const N = P.isl.length, { edges, islEdges } = P;
+    // 已滿且封閉的群
+    const comp = new Int16Array(N).fill(-1);
+    for (let s = 0; s < N; s++) {
+      if (comp[s] >= 0) continue;
+      const st = [s]; comp[s] = s; let closed = true, cnt = 0;
+      while (st.length) {
+        const i = st.pop(); cnt++;
+        for (const e of islEdges[i]) {
+          if (hi[e] > lo[e]) closed = false;
+          if (lo[e] > 0) { const j = edges[e].a === i ? edges[e].b : edges[e].a; if (comp[j] < 0) { comp[j] = s; st.push(j); } }
+        }
+      }
+      if (closed && cnt < N) return false;
+    }
+    // Tarjan 割邊（hi>0 的圖）
+    const disc = new Int32Array(N).fill(-1), low = new Int32Array(N);
+    let tt = 0, any = false, visited = 0;
+    const stack = [[0, -1, 0]];
+    disc[0] = low[0] = tt++; visited++;
+    const bridgesFound = [];
+    while (stack.length) {
+      const top = stack[stack.length - 1], u = top[0], pe = top[1];
+      const es = islEdges[u];
+      if (top[2] < es.length) {
+        const e = es[top[2]++];
+        if (hi[e] === 0 || e === pe) continue;
+        const v = edges[e].a === u ? edges[e].b : edges[e].a;
+        if (disc[v] < 0) { disc[v] = low[v] = tt++; visited++; stack.push([v, e, 0]); }
+        else low[u] = Math.min(low[u], disc[v]);
+      } else {
+        stack.pop();
+        if (stack.length) {
+          const p = stack[stack.length - 1][0];
+          low[p] = Math.min(low[p], low[u]);
+          if (low[u] > disc[p]) bridgesFound.push(pe);
+        }
+      }
+    }
+    if (visited < N) return false;
+    for (const e of bridgesFound) if (lo[e] === 0) {
+      if (log) log(e, 'connect', -1, 1);
+      lo[e] = 1; any = true;
+      for (const f of P.cross[e]) { if (lo[f] > 0) return false; hi[f] = 0; }
+    }
+    return any ? true : null;
+  }
+  function initBounds(P) {
+    const lo = new Int8Array(P.edges.length), hi = Int8Array.from(P.cap);
+    return { lo, hi };
+  }
+  function solvedAll(lo, hi) { for (let e = 0; e < lo.length; e++) if (lo[e] !== hi[e]) return false; return true; }
+
+  /** 試探一層：假設某值，若矛盾就排除。回傳 null 失敗、true 有進展、false 無進展 */
+  function trialStep(P, lo, hi) {
+    for (let e = 0; e < lo.length; e++) {
+      if (lo[e] === hi[e]) continue;
+      for (const v of [lo[e], hi[e]]) {
+        const l2 = lo.slice(), h2 = hi.slice();
+        l2[e] = h2[e] = v;
+        if (!propagate(P, l2, h2)) {
+          if (v === lo[e]) lo[e]++; else hi[e]--;
+          if (!propagate(P, lo, hi)) return null;
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+  /** 邏輯解題：level 0 = 只用規則；1 = 允許一層試探。回傳 {ok, lo, hi, trials} */
+  function logicSolve(P, level) {
+    const { lo, hi } = initBounds(P);
+    if (!propagate(P, lo, hi)) return { ok: false };
+    let trials = 0;
+    while (!solvedAll(lo, hi)) {
+      if (level < 1) return { ok: false, lo, hi };
+      const r = trialStep(P, lo, hi);
+      if (r === null) return { ok: false };
+      if (r === false) return { ok: false, lo, hi };
+      trials++;
+      if (trials > 400) return { ok: false };
+    }
+    return { ok: true, lo, hi, trials };
+  }
+  /** 回溯計算解的個數（最多 limit） */
+  function countSolutions(P, limit, out) {
+    let count = 0, nodes = 0;
+    function rec(lo, hi) {
+      if (count >= limit || ++nodes > 200000) return;
+      if (!propagate(P, lo, hi)) return;
+      let best = -1, bestScore = 1e9;
+      for (let e = 0; e < lo.length; e++) if (lo[e] !== hi[e]) {
+        const sc = hi[e] - lo[e];
+        if (sc < bestScore) { bestScore = sc; best = e; if (sc === 1) break; }
+      }
+      if (best < 0) {
+        if (connectedLo(P, lo)) { count++; if (out && count === 1) out.sol = Array.from(lo); }
+        return;
+      }
+      for (let v = hi[best]; v >= lo[best]; v--) {
+        const l2 = lo.slice(), h2 = hi.slice();
+        l2[best] = h2[best] = v;
+        rec(l2, h2);
+      }
+    }
+    const b = initBounds(P);
+    rec(b.lo, b.hi);
+    return nodes > 200000 ? -1 : count;
+  }
+  function connectedLo(P, cnt) {
+    const N = P.isl.length, seen = new Uint8Array(N), st = [0]; seen[0] = 1; let k = 1;
+    while (st.length) {
+      const i = st.pop();
+      for (const e of P.islEdges[i]) if (cnt[e] > 0) {
+        const j = P.edges[e].a === i ? P.edges[e].b : P.edges[e].a;
+        if (!seen[j]) { seen[j] = 1; k++; st.push(j); }
+      }
+    }
+    return k === N;
+  }
+
+  /* ---------- 出題 ---------- */
+  function candidate(w, h, target, rng, dblP, extraP, maxLen) {
+    const occ = new Int8Array(w * h); // 0 空、1 島、2 橫橋、3 直橋
+    const isl = [], links = [];
+    const r0 = Math.floor(rng() * h), c0 = Math.floor(rng() * w);
+    isl.push({ r: r0, c: c0 }); occ[r0 * w + c0] = 1;
+    const nearIsl = (r, c) => {
+      for (let d = 0; d < 4; d++) { const rr = r + DR[d], cc = c + DC[d]; if (rr >= 0 && cc >= 0 && rr < h && cc < w && occ[rr * w + cc] === 1) return true; }
+      return false;
+    };
+    let tries = 0;
+    while (isl.length < target && tries++ < target * 80) {
+      const i = Math.floor(rng() * isl.length), d = Math.floor(rng() * 4), s = isl[i];
+      const L = 2 + Math.floor(rng() * (maxLen - 1));
+      let ok = true;
+      for (let k = 1; k < L; k++) { const r = s.r + DR[d] * k, c = s.c + DC[d] * k; if (r < 0 || c < 0 || r >= h || c >= w || occ[r * w + c]) { ok = false; break; } }
+      if (!ok) continue;
+      const r = s.r + DR[d] * L, c = s.c + DC[d] * L;
+      if (r < 0 || c < 0 || r >= h || c >= w || occ[r * w + c] || nearIsl(r, c)) continue;
+      for (let k = 1; k < L; k++) occ[(s.r + DR[d] * k) * w + s.c + DC[d] * k] = d % 2 ? 2 : 3;
+      occ[r * w + c] = 1;
+      isl.push({ r, c });
+      links.push([i, isl.length - 1, rng() < dblP ? 2 : 1]);
+    }
+    if (isl.length < Math.max(3, target * 0.8)) return null;
+    // 打亂島的編號順序（讓 0 號不一定是起點）—— 依位置排序
+    const order = isl.map((s, i) => i).sort((a, b) => (isl[a].r * w + isl[a].c) - (isl[b].r * w + isl[b].c));
+    const inv = []; order.forEach((o, k) => { inv[o] = k; });
+    const isl2 = order.map(o => ({ r: isl[o].r, c: isl[o].c, n: 0 }));
+    const P0 = build(w, h, isl2);
+    const sol = new Int8Array(P0.edges.length);
+    const findEdge = (a, b) => P0.islEdges[a].find(e => (P0.edges[e].a === a && P0.edges[e].b === b) || (P0.edges[e].a === b && P0.edges[e].b === a));
+    for (const [a, b, k] of links) { const e = findEdge(inv[a], inv[b]); if (e == null) return null; sol[e] = k; }
+    // 額外的橋（形成迴圈）
+    const used = new Uint8Array(P0.edges.length);
+    for (let e = 0; e < sol.length; e++) if (sol[e]) used[e] = 1;
+    for (let e = 0; e < sol.length; e++) {
+      if (sol[e] || rng() > extraP) continue;
+      let bad = false;
+      for (const f of P0.cross[e]) if (sol[f]) { bad = true; break; }
+      if (bad) continue;
+      sol[e] = rng() < dblP ? 2 : 1;
+    }
+    for (let e = 0; e < sol.length; e++) if (sol[e]) { isl2[P0.edges[e].a].n += sol[e]; isl2[P0.edges[e].b].n += sol[e]; }
+    return { isl: isl2.map(s => ({ r: s.r, c: s.c, n: s.n })), sol };
+  }
+
+  const TIERS = [
+    { name: '入門', size: 5, isl: [5, 7], dbl: 0.3, extra: 0.15, maxLen: 4, logic: 0 },
+    { name: '簡單', size: 7, isl: [9, 12], dbl: 0.35, extra: 0.25, maxLen: 4, logic: 0 },
+    { name: '普通', size: 9, isl: [14, 18], dbl: 0.4, extra: 0.3, maxLen: 5, logic: 0 },
+    { name: '困難', size: 11, isl: [21, 26], dbl: 0.4, extra: 0.35, maxLen: 6, logic: 1 },
+    { name: '專家', size: 13, isl: [29, 36], dbl: 0.45, extra: 0.4, maxLen: 7, logic: 1 }
+  ];
+  function tierSize(t, lv) { return t === 4 && lv >= 15 ? 15 : TIERS[t].size; }
+
+  /** 產生唯一解題目。opts: {tier, level(0-29) 或 -1, seed} */
+  function generate(opts) {
+    const T = TIERS[opts.tier], lv = opts.level == null ? 15 : opts.level;
+    const size = opts.size || tierSize(opts.tier, Math.max(0, lv));
+    const rng = rngOf(opts.seed);
+    const k = lv < 0 ? rng() : lv / 29;
+    let target = Math.round(T.isl[0] + (T.isl[1] - T.isl[0]) * k);
+    if (size > T.size) target = Math.round(target * (size * size) / (T.size * T.size));
+    let attempts = 0, fallback = null;
+    while (attempts++ < 400) {
+      const cand = candidate(size, size, target, rng, T.dbl, T.extra, T.maxLen);
+      if (!cand) continue;
+      const P = build(size, size, cand.isl);
+      const L = logicSolve(P, T.logic);
+      if (L.ok && T.logic === 1 && lv >= 6 && L.trials === 0 && attempts < 40) continue;
+      if (!L.ok) {
+        if (!fallback && attempts > 120) {
+          const out = {};
+          if (countSolutions(P, 2, out) === 1) fallback = { cand, sol: out.sol, attempts };
+        }
+        if (fallback && attempts > 200) break;
+        continue;
+      }
+      // 簡單的題目不要太無聊：入門以外，不要全部第一輪就推完
+      const out = {};
+      const n = countSolutions(P, 2, out);
+      if (n !== 1) continue;
+      return { w: size, h: size, isl: cand.isl, sol: Array.from(L.lo), attempts, trials: L.trials, unique: true };
+    }
+    if (fallback) return { w: size, h: size, isl: fallback.cand.isl, sol: fallback.sol, attempts, trials: -1, unique: true };
+    return null;
+  }
+
+  /** 提示：從目前玩家狀態（cnt）推一座一定要有的橋。sol 為唯一解 */
+  function hint(P, cnt, sol) {
+    for (let e = 0; e < cnt.length; e++) if (cnt[e] > sol[e]) return { type: 'wrong', e, want: sol[e] };
+    const lo = Int8Array.from(cnt), hi = Int8Array.from(P.cap);
+    for (let e = 0; e < cnt.length; e++) if (hi[e] < lo[e]) hi[e] = lo[e];
+    let found = null;
+    const log = (e, kind, i, v, maxOther) => {
+      if (found || v <= cnt[e]) return;
+      found = { type: kind, e, island: i, want: v, maxOther: maxOther || 0, n: i >= 0 ? P.isl[i].n : 0 };
+    };
+    const ok = propagate(P, lo, hi, log);
+    if (found && ok && found.want <= sol[found.e]) return found;
+    for (let e = 0; e < lo.length; e++) if (cnt[e] < sol[e]) return { type: 'trial', e, want: cnt[e] + 1 };
+    return null;
+  }
+
+  return { rngOf, build, propagate, logicSolve, countSolutions, generate, hint, TIERS, tierSize, connectedLo };
+}
+
+const Lib = PuzzleLib();
+
+/* =====================================================================
+ * 小島搭橋
+ * ===================================================================== */
+const SLUG = 'island-bridges';
+const cv = document.getElementById('game');
+const ctx = cv.getContext('2d');
+const FONT = '"Baloo 2","PingFang TC","Noto Sans TC","Microsoft JhengHei","Heiti TC",system-ui,sans-serif';
+let W = 400, H = 700, dpr = 1, U = 1, time = 0;
+const TAU = Math.PI * 2;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const Ease = {
+  outCubic: t => 1 - Math.pow(1 - t, 3),
+  inCubic: t => t * t * t,
+  inOutSine: t => -(Math.cos(Math.PI * t) - 1) / 2,
+  outBack: t => { const c = 1.70158, c3 = c + 1; return 1 + c3 * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); },
+  outElastic: t => (t === 0 || t === 1) ? t : Math.pow(2, -10 * t) * Math.sin((t * 10 - 0.75) * (TAU / 3)) + 1
+};
+
+/* ---------- 補間 ---------- */
+let tweens = [];
+function tween(obj, to, dur, ease, delay, done) {
+  const tw = { obj, to, from: null, dur: dur || 0.3, ease: Ease[ease] || Ease.outCubic, t: -(delay || 0), done };
+  tweens.push(tw); return tw;
+}
+function updateTweens(dt) {
+  for (let i = 0; i < tweens.length; i++) {
+    const tw = tweens[i];
+    tw.t += dt;
+    if (tw.t < 0) continue;
+    if (!tw.from) { tw.from = {}; for (const k in tw.to) tw.from[k] = tw.obj[k]; }
+    const p = Math.min(1, tw.t / tw.dur), e = tw.ease(p);
+    for (const k in tw.to) tw.obj[k] = tw.from[k] + (tw.to[k] - tw.from[k]) * e;
+    if (p >= 1) { tweens.splice(i, 1); i--; if (tw.done) tw.done(); }
+  }
+}
+let shakeT = 0, shakeAmt = 0;
+function shake(a, d) { shakeAmt = Math.max(shakeT > 0 ? shakeAmt : 0, a); shakeT = Math.max(shakeT, d || 0.25); }
+
+/* ---------- 繪圖小工具 ---------- */
+function circ(x, y, r) { ctx.moveTo(x + r, y); ctx.arc(x, y, r, 0, TAU); }
+function rr(x, y, w, h, r, g) {
+  g = g || ctx; r = Math.max(0, Math.min(r, w / 2, h / 2));
+  g.beginPath(); g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath();
+}
+function starPath(x, y, R, r, rot) {
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) { const a = (rot || 0) + i * Math.PI / 5 - Math.PI / 2, d = i % 2 ? r : R; ctx.lineTo(x + Math.cos(a) * d, y + Math.sin(a) * d); }
+  ctx.closePath();
+}
+function shade(hex, amt) {
+  const n = parseInt(hex.slice(1), 16), f = v => clamp(v + amt, 0, 255);
+  return 'rgb(' + f(n >> 16) + ',' + f((n >> 8) & 255) + ',' + f(n & 255) + ')';
+}
+function txt(s, x, y, size, fill, o) {
+  o = o || {};
+  ctx.font = (o.weight || '900') + ' ' + size + 'px ' + FONT;
+  ctx.textAlign = o.align || 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+  if (o.shadow !== false && o.stroke) {
+    ctx.strokeStyle = 'rgba(20,50,70,0.3)'; ctx.lineWidth = o.sw || size * 0.22; ctx.strokeText(s, x, y + size * 0.08);
+  }
+  if (o.stroke) { ctx.strokeStyle = o.stroke; ctx.lineWidth = o.sw || size * 0.22; ctx.strokeText(s, x, y); }
+  ctx.fillStyle = fill; ctx.fillText(s, x, y);
+}
+function fitSize(s, size, maxW, weight) {
+  ctx.font = (weight || '900') + ' ' + size + 'px ' + FONT;
+  const w = ctx.measureText(s).width;
+  return w > maxW ? size * maxW / w : size;
+}
+function wrapText(s, size, maxW) {
+  ctx.font = '800 ' + size + 'px ' + FONT;
+  const lines = []; let cur = '';
+  for (const ch of s) {
+    if (ch === '\n') { lines.push(cur); cur = ''; continue; }
+    if (ctx.measureText(cur + ch).width > maxW && cur) {
+      // 不要讓標點符號跑到行首
+      if ('，。！？、」）；：'.includes(ch)) { lines.push(cur.slice(0, -1)); cur = cur.slice(-1) + ch; }
+      else { lines.push(cur); cur = ch; }
+    } else cur += ch;
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+function glossyStar(x, y, R, on, rot) {
+  ctx.lineJoin = 'round';
+  if (on) {
+    ctx.fillStyle = 'rgba(160,90,0,0.25)'; starPath(x, y + R * 0.12, R, R * 0.5, rot); ctx.fill();
+    ctx.fillStyle = '#ffd23d'; ctx.strokeStyle = '#c9700a'; ctx.lineWidth = Math.max(1.5, R * 0.12);
+    starPath(x, y, R, R * 0.5, rot); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.beginPath(); ctx.ellipse(x - R * 0.22, y - R * 0.28, R * 0.2, R * 0.11, -0.6, 0, TAU); ctx.fill();
+  } else {
+    ctx.fillStyle = 'rgba(30,70,90,0.22)'; ctx.strokeStyle = 'rgba(30,70,90,0.35)'; ctx.lineWidth = Math.max(1.5, R * 0.1);
+    starPath(x, y, R, R * 0.5, rot); ctx.fill(); ctx.stroke();
+  }
+}
+function fmtTime(s) { s = Math.floor(s); return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); }
+
+/* ---------- 圖示 ---------- */
+function drawIcon(name, x, y, s, col) {
+  ctx.save(); ctx.translate(x, y);
+  ctx.fillStyle = col; ctx.strokeStyle = col;
+  ctx.lineWidth = s * 0.18; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  if (name === 'play') { ctx.beginPath(); ctx.moveTo(-s * 0.3, -s * 0.42); ctx.lineTo(s * 0.45, 0); ctx.lineTo(-s * 0.3, s * 0.42); ctx.closePath(); ctx.fill(); ctx.stroke(); }
+  else if (name === 'pause') { rr(-s * 0.32, -s * 0.38, s * 0.22, s * 0.76, s * 0.06); ctx.fill(); rr(s * 0.1, -s * 0.38, s * 0.22, s * 0.76, s * 0.06); ctx.fill(); }
+  else if (name === 'undo') {
+    ctx.lineWidth = s * 0.16;
+    ctx.beginPath(); ctx.moveTo(-s * 0.2, -s * 0.16); ctx.lineTo(s * 0.06, -s * 0.16); ctx.arc(s * 0.06, s * 0.08, s * 0.24, -Math.PI / 2, Math.PI / 2); ctx.lineTo(-s * 0.22, s * 0.32); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-s * 0.44, -s * 0.16); ctx.lineTo(-s * 0.14, -s * 0.4); ctx.lineTo(-s * 0.14, s * 0.08); ctx.closePath(); ctx.fill();
+  }
+  else if (name === 'replay') {
+    ctx.beginPath(); ctx.arc(0, s * 0.04, s * 0.36, -Math.PI * 0.35, Math.PI * 1.3); ctx.stroke();
+    const a = -Math.PI * 0.35, ex = Math.cos(a) * s * 0.36, ey = Math.sin(a) * s * 0.36 + s * 0.04;
+    ctx.beginPath(); ctx.moveTo(ex + s * 0.2, ey - s * 0.02); ctx.lineTo(ex - s * 0.04, ey + s * 0.24); ctx.lineTo(ex - s * 0.22, ey - s * 0.14); ctx.closePath(); ctx.fill();
+  }
+  else if (name === 'bulb') {
+    ctx.beginPath(); ctx.arc(0, -s * 0.12, s * 0.3, Math.PI * 0.8, Math.PI * 2.2); ctx.lineTo(s * 0.12, s * 0.22); ctx.lineTo(-s * 0.12, s * 0.22); ctx.closePath(); ctx.fill();
+    ctx.lineWidth = s * 0.1; ctx.beginPath(); ctx.moveTo(-s * 0.12, s * 0.32); ctx.lineTo(s * 0.12, s * 0.32); ctx.moveTo(-s * 0.08, s * 0.43); ctx.lineTo(s * 0.08, s * 0.43); ctx.stroke();
+  }
+  else if (name === 'menu') { for (let i = -1; i <= 1; i += 2) for (let j = -1; j <= 1; j += 2) { rr(i * s * 0.22 - s * 0.16, j * s * 0.22 - s * 0.16, s * 0.32, s * 0.32, s * 0.08); ctx.fill(); } }
+  else if (name === 'back') { ctx.lineWidth = s * 0.2; ctx.beginPath(); ctx.moveTo(s * 0.32, 0); ctx.lineTo(-s * 0.3, 0); ctx.moveTo(-s * 0.02, -s * 0.3); ctx.lineTo(-s * 0.32, 0); ctx.lineTo(-s * 0.02, s * 0.3); ctx.stroke(); }
+  else if (name === 'next') { for (const dx of [-0.22, 0.2]) { ctx.beginPath(); ctx.moveTo(s * (dx - 0.16), -s * 0.34); ctx.lineTo(s * (dx + 0.16), 0); ctx.lineTo(s * (dx - 0.16), s * 0.34); ctx.stroke(); } }
+  else if (name === 'lock') {
+    ctx.lineWidth = s * 0.14; ctx.beginPath(); ctx.arc(0, -s * 0.12, s * 0.24, Math.PI, 0); ctx.stroke();
+    rr(-s * 0.36, -s * 0.12, s * 0.72, s * 0.56, s * 0.1); ctx.fill();
+  }
+  else if (name === 'check') { ctx.lineWidth = s * 0.2; ctx.beginPath(); ctx.moveTo(-s * 0.32, 0); ctx.lineTo(-s * 0.08, s * 0.26); ctx.lineTo(s * 0.36, -s * 0.28); ctx.stroke(); }
+  else if (name === 'music') { ctx.beginPath(); ctx.ellipse(-s * 0.16, s * 0.28, s * 0.17, s * 0.12, -0.4, 0, TAU); ctx.fill(); ctx.lineWidth = s * 0.11; ctx.beginPath(); ctx.moveTo(-s * 0.01, s * 0.28); ctx.lineTo(-s * 0.01, -s * 0.42); ctx.quadraticCurveTo(s * 0.24, -s * 0.28, s * 0.32, -s * 0.08); ctx.stroke(); }
+  else if (name === 'sound') {
+    ctx.beginPath(); ctx.moveTo(-s * 0.38, -s * 0.13); ctx.lineTo(-s * 0.18, -s * 0.13); ctx.lineTo(s * 0.04, -s * 0.34); ctx.lineTo(s * 0.04, s * 0.34); ctx.lineTo(-s * 0.18, s * 0.13); ctx.lineTo(-s * 0.38, s * 0.13); ctx.closePath(); ctx.fill();
+    ctx.lineWidth = s * 0.08; ctx.beginPath(); ctx.arc(s * 0.08, 0, s * 0.2, -0.8, 0.8); ctx.stroke(); ctx.beginPath(); ctx.arc(s * 0.08, 0, s * 0.34, -0.8, 0.8); ctx.stroke();
+  }
+  else if (name === 'cal') {
+    ctx.lineWidth = s * 0.1; rr(-s * 0.38, -s * 0.3, s * 0.76, s * 0.68, s * 0.1); ctx.stroke();
+    ctx.fillRect(-s * 0.38, -s * 0.3, s * 0.76, s * 0.18);
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 2; j++) ctx.fillRect(-s * 0.24 + i * s * 0.18, s * 0.0 + j * s * 0.16, s * 0.1, s * 0.09);
+  }
+  else if (name === 'inf') { ctx.lineWidth = s * 0.14; ctx.beginPath(); ctx.ellipse(-s * 0.2, 0, s * 0.18, s * 0.16, 0, 0, TAU); ctx.moveTo(s * 0.38, 0); ctx.ellipse(s * 0.2, 0, s * 0.18, s * 0.16, 0, 0, TAU); ctx.stroke(); }
+  else if (name === 'help') { txt('?', 0, s * 0.04, s * 0.9, col, { shadow: false }); }
+  else if (name === 'clock') { ctx.lineWidth = s * 0.12; ctx.beginPath(); ctx.arc(0, 0, s * 0.38, 0, TAU); ctx.stroke(); ctx.beginPath(); ctx.moveTo(0, -s * 0.22); ctx.lineTo(0, 0); ctx.lineTo(s * 0.16, s * 0.1); ctx.stroke(); }
+  else if (name === 'map') {
+    ctx.beginPath(); ctx.ellipse(-s * 0.18, s * 0.1, s * 0.2, s * 0.13, 0, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(s * 0.22, -s * 0.16, s * 0.16, s * 0.11, 0, 0, TAU); ctx.fill();
+    ctx.lineWidth = s * 0.08; ctx.setLineDash([s * 0.08, s * 0.07]); ctx.beginPath(); ctx.moveTo(-s * 0.02, s * 0.05); ctx.lineTo(s * 0.08, -s * 0.1); ctx.stroke(); ctx.setLineDash([]);
+  }
+  ctx.restore();
+}
+
+/* ---------- 按鈕（每格重新登記；鍵盤可用方向鍵切換焦點） ---------- */
+let btnReg = [], btnPrev = [], pressed = null, regOn = true, focusId = null, kbdNav = false;
+const PAL = {
+  green: ['#b4f5a2', '#45c05e', '#25843e'], blue: ['#aee4ff', '#3c9ff0', '#22659e'], yellow: ['#fff3a6', '#f8b921', '#a8700a'],
+  pink: ['#ffc0d5', '#f45f93', '#b8366a'], purple: ['#ddc9ff', '#9b6ff2', '#5f3fae'], orange: ['#ffd3a6', '#ff8a3d', '#b9531a'],
+  white: ['#ffffff', '#f1f7f8', '#88a9b3'], teal: ['#b6f7ee', '#2fc6b0', '#15806f'], wood: ['#f3c48c', '#c98d55', '#7a4a22']
+};
+function button(id, x, y, w, h, o) {
+  if (regOn) btnReg.push({ id, x, y, w, h, onClick: o.onClick, disabled: o.disabled });
+  const pal = PAL[o.color || 'green'];
+  const down = pressed && pressed.id === id;
+  let s = down ? 0.93 : 1;
+  if (o.pulse && !down) s *= 1 + Math.sin(time * 5) * 0.03;
+  const lip = Math.max(3, h * 0.09), r = o.radius == null ? h / 2 : o.radius, yo = down ? lip * 0.6 : 0;
+  ctx.save();
+  ctx.translate(x + w / 2, y + h / 2); ctx.scale(s, s);
+  if (o.disabled) ctx.globalAlpha = 0.5;
+  rr(-w / 2, -h / 2 + lip + 3, w, h, r); ctx.fillStyle = 'rgba(10,50,70,0.25)'; ctx.fill();
+  rr(-w / 2, -h / 2 + lip, w, h, r); ctx.fillStyle = pal[2]; ctx.fill();
+  rr(-w / 2, -h / 2 + yo, w, h, r);
+  const g = ctx.createLinearGradient(0, -h / 2, 0, h / 2);
+  g.addColorStop(0, pal[0]); g.addColorStop(0.6, pal[1]); g.addColorStop(1, shade(pal[1], -14));
+  ctx.fillStyle = g; ctx.fill();
+  ctx.strokeStyle = pal[2]; ctx.lineWidth = Math.max(2, h * 0.045); ctx.stroke();
+  rr(-w / 2 + Math.min(h, w) * 0.2, -h / 2 + yo + h * 0.08, w - Math.min(h, w) * 0.4, h * 0.26, h * 0.13);
+  ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.fill();
+  if (focusId === id && kbdNav) { rr(-w / 2 - 5, -h / 2 - 5, w + 10, h + 10 + lip, r + 5); ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.setLineDash([6, 5]); ctx.stroke(); ctx.setLineDash([]); }
+  const tc = (o.color === 'white' || o.color === 'yellow') ? (o.color === 'yellow' ? '#6b4500' : '#3d6470') : '#fff';
+  const fs = o.size || h * 0.4;
+  if (o.icon && o.label) {
+    ctx.font = '900 ' + fs + 'px ' + FONT;
+    const tw = ctx.measureText(o.label).width, tot = fs * 1.15 + tw;
+    const so = o.sub ? h * 0.1 : 0;
+    drawIcon(o.icon, -tot / 2 + fs * 0.45, yo - so, fs * 0.95, tc);
+    txt(o.label, -tot / 2 + fs * 1.15 + tw / 2, yo + 1 - so, fs, tc, { shadow: false, stroke: tc === '#fff' ? pal[2] : null, sw: fs * 0.18 });
+  } else if (o.icon) drawIcon(o.icon, 0, yo, fs * 1.15, tc);
+  else if (o.label != null) txt(o.label, 0, yo + 1 - (o.sub ? h * 0.1 : 0), fitSize(o.label, fs, w * 0.86), tc, { shadow: false, stroke: tc === '#fff' ? pal[2] : null, sw: fs * 0.18 });
+  if (o.sub) txt(o.sub, 0, yo + h * 0.28, h * 0.21, tc, { weight: '800', shadow: false });
+  ctx.restore();
+}
+function hitBtn(x, y) {
+  for (let i = btnPrev.length - 1; i >= 0; i--) {
+    const b = btnPrev[i];
+    if (!b.disabled && x >= b.x - 4 && x <= b.x + b.w + 4 && y >= b.y - 4 && y <= b.y + b.h + 8) return b;
+  }
+  return null;
+}
+function moveFocus(dx, dy) {
+  const list = btnPrev.filter(b => !b.disabled);
+  if (!list.length) return;
+  kbdNav = true;
+  const cur = list.find(b => b.id === focusId);
+  if (!cur) { focusId = list[0].id; return; }
+  const cx = cur.x + cur.w / 2, cy = cur.y + cur.h / 2;
+  let best = null, bd = 1e9;
+  for (const b of list) {
+    if (b === cur) continue;
+    const bx = b.x + b.w / 2 - cx, by = b.y + b.h / 2 - cy;
+    const along = bx * dx + by * dy; if (along <= 4) continue;
+    const side = Math.abs(bx * dy) + Math.abs(by * dx);
+    const d = along + side * 2.5;
+    if (d < bd) { bd = d; best = b; }
+  }
+  if (best) { focusId = best.id; sfx('tick'); }
+}
+function activateFocus() {
+  const b = btnPrev.find(b => b.id === focusId && !b.disabled);
+  if (b && b.onClick) { sfx('ui'); b.onClick(); return true; }
+  return false;
+}
+
+/* ---------- 粒子（物件池） ---------- */
+const FX = {
+  pool: [], n: 0, MAX: 180,
+  get() {
+    if (this.n >= this.MAX) return null;
+    let p = this.pool[this.n];
+    if (!p) { p = {}; this.pool[this.n] = p; }
+    this.n++; return p;
+  },
+  burst(x, y, o) {
+    const n = o.n || 10, cols = o.colors || ['#fff', '#ffe066'];
+    for (let i = 0; i < n; i++) {
+      const p = this.get(); if (!p) return;
+      const a = o.dir != null ? o.dir + (Math.random() - 0.5) * (o.spread || 1.2) : Math.random() * TAU;
+      const sp = (o.speed || 160) * (0.4 + Math.random() * 0.8);
+      p.kind = o.shape || 'spark'; p.x = x; p.y = y; p.vx = Math.cos(a) * sp; p.vy = Math.sin(a) * sp - (o.up || 0);
+      p.max = (o.life || 0.7) * (0.7 + Math.random() * 0.5); p.life = p.max; p.size = (o.size || 5) * (0.6 + Math.random() * 0.7);
+      p.color = cols[i % cols.length]; p.g = o.g == null ? 300 : o.g; p.rot = Math.random() * TAU; p.s = null;
+    }
+  },
+  ring(x, y, color, r, life) {
+    const p = this.get(); if (!p) return;
+    p.kind = 'ring'; p.x = x; p.y = y; p.vx = 0; p.vy = 0; p.color = color; p.size = r; p.life = p.max = life || 0.5; p.g = 0; p.rot = 0; p.s = null;
+  },
+  text(x, y, s, color, size) {
+    const p = this.get(); if (!p) return;
+    p.kind = 'text'; p.x = x; p.y = y; p.vx = 0; p.vy = -50; p.color = color; p.size = size; p.life = p.max = 1.1; p.g = 0; p.rot = 0; p.s = s;
+  },
+  update(dt) {
+    for (let i = 0; i < this.n; i++) {
+      const p = this.pool[i];
+      p.life -= dt;
+      if (p.life <= 0) { this.n--; this.pool[i] = this.pool[this.n]; this.pool[this.n] = p; i--; continue; }
+      p.vy += p.g * dt; p.vx *= 0.985; p.x += p.vx * dt; p.y += p.vy * dt; p.rot += dt * 4;
+    }
+  },
+  draw() {
+    for (let i = 0; i < this.n; i++) {
+      const p = this.pool[i], a = clamp(p.life / p.max, 0, 1);
+      ctx.globalAlpha = Math.min(1, a * 1.6);
+      if (p.kind === 'spark') {
+        const s = p.size; ctx.fillStyle = p.color; ctx.beginPath();
+        ctx.moveTo(p.x, p.y - s); ctx.quadraticCurveTo(p.x, p.y, p.x + s, p.y); ctx.quadraticCurveTo(p.x, p.y, p.x, p.y + s);
+        ctx.quadraticCurveTo(p.x, p.y, p.x - s, p.y); ctx.quadraticCurveTo(p.x, p.y, p.x, p.y - s); ctx.fill();
+      } else if (p.kind === 'drop') {
+        ctx.fillStyle = p.color; ctx.beginPath(); circ(p.x, p.y, p.size * (0.5 + a * 0.5)); ctx.fill();
+      } else if (p.kind === 'plank') {
+        ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot); ctx.fillStyle = p.color; ctx.fillRect(-p.size, -p.size * 0.3, p.size * 2, p.size * 0.6); ctx.restore();
+      } else if (p.kind === 'ring') {
+        ctx.strokeStyle = p.color; ctx.lineWidth = 2 + 4 * a; ctx.beginPath(); circ(p.x, p.y, p.size * (1.4 - a * 0.6)); ctx.stroke();
+      } else if (p.kind === 'text') {
+        const k = Math.min(1, (p.max - p.life) * 6);
+        txt(p.s, p.x, p.y, p.size * Ease.outBack(k), p.color, { stroke: '#1d5a6e', sw: p.size * 0.25 });
+      }
+    }
+    ctx.globalAlpha = 1;
+  },
+  clear() { this.n = 0; }
+};
+
+/* =====================================================================
+ * 聲音：音樂（G 大調熱帶風）與音效
+ * ===================================================================== */
+let sfxOn = KG.store.get(SLUG + ':sfx', true) !== false;
+const lastSfx = {};
+function sfx(name, o) {
+  if (!sfxOn || !KG.sfx) return;
+  const now = performance.now();
+  if (lastSfx[name] && now - lastSfx[name] < 40) return;
+  lastSfx[name] = now;
+  try { KG.sfx.play(name, o); } catch (e) { /* 忽略 */ }
+}
+function panX(x) { return clamp((x / W) * 2 - 1, -1, 1) * 0.55; }
+const vary = (k) => 1 + (Math.random() * 2 - 1) * (k || 0.04);
+// G 大調音階：島嶼數字 1~8 對應 G4 A4 B4 C5 D5 E5 F#5 G5
+const SCALE = [392.0, 440.0, 493.88, 523.25, 587.33, 659.26, 739.99, 783.99];
+if (KG.sfx) {
+  KG.sfx.define('tok', (p, s) => {
+    s.noise(0.035, { vol: 0.2, freq: 1900 * p, q: 4 });
+    s.tone(430 * p, 0.065, { type: 'triangle', vol: 0.17, slide: 300 * p });
+    s.tone(1280 * p, 0.03, { vol: 0.04 });
+  });
+  KG.sfx.define('thunk', (p, s) => {
+    s.tone(140 * p, 0.24, { vol: 0.34, slide: 62 });
+    s.noise(0.1, { vol: 0.18, freq: 520 * p, type: 'lowpass' });
+    s.tone(330 * p, 0.09, { type: 'triangle', vol: 0.12, slide: 210 * p });
+    s.noise(0.035, { vol: 0.14, freq: 1700 * p, q: 3, delay: 0.07 });
+  });
+  KG.sfx.define('plop', (p, s) => {
+    s.noise(0.42, { vol: 0.2, freq: 1400 * p, sweep: 380, q: 0.7 });
+    s.tone(560 * p, 0.14, { vol: 0.12, slide: 190 * p, delay: 0.03 });
+    s.tone(700 * p, 0.07, { vol: 0.06, slide: 1500 * p, delay: 0.17 });
+    s.tone(900 * p, 0.06, { vol: 0.045, slide: 1800 * p, delay: 0.26 });
+  });
+  KG.sfx.define('isleBell', (p, s) => {
+    const f = 392 * p;
+    s.tone(f, 1.0, { vol: 0.13, attack: 0.004 });
+    s.tone(f * 2, 0.45, { vol: 0.045 });
+    s.tone(f * 2.76, 0.22, { vol: 0.03 });
+  });
+  KG.sfx.define('buzz', (p, s) => {
+    s.tone(150 * p, 0.17, { type: 'triangle', vol: 0.16 });
+    s.tone(157 * p, 0.17, { type: 'sawtooth', vol: 0.03 });
+    s.tone(118 * p, 0.14, { type: 'triangle', vol: 0.1, delay: 0.1 });
+  });
+  KG.sfx.define('hintSpark', (p, s) => {
+    [1175, 1568, 1976, 2349].forEach((f, i) => s.tone(f * p, 0.25, { vol: 0.06, delay: i * 0.05 }));
+    s.tone(587 * p, 0.6, { vol: 0.07, delay: 0.02 });
+  });
+  KG.sfx.define('pick', (p, s) => { s.tone(620 * p, 0.06, { type: 'triangle', vol: 0.13, slide: 760 * p }); });
+  KG.sfx.define('gull', (p, s) => {
+    for (let k = 0; k < 3; k++) {
+      const d = k * 0.19 + Math.random() * 0.03, q = p * (1 - k * 0.04);
+      s.tone(1500 * q, 0.15, { type: 'triangle', vol: 0.05, slide: 1020 * q, delay: d, attack: 0.02 });
+      s.tone(2250 * q, 0.06, { vol: 0.015, slide: 1700 * q, delay: d });
+    }
+  });
+  KG.sfx.define('starTone', (p, s) => { s.tone(784 * p, 0.4, { vol: 0.12 }); s.tone(1568 * p, 0.25, { vol: 0.04 }); s.noise(0.05, { vol: 0.05, freq: 6000, q: 0.7, type: 'highpass' }); });
+  KG.sfx.define('page', (p, s) => { s.noise(0.09, { vol: 0.12, freq: 2600 * p, sweep: 1200 * p, q: 0.8 }); s.tone(520 * p, 0.07, { type: 'triangle', vol: 0.08 }); });
+}
+
+/* 選單：平靜的卡林巴琴 */
+const MENU_SONG = {
+  bpm: 84, steps: 16, swing: 0.08,
+  chords: ['Gmaj7', 'Cmaj7', 'Em7', 'D', 'Gmaj7', 'Cmaj7', 'Am7', 'D'],
+  tracks: [
+    { inst: 'pad', chord: 'hold', vol: 0.5 },
+    { inst: 'bass', chord: 'R.......5.......', vol: 0.55 },
+    { inst: 'kalimba', vol: 0.95, seq: [
+      'B4 - D5 - F#5 - - .', 'E5 - - D5 C5 - - .', 'B4 - - G4 E4 - G4 -', 'A4 - - - F#4 - - .',
+      'B4 - D5 - G5 - F#5 -', 'E5 - - G5 E5 - C5 -', 'C5 - - B4 A4 - E4 -', 'F#4 - - - A4 - - .'] },
+    { inst: 'marimba', arp: 'updown', rate: 4, oct: 4, vol: 0.32 },
+    { inst: 'shaker', pat: '..o...o...o...o.', vol: 0.55 }
+  ]
+};
+/* 遊戲中：100 bpm，馬林巴＋卡林巴，輕打擊 */
+const GAME_SONG = {
+  bpm: 100, steps: 16, swing: 0.08,
+  chords: ['G', 'Em', 'C', 'D', 'G', 'Em', 'Am', 'D', 'C', 'D', 'Bm', 'Em', 'C', 'D', 'G', 'D7'],
+  layers: { top: false, perc: false },
+  tracks: [
+    { inst: 'kick', pat: 'x.......x.....x.', vol: 0.42 },
+    { inst: 'shaker', pat: 'x.o.x.o.x.o.x.o.', vol: 0.7 },
+    { inst: 'rim', pat: '....x.......x..x', vol: 0.5 },
+    { inst: 'shaker', pat: '.o.o.o.o.o.o.o.o', vol: 0.5, layer: 'perc' },
+    { inst: 'tom', pat: ['................', '................', '................', '..........o.o.o.'], vol: 0.35, layer: 'perc', pitch: 180 },
+    { inst: 'bass', chord: 'R.....R.5...R...', vol: 0.62 },
+    { inst: 'pad', chord: 'hold', vol: 0.3 },
+    { inst: 'marimba', chord: '..3...5...3.5...', oct: 4, vol: 0.34 },
+    { inst: 'marimba', vol: 1, seq: [
+      'D5 - B4 . G4 . B4 D5', 'E5 - - D5 B4 - G4 .', 'C5 - E5 . G5 - E5 .', 'F#5 - E5 D5 A4 - - .',
+      'B4 - D5 . G5 - F#5 E5', 'E5 - B4 . G4 - B4 .', 'C5 - A4 . E5 - D5 C5', 'A4 - B4 . A4 - F#4 .',
+      'E5 - - . G5 - E5 D5', 'F#5 - - . A5 - F#5 E5', 'D5 - - B4 F#4 - B4 .', 'E5 - G5 . E5 - D5 B4',
+      'C5 - E5 . G5 - E5 C5', 'D5 - F#5 . A5 - F#5 D5', 'G5 - D5 . B4 - D5 .', 'A4 . B4 . C5 . D5 .'] },
+    { inst: 'kalimba', vol: 0.55, layer: 'top', seq: [
+      '. . . B5 . . . G5', '. . . G5 . . . B5', '. . . E5 . . . G5', '. . . F#5 . . . A5',
+      '. . . B5 . . . D5', '. . . G5 . . . E5', '. . . E5 . . . A5', '. . . F#5 . . . D5',
+      '. . . G5 . . . E5', '. . . A5 . . . F#5', '. . . F#5 . . . D5', '. . . G5 . . . B5',
+      '. . . E5 . . . G5', '. . . F#5 . . . A5', '. . . B5 . . . G5', '. . . F#5 . . . A5'] }
+  ]
+};
+function musicMenu() { if (KG.music) KG.music.play(MENU_SONG); }
+function musicGame() { if (KG.music) KG.music.play(GAME_SONG, { restart: true }); }
+function jingleWin() {
+  if (!KG.music || !sfxOn) return;
+  KG.music.jingle({ bpm: 150, inst: 'marimba', vol: 0.8, notes: [['G4', 1], ['B4', 1], ['D5', 1], ['G5', 2], ['D5', 1], ['E5', 1], ['F#5', 1], ['G5+D5', 4]], bass: [['G2', 4, 0], ['D3', 2, 4], ['G2', 6, 7]] });
+  KG.music.jingle({ bpm: 150, inst: 'kalimba', vol: 0.5, notes: [['x', 3], ['B5', 2], ['x', 3], ['B5+G5', 4]] });
+}
+function jingleStart() { if (KG.music && sfxOn) KG.music.jingle({ bpm: 190, inst: 'kalimba', vol: 0.8, notes: [['D5', 1], ['G5', 1], ['B5', 2]] }); }
+// 海浪環境音
+let seaLoop = null, seaT = 0;
+function updateSea(dt) {
+  if (!seaLoop) return;
+  seaT -= dt;
+  if (seaT > 0) return;
+  seaT = 0.3;
+  const on = sfxOn && !document.hidden && !(scene === 'play' && overlay === 'pause');
+  seaLoop.set(0.12 + 0.1 * Math.sin(time * 0.8), on ? 0.045 : 0);
+}
+window.addEventListener('pointerdown', () => { if (!seaLoop && KG.sfx) { try { seaLoop = KG.sfx.loop('water'); } catch (e) { seaLoop = null; } } }, { capture: true });
+document.addEventListener('visibilitychange', () => { if (seaLoop && document.hidden) seaLoop.set(0, 0); });
+
+/* =====================================================================
+ * 存檔
+ * ===================================================================== */
+const Save = {
+  get(k, d) { return KG.store.get(SLUG + ':' + k, d); },
+  set(k, v) { KG.store.set(SLUG + ':' + k, v); },
+  stars(t) { return Save.get('stars' + t, []); },
+  setStars(t, i, n) { const a = Save.stars(t); if (!(a[i] >= n)) { a[i] = n; Save.set('stars' + t, a); } },
+  tierTotal(t) { return Save.stars(t).reduce((s, v) => s + (v || 0), 0); },
+  solvedCount(t) { return Save.stars(t).filter(v => v > 0).length; }
+};
+function todayKey() { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+function todaySeed() { const d = new Date(); return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate(); }
+function dailyDone() { const m = Save.get('daily', {}); return m[todayKey()]; }
+
+/* =====================================================================
+ * 美術：海、島、橋（預先畫好的小圖）
+ * ===================================================================== */
+function mkCanvas(w, h) { const c = document.createElement('canvas'); c.width = Math.max(1, Math.ceil(w)); c.height = Math.max(1, Math.ceil(h)); return c; }
+let seaGrad = null, wavePat = null, wavePat2 = null;
+function buildSea() {
+  seaGrad = ctx.createLinearGradient(0, 0, W * 0.3, H);
+  seaGrad.addColorStop(0, '#5fe0de'); seaGrad.addColorStop(0.5, '#2bb5c9'); seaGrad.addColorStop(1, '#1689b4');
+  const T = 220, k = dpr;
+  const mk = (seed, alpha, lw) => {
+    const c = mkCanvas(T * k, T * k), g = c.getContext('2d');
+    g.scale(k, k);
+    const rnd = Lib.rngOf(seed);
+    g.strokeStyle = 'rgba(255,255,255,' + alpha + ')'; g.lineWidth = lw; g.lineCap = 'round';
+    for (let i = 0; i < 16; i++) {
+      const x = rnd() * T, y = rnd() * T, w = 14 + rnd() * 18;
+      for (const ox of [-T, 0, T]) for (const oy of [-T, 0, T]) {
+        g.beginPath(); g.moveTo(x + ox - w / 2, y + oy);
+        g.quadraticCurveTo(x + ox - w / 4, y + oy - 5, x + ox, y + oy);
+        g.quadraticCurveTo(x + ox + w / 4, y + oy + 5, x + ox + w / 2, y + oy); g.stroke();
+      }
+    }
+    const p = ctx.createPattern(c, 'repeat');
+    if (p && p.setTransform && window.DOMMatrix) p.setTransform(new DOMMatrix().scale(1 / k));
+    return p;
+  };
+  wavePat = mk(11, 0.32, 2.2);
+  wavePat2 = mk(29, 0.16, 1.6);
+}
+function drawSea(dim) {
+  ctx.fillStyle = seaGrad; ctx.fillRect(0, 0, W, H);
+  const T = 220;
+  for (let L = 0; L < (KG.lowEnd ? 1 : 2); L++) {
+    const pat = L ? wavePat2 : wavePat;
+    if (!pat) continue;
+    const ox = ((time * (L ? -9 : 13)) % T + T) % T, oy = ((time * (L ? 4 : 6)) % T + T) % T;
+    ctx.save(); ctx.translate(ox - T, oy - T + Math.sin(time * 0.9 + L) * 3);
+    ctx.fillStyle = pat; ctx.fillRect(0, 0, W + T * 2, H + T * 2);
+    ctx.restore();
+  }
+  if (dim) { ctx.fillStyle = 'rgba(8,60,90,' + dim + ')'; ctx.fillRect(0, 0, W, H); }
+}
+
+/* 島嶼小圖：依格子大小快取 */
+const spriteCache = new Map();
+function islandSprites(S) {
+  const key = Math.round(S * dpr * 2);
+  let sp = spriteCache.get(key);
+  if (sp) return sp;
+  if (spriteCache.size > 3) spriteCache.clear();
+  const size = S * 1.6, px = size * dpr;
+  sp = { size, lit: [], dark: [], foam: null, glow: null };
+  for (let v = 0; v < 4; v++) for (const lit of [false, true]) {
+    const c = mkCanvas(px, px), g = c.getContext('2d');
+    g.scale(dpr, dpr);
+    drawIslandArt(g, size / 2, size / 2, S, v, lit);
+    (lit ? sp.lit : sp.dark)[v] = c;
+  }
+  const fc = mkCanvas(px, px), fg = fc.getContext('2d');
+  fg.scale(dpr, dpr);
+  const R = S * 0.46, cx = size / 2;
+  const grd = fg.createRadialGradient(cx, cx, R * 0.85, cx, cx, R * 1.32);
+  grd.addColorStop(0, 'rgba(255,255,255,0)'); grd.addColorStop(0.25, 'rgba(255,255,255,0.85)'); grd.addColorStop(0.55, 'rgba(190,250,245,0.35)'); grd.addColorStop(1, 'rgba(190,250,245,0)');
+  fg.fillStyle = grd; fg.beginPath(); fg.arc(cx, cx, R * 1.35, 0, TAU); fg.fill();
+  sp.foam = fc;
+  const gc = mkCanvas(px, px), gg = gc.getContext('2d');
+  gg.scale(dpr, dpr);
+  const g2 = gg.createRadialGradient(cx, cx, 0, cx, cx, size / 2);
+  g2.addColorStop(0, 'rgba(255,240,150,0.85)'); g2.addColorStop(0.45, 'rgba(255,220,90,0.35)'); g2.addColorStop(1, 'rgba(255,220,90,0)');
+  gg.fillStyle = g2; gg.fillRect(0, 0, size, size);
+  sp.glow = gc;
+  spriteCache.set(key, sp);
+  return sp;
+}
+function drawIslandArt(g, cx, cy, S, v, lit) {
+  const R = S * 0.42, side = v & 1 ? 1 : -1;
+  // 淺灘
+  g.fillStyle = 'rgba(150,245,230,0.6)';
+  g.beginPath(); g.ellipse(cx, cy + R * 0.1, R * 1.16, R * 1.1, 0, 0, TAU); g.fill();
+  // 沙灘（有點不規則）
+  g.beginPath();
+  for (let k = 0; k <= 24; k++) {
+    const a = k / 24 * TAU, rad = R * (1 + 0.045 * Math.sin(a * 3 + v * 1.7) + 0.03 * Math.cos(a * 5 + v));
+    const x = cx + Math.cos(a) * rad, y = cy + Math.sin(a) * rad * 0.96;
+    if (k) g.lineTo(x, y); else g.moveTo(x, y);
+  }
+  g.closePath();
+  const sg = g.createRadialGradient(cx - R * 0.35, cy - R * 0.4, R * 0.1, cx, cy, R * 1.1);
+  sg.addColorStop(0, '#fff6d6'); sg.addColorStop(0.6, '#f9dc96'); sg.addColorStop(1, '#e9b866');
+  g.fillStyle = sg; g.fill();
+  g.strokeStyle = '#d29a48'; g.lineWidth = Math.max(1, S * 0.03); g.stroke();
+  // 濕沙
+  g.fillStyle = 'rgba(190,130,60,0.18)';
+  g.beginPath(); g.ellipse(cx, cy + R * 0.55, R * 0.8, R * 0.32, 0, 0, Math.PI); g.fill();
+  // 草地
+  g.fillStyle = '#86d65f';
+  g.beginPath(); g.ellipse(cx - side * R * 0.15, cy - R * 0.42, R * 0.62, R * 0.36, side * 0.2, 0, TAU); g.fill();
+  g.fillStyle = '#6cc04a';
+  g.beginPath(); g.ellipse(cx - side * R * 0.18, cy - R * 0.36, R * 0.5, R * 0.22, side * 0.2, 0, Math.PI); g.fill();
+  if (S >= 22) {
+    // 小房子（左上或右上）
+    const hx = cx - side * R * 0.62, hy = cy - R * 0.5, hw = R * (S < 32 ? 0.6 : 0.5), hh = hw * 0.7;
+    g.fillStyle = 'rgba(80,50,20,0.25)'; g.fillRect(hx - hw / 2 + 2, hy + hh * 0.15, hw, hh);
+    if (lit) {
+      const lg = g.createRadialGradient(hx, hy, 0, hx, hy, hw * 1.3);
+      lg.addColorStop(0, 'rgba(255,230,120,0.55)'); lg.addColorStop(1, 'rgba(255,230,120,0)');
+      g.fillStyle = lg; g.beginPath(); g.arc(hx, hy, hw * 1.3, 0, TAU); g.fill();
+    }
+    g.fillStyle = '#f1c38c'; g.strokeStyle = '#8a5428'; g.lineWidth = Math.max(1, S * 0.025);
+    g.fillRect(hx - hw / 2, hy - hh * 0.2, hw, hh); g.strokeRect(hx - hw / 2, hy - hh * 0.2, hw, hh);
+    // 茅草屋頂
+    g.fillStyle = v & 2 ? '#d9893f' : '#e0703f';
+    g.beginPath(); g.moveTo(hx - hw * 0.72, hy - hh * 0.15); g.lineTo(hx, hy - hh * 1.05); g.lineTo(hx + hw * 0.72, hy - hh * 0.15); g.closePath(); g.fill(); g.stroke();
+    g.strokeStyle = 'rgba(120,60,20,0.45)'; g.lineWidth = Math.max(0.6, S * 0.012);
+    g.beginPath(); g.moveTo(hx - hw * 0.35, hy - hh * 0.3); g.lineTo(hx, hy - hh * 0.85); g.moveTo(hx + hw * 0.35, hy - hh * 0.3); g.lineTo(hx, hy - hh * 0.85); g.stroke();
+    // 窗戶
+    const wx = hx - side * hw * 0.18, wy = hy + hh * 0.12, ws = hw * 0.28;
+    g.fillStyle = lit ? '#ffe45c' : '#4b3b55';
+    g.fillRect(wx - ws / 2, wy - ws / 2, ws, ws);
+    if (lit) { g.fillStyle = 'rgba(255,255,255,0.8)'; g.fillRect(wx - ws / 2, wy - ws / 2, ws * 0.4, ws * 0.4); }
+    g.fillStyle = '#9a5e2e'; g.fillRect(hx + side * hw * 0.2 - hw * 0.1, hy + hh * 0.05, hw * 0.2, hh * 0.55);
+  }
+  if (S >= 30) {
+    // 椰子樹（另一邊）
+    const bx = cx + side * R * 0.55, by = cy - R * 0.2, tx = cx + side * R * 0.78, ty = cy - R * 1.12;
+    g.fillStyle = 'rgba(60,90,40,0.25)'; g.beginPath(); g.ellipse(bx + R * 0.1, by + R * 0.05, R * 0.22, R * 0.08, 0, 0, TAU); g.fill();
+    g.strokeStyle = '#8b5a2b'; g.lineWidth = S * 0.065; g.lineCap = 'round';
+    g.beginPath(); g.moveTo(bx, by); g.quadraticCurveTo(bx - side * R * 0.2, (by + ty) / 2, tx, ty); g.stroke();
+    g.strokeStyle = 'rgba(255,220,170,0.5)'; g.lineWidth = S * 0.02;
+    for (let k = 1; k < 4; k++) { const t = k / 4, x = lerp(bx, tx, t) - side * R * 0.08 * Math.sin(t * Math.PI), y = lerp(by, ty, t); g.beginPath(); g.moveTo(x - S * 0.03, y); g.lineTo(x + S * 0.03, y + S * 0.01); g.stroke(); }
+    const leaves = [-2.75, -2.1, -1.45, -0.85, -0.2, 0.35];
+    for (let k = 0; k < leaves.length; k++) {
+      const a = side > 0 ? leaves[k] : -Math.PI - leaves[k], L = R * (0.62 + (k % 2) * 0.12);
+      const ex = tx + Math.cos(a) * L, ey = ty + Math.sin(a) * L * 0.8 + R * 0.12;
+      const mx = tx + Math.cos(a) * L * 0.5, my = ty + Math.sin(a) * L * 0.5 - R * 0.12;
+      g.fillStyle = k % 2 ? '#2f9a46' : '#45b856';
+      g.beginPath(); g.moveTo(tx, ty);
+      g.quadraticCurveTo(mx - Math.sin(a) * R * 0.14, my + Math.cos(a) * R * 0.14, ex, ey);
+      g.quadraticCurveTo(mx + Math.sin(a) * R * 0.04, my - Math.cos(a) * R * 0.04, tx, ty); g.fill();
+    }
+    g.fillStyle = '#6b3f1d';
+    g.beginPath(); g.arc(tx - R * 0.05, ty + R * 0.08, R * 0.07, 0, TAU); g.arc(tx + R * 0.07, ty + R * 0.1, R * 0.065, 0, TAU); g.fill();
+  }
+}
+
+/* =====================================================================
+ * 棋盤畫面（題目、橋、島、動畫）
+ * ===================================================================== */
+class BoardView {
+  constructor() { this.layer = mkCanvas(2, 2); this.lg = this.layer.getContext('2d'); this.P = null; this.dirty = true; this.anim = new Map(); this.S = 30; this.bx = 0; this.by = 0; }
+  set(P, cnt, sol) {
+    this.P = P; this.cnt = cnt; this.sol = sol;
+    this.sum = new Int16Array(P.isl.length);
+    this.state = new Int8Array(P.isl.length); // 0 普通、1 滿足、2 超過
+    const rnd = Lib.rngOf(P.isl.length * 97 + P.w * 13 + (P.isl[0] ? P.isl[0].r * 7 + P.isl[0].c : 0));
+    this.variant = P.isl.map(() => Math.floor(rnd() * 4));
+    this.pop = new Float32Array(P.isl.length);
+    this.anim.clear(); this.recount(); this.dirty = true;
+  }
+  recount() {
+    const P = this.P;
+    this.sum.fill(0);
+    for (let e = 0; e < P.edges.length; e++) if (this.cnt[e]) { this.sum[P.edges[e].a] += this.cnt[e]; this.sum[P.edges[e].b] += this.cnt[e]; }
+    for (let i = 0; i < P.isl.length; i++) this.state[i] = this.sum[i] === P.isl[i].n ? 1 : this.sum[i] > P.isl[i].n ? 2 : 0;
+  }
+  layout(x, y, w, h, maxCell) {
+    const P = this.P;
+    const S = Math.min(w / P.w, h / P.h, maxCell || 999);
+    const changed = Math.abs(S - this.S) > 0.01;
+    this.S = S; this.bx = x + (w - S * P.w) / 2; this.by = y + (h - S * P.h) / 2;
+    const m = S * 0.6, lw = S * P.w + m * 2, lh = S * P.h + m * 2;
+    if (changed || this.layer.width !== Math.ceil(lw * dpr) || this.layer.height !== Math.ceil(lh * dpr)) {
+      this.layer.width = Math.ceil(lw * dpr); this.layer.height = Math.ceil(lh * dpr);
+      this.dirty = true;
+    }
+    this.m = m; this.lw = lw; this.lh = lh;
+  }
+  cx(i) { return this.bx + (this.P.isl[i].c + 0.5) * this.S; }
+  cy(i) { return this.by + (this.P.isl[i].r + 0.5) * this.S; }
+  badgeR() { return this.S * (this.S < 34 ? 0.36 : this.S < 50 ? 0.3 : 0.27); }
+  /** 畫一條橋道（木板一片一片） */
+  lane(g, x1, y1, x2, y2, off, width, prog, alpha, drop) {
+    const S = this.S, dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy);
+    if (len < 1) return;
+    const ux = dx / len, uy = dy / len, px = -uy, py = ux, rI = S * 0.36;
+    const sx = x1 + ux * rI + px * off, sy = y1 + uy * rI + py * off + (drop || 0);
+    const L = len - rI * 2;
+    if (L <= 0) return;
+    const nP = Math.max(2, Math.round(L / (S * 0.16))), sp = L / nP;
+    const shown = prog * nP, hw = width / 2;
+    g.globalAlpha = alpha;
+    // 繩子
+    const re = Math.min(L, L * prog + sp * 0.4);
+    g.strokeStyle = '#6b4423'; g.lineWidth = Math.max(1, S * 0.03);
+    g.beginPath();
+    g.moveTo(sx + px * hw * 0.92, sy + py * hw * 0.92); g.lineTo(sx + ux * re + px * hw * 0.92, sy + uy * re + py * hw * 0.92);
+    g.moveTo(sx - px * hw * 0.92, sy - py * hw * 0.92); g.lineTo(sx + ux * re - px * hw * 0.92, sy + uy * re - py * hw * 0.92);
+    g.stroke();
+    // 木板
+    const th = sp * 0.36;
+    g.lineWidth = Math.max(0.8, S * 0.02); g.strokeStyle = '#7a4a22';
+    for (let k = 0; k < nP; k++) {
+      let sc = 1;
+      if (k + 1 > shown) { if (k >= shown) break; sc = Ease.outBack(clamp(shown - k, 0, 1)); }
+      const t = sp * (k + 0.5), cx = sx + ux * t, cy = sy + uy * t - (1 - sc) * S * 0.15;
+      const ax = px * hw * sc, ay = py * hw * sc, bx2 = ux * th, by2 = uy * th;
+      g.fillStyle = k % 3 === 0 ? '#c4864c' : k % 3 === 1 ? '#d39a5f' : '#bb7d45';
+      g.beginPath();
+      g.moveTo(cx - ax - bx2, cy - ay - by2); g.lineTo(cx + ax - bx2, cy + ay - by2);
+      g.lineTo(cx + ax + bx2, cy + ay + by2); g.lineTo(cx - ax + bx2, cy - ay + by2); g.closePath();
+      g.fill(); g.stroke();
+    }
+    g.globalAlpha = 1;
+  }
+  laneOffsets(c) { const o = this.S * 0.12; return c === 2 ? [-o, o] : [0]; }
+  laneWidth(c) { return this.S * (c === 2 ? 0.2 : 0.3); }
+  drawEdge(g, e, c, ox, oy) {
+    const E = this.P.edges[e];
+    const x1 = this.cx(E.a) + ox, y1 = this.cy(E.a) + oy, x2 = this.cx(E.b) + ox, y2 = this.cy(E.b) + oy;
+    const offs = this.laneOffsets(c), w = this.laneWidth(c);
+    for (const o of offs) this.lane(g, x1, y1, x2, y2, o, w, 1, 1);
+  }
+  render() {
+    const P = this.P, g = this.lg, S = this.S;
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.clearRect(0, 0, this.layer.width, this.layer.height);
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const ox = this.m - this.bx, oy = this.m - this.by;
+    // 格點
+    g.fillStyle = 'rgba(255,255,255,0.22)';
+    for (let r = 0; r < P.h; r++) for (let c = 0; c < P.w; c++) { g.beginPath(); g.arc(this.bx + (c + 0.5) * S + ox, this.by + (r + 0.5) * S + oy, Math.max(1.2, S * 0.045), 0, TAU); g.fill(); }
+    for (let e = 0; e < P.edges.length; e++) if (this.cnt[e] && !this.anim.has(e)) this.drawEdge(g, e, this.cnt[e], ox, oy);
+    const sp = islandSprites(S), br = this.badgeR();
+    for (let i = 0; i < P.isl.length; i++) {
+      const x = this.cx(i) + ox, y = this.cy(i) + oy, st = this.state[i];
+      if (st === 1) g.drawImage(sp.glow, x - sp.size / 2, y - sp.size / 2, sp.size, sp.size);
+      g.drawImage((st === 1 ? sp.lit : sp.dark)[this.variant[i]], x - sp.size / 2, y - sp.size / 2, sp.size, sp.size);
+      this.badge(g, x, y + S * 0.06, br, P.isl[i].n, st);
+    }
+    this.dirty = false;
+  }
+  badge(g, x, y, r, n, st) {
+    const S = this.S;
+    g.fillStyle = 'rgba(90,60,20,0.3)'; g.beginPath(); g.arc(x, y + r * 0.14, r, 0, TAU); g.fill();
+    g.beginPath(); g.arc(x, y, r, 0, TAU);
+    g.fillStyle = st === 1 ? '#5fcf72' : st === 2 ? '#ff6b6b' : '#fffaf0'; g.fill();
+    g.strokeStyle = st === 1 ? '#22803a' : st === 2 ? '#b8282e' : '#9b6a3a'; g.lineWidth = Math.max(1.5, S * 0.045); g.stroke();
+    g.fillStyle = 'rgba(255,255,255,0.45)'; g.beginPath(); g.ellipse(x - r * 0.3, y - r * 0.45, r * 0.38, r * 0.2, -0.5, 0, TAU); g.fill();
+    g.font = '900 ' + Math.round(r * 1.32) + 'px ' + FONT; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillStyle = st ? '#ffffff' : '#4a2f1a';
+    if (st) { g.lineJoin = 'round'; g.strokeStyle = st === 1 ? '#1d6a30' : '#8e1a20'; g.lineWidth = r * 0.22; g.strokeText(String(n), x, y + r * 0.08); }
+    g.fillText(String(n), x, y + r * 0.08);
+  }
+  /** 動畫：from → to */
+  animate(e, from, to, fromA) {
+    const E = this.P.edges[e];
+    const dur = to > from ? 0.14 + 0.075 * E.len * (to - from === 2 ? 1 : 1) : 0.55;
+    this.anim.set(e, { from, to, t: 0, dur, fromA: fromA !== false, lastTok: -1 });
+    this.dirty = true;
+  }
+  update(dt) {
+    for (const [e, a] of this.anim) {
+      a.t += dt;
+      const E = this.P.edges[e];
+      if (a.to > a.from) {
+        // 敲木板的聲音：每 2~3 片一次
+        const p = clamp(a.t / a.dur, 0, 1), L = (E.len - 0.72) * this.S, nP = Math.max(2, Math.round(L / (this.S * 0.16)));
+        const k = Math.floor(p * nP / 2.5);
+        if (k !== a.lastTok && p < 1) {
+          a.lastTok = k;
+          const x = lerp(this.cx(E.a), this.cx(E.b), a.fromA ? p : 1 - p);
+          sfx('tok', { pitch: (1.22 - Math.min(0.4, E.len * 0.05) + p * 0.12) * vary(0.04), pan: panX(x), vol: 0.9 });
+        }
+      }
+      if (a.t >= a.dur) {
+        this.anim.delete(e); this.dirty = true;
+        if (a.to === 2 && a.from < 2) { sfx('thunk', { pitch: vary(0.05), pan: panX((this.cx(E.a) + this.cx(E.b)) / 2) }); shake(2, 0.12); }
+      }
+    }
+    for (let i = 0; i < this.pop.length; i++) if (this.pop[i] > 0) this.pop[i] = Math.max(0, this.pop[i] - dt);
+  }
+  drawFoam() {
+    const P = this.P, sp = islandSprites(this.S), s = sp.size;
+    for (let i = 0; i < P.isl.length; i++) {
+      const k = 1 + Math.sin(time * 1.8 + i * 1.3) * 0.05;
+      ctx.globalAlpha = 0.55 + Math.sin(time * 1.8 + i * 1.3) * 0.25;
+      ctx.drawImage(sp.foam, this.cx(i) - s * k / 2, this.cy(i) - s * k / 2 + this.S * 0.03, s * k, s * k);
+    }
+    ctx.globalAlpha = 1;
+  }
+  draw() {
+    if (this.dirty) this.render();
+    this.drawFoam();
+    ctx.drawImage(this.layer, this.bx - this.m, this.by - this.m, this.lw, this.lh);
+    // 動畫中的橋
+    for (const [e, a] of this.anim) {
+      const E = this.P.edges[e];
+      let x1 = this.cx(E.a), y1 = this.cy(E.a), x2 = this.cx(E.b), y2 = this.cy(E.b);
+      const p = clamp(a.t / a.dur, 0, 1), ep = Ease.outCubic(p);
+      if (!a.fromA) { const tx = x1, ty = y1; x1 = x2; y1 = y2; x2 = tx; y2 = ty; }
+      const o2 = this.S * 0.12;
+      if (a.to > a.from) {
+        if (a.from === 0) for (const o of this.laneOffsets(a.to)) this.lane(ctx, x1, y1, x2, y2, o * (a.fromA ? 1 : -1), this.laneWidth(a.to), p, 1);
+        else {
+          this.lane(ctx, x1, y1, x2, y2, -o2 * ep * (a.fromA ? 1 : -1), lerp(this.laneWidth(1), this.laneWidth(2), ep), 1, 1);
+          this.lane(ctx, x1, y1, x2, y2, o2 * (a.fromA ? 1 : -1), this.laneWidth(2), p, 1);
+        }
+      } else {
+        const drop = Ease.inCubic(p) * this.S * 0.35, al = 1 - Ease.inCubic(p);
+        if (a.to === 1) {
+          this.lane(ctx, x1, y1, x2, y2, -o2 * (1 - ep), lerp(this.laneWidth(2), this.laneWidth(1), ep), 1, 1);
+          this.lane(ctx, x1, y1, x2, y2, o2, this.laneWidth(2), 1, al, drop);
+        } else for (const o of this.laneOffsets(a.from)) this.lane(ctx, x1, y1, x2, y2, o, this.laneWidth(a.from), 1, al, drop);
+      }
+    }
+    // 剛滿足的島：彈一下
+    const br = this.badgeR();
+    for (let i = 0; i < this.pop.length; i++) {
+      if (this.pop[i] <= 0) continue;
+      const k = this.pop[i] / 0.6, s = 1 + Math.sin((1 - k) * Math.PI) * 0.28;
+      const x = this.cx(i), y = this.cy(i) + this.S * 0.06;
+      ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+      this.badge(ctx, 0, 0, br, this.P.isl[i].n, this.state[i]);
+      ctx.restore();
+    }
+  }
+  islandAt(x, y, rad) {
+    let best = -1, bd = (rad * this.S) * (rad * this.S);
+    for (let i = 0; i < this.P.isl.length; i++) { const d = (this.cx(i) - x) ** 2 + (this.cy(i) - y) ** 2; if (d < bd) { bd = d; best = i; } }
+    return best;
+  }
+  edgeAt(x, y, rad) {
+    let best = -1, bd = rad * this.S;
+    for (let e = 0; e < this.P.edges.length; e++) {
+      if (!this.cnt[e]) continue;
+      const E = this.P.edges[e], x1 = this.cx(E.a), y1 = this.cy(E.a), x2 = this.cx(E.b), y2 = this.cy(E.b);
+      let d;
+      if (E.horiz) d = (x > Math.min(x1, x2) + this.S * 0.3 && x < Math.max(x1, x2) - this.S * 0.3) ? Math.abs(y - y1) : 1e9;
+      else d = (y > Math.min(y1, y2) + this.S * 0.3 && y < Math.max(y1, y2) - this.S * 0.3) ? Math.abs(x - x1) : 1e9;
+      if (d < bd) { bd = d; best = e; }
+    }
+    return best;
+  }
+}
+
+/* ---------- 村民（完成時在橋上走） ---------- */
+const VCOL = ['#ff7a8a', '#5aa9ff', '#ffb02e', '#7ccf5a', '#b98cff', '#ff8a3d', '#2fc6b0', '#f45f93'];
+const SKIN = ['#ffd9b3', '#f2c08f', '#d69a6a', '#a8714a'];
+class Villagers {
+  constructor() { this.list = []; }
+  spawn(view, cnt, n) {
+    const P = view.P; this.list.length = 0;
+    const has = P.isl.map((s, i) => P.islEdges[i].some(e => cnt[e] > 0));
+    const starts = P.isl.map((s, i) => i).filter(i => has[i]);
+    for (let k = 0; k < n && starts.length; k++) {
+      const i = starts[(k * 7 + 3) % starts.length];
+      this.list.push({ i, e: -1, j: i, t: 1, spd: 0.9 + Math.random() * 0.5, col: VCOL[k % VCOL.length], skin: SKIN[k % SKIN.length], hat: k % 3, wait: Math.random() * 0.8, prev: -1 });
+    }
+  }
+  update(dt, view, cnt) {
+    const P = view.P;
+    for (const v of this.list) {
+      if (v.wait > 0) { v.wait -= dt; continue; }
+      if (v.e >= 0) {
+        v.t += dt * v.spd / Math.max(1, P.edges[v.e].len) * 1.6;
+        if (v.t >= 1) { v.i = v.j; v.e = -1; v.wait = 0.2 + Math.random() * 0.6; }
+        continue;
+      }
+      const opts = P.islEdges[v.i].filter(e => cnt[e] > 0);
+      if (!opts.length) continue;
+      let e = opts[Math.floor(Math.random() * opts.length)];
+      if (opts.length > 1 && e === v.prev) e = opts[(opts.indexOf(e) + 1) % opts.length];
+      v.e = e; v.prev = e; v.t = 0; v.j = P.edges[e].a === v.i ? P.edges[e].b : P.edges[e].a;
+      v.lane = cnt[e] === 2 ? (Math.random() < 0.5 ? -1 : 1) : 0;
+    }
+  }
+  draw(view) {
+    const S = view.S, s = S * 0.13;
+    for (const v of this.list) {
+      let x, y, moving = v.e >= 0;
+      if (moving) {
+        const t = Ease.inOutSine(v.t);
+        x = lerp(view.cx(v.i), view.cx(v.j), t); y = lerp(view.cy(v.i), view.cy(v.j), t);
+        const E = view.P.edges[v.e];
+        if (E.horiz) y += v.lane * S * 0.12; else x += v.lane * S * 0.12;
+      } else {
+        const a = (v.col.charCodeAt(1) + v.i) % 6 * 1.05;
+        x = view.cx(v.i) + Math.cos(a) * S * 0.3; y = view.cy(v.i) + Math.sin(a) * S * 0.18 + S * 0.15;
+      }
+      const bob = moving ? Math.abs(Math.sin(time * 10 + v.spd * 5)) * s * 0.5 : 0;
+      ctx.fillStyle = 'rgba(20,60,60,0.25)'; ctx.beginPath(); ctx.ellipse(x, y + s * 1.1, s * 0.8, s * 0.3, 0, 0, TAU); ctx.fill();
+      ctx.fillStyle = v.col; rr(x - s * 0.6, y - s * 0.2 - bob, s * 1.2, s * 1.2, s * 0.45); ctx.fill();
+      ctx.fillStyle = v.skin; ctx.beginPath(); circ(x, y - s * 0.7 - bob, s * 0.55); ctx.fill();
+      ctx.fillStyle = '#3a2a1a'; ctx.beginPath(); circ(x - s * 0.2, y - s * 0.72 - bob, s * 0.08); circ(x + s * 0.2, y - s * 0.72 - bob, s * 0.08); ctx.fill();
+      if (v.hat === 0) { ctx.fillStyle = '#f5d76e'; ctx.beginPath(); ctx.ellipse(x, y - s * 1.1 - bob, s * 0.85, s * 0.2, 0, 0, TAU); ctx.fill(); ctx.beginPath(); ctx.ellipse(x, y - s * 1.22 - bob, s * 0.42, s * 0.28, 0, Math.PI, 0); ctx.fill(); }
+      else if (v.hat === 1) { ctx.fillStyle = '#ff6b6b'; ctx.beginPath(); circ(x + s * 0.4, y - s * 1.05 - bob, s * 0.22); ctx.fill(); }
+    }
+  }
+}
+
+/* ---------- 海鷗 ---------- */
+const Gulls = {
+  list: [], next: 3,
+  update(dt) {
+    this.next -= dt;
+    if (this.next <= 0 && this.list.length < 3) {
+      this.next = 7 + Math.random() * 9;
+      const dir = Math.random() < 0.5 ? 1 : -1;
+      this.list.push({ x: dir > 0 ? -40 : W + 40, y: H * (0.1 + Math.random() * 0.5), vx: dir * (40 + Math.random() * 25), ph: Math.random() * 6, s: (10 + Math.random() * 5) * U });
+      if (Math.random() < 0.5) sfx('gull', { pitch: vary(0.08), vol: 0.5, pan: dir * -0.6 });
+    }
+    for (let i = this.list.length - 1; i >= 0; i--) {
+      const g = this.list[i]; g.x += g.vx * dt; g.y += Math.sin(time * 1.3 + g.ph) * 6 * dt;
+      if (g.x < -80 || g.x > W + 80) this.list.splice(i, 1);
+    }
+  },
+  draw() {
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    for (const g of this.list) {
+      const f = Math.sin(time * 7 + g.ph) * 0.5, s = g.s;
+      ctx.strokeStyle = 'rgba(10,60,80,0.15)'; ctx.lineWidth = s * 0.22;
+      ctx.beginPath(); ctx.moveTo(g.x - s, g.y + s * 3 + f * s * 0.5); ctx.quadraticCurveTo(g.x - s * 0.5, g.y + s * 2.6 - f * s, g.x, g.y + s * 3); ctx.quadraticCurveTo(g.x + s * 0.5, g.y + s * 2.6 - f * s, g.x + s, g.y + s * 3 + f * s * 0.5); ctx.stroke();
+      ctx.strokeStyle = '#ffffff'; ctx.lineWidth = s * 0.26;
+      ctx.beginPath(); ctx.moveTo(g.x - s, g.y + f * s * 0.6); ctx.quadraticCurveTo(g.x - s * 0.5, g.y - s * 0.4 - f * s, g.x, g.y); ctx.quadraticCurveTo(g.x + s * 0.5, g.y - s * 0.4 - f * s, g.x + s, g.y + f * s * 0.6); ctx.stroke();
+    }
+  }
+};
+
+/* =====================================================================
+ * 狀態
+ * ===================================================================== */
+const TIER_COL = ['green', 'blue', 'orange', 'pink', 'purple'];
+const TIER_HEX = ['#45c05e', '#3c9ff0', '#ff8a3d', '#f45f93', '#9b6ff2'];
+let scene = 'title', overlay = null, sceneT = 0;
+let curTier = clamp(Save.get('tier', 0) | 0, 0, 4);
+const view = new BoardView();
+const villagers = new Villagers();
+const G = {
+  mode: 'level', tier: 0, level: 0, seed: 1, puzzle: null, P: null, cnt: null, sol: null,
+  undo: [], sel: -1, cursor: -1, drag: null, timer: 0, hints: 0, moves: 0, solved: false, solvedT: 0,
+  hintFx: null, msg: null, blockFx: null, restartArm: -10, tutorial: false, built: 0, key: ''
+};
+let resultO = null;
+const panel = { s: 0 };
+
+/* ---------- 標題畫面的裝飾小島 ---------- */
+const titleView = new BoardView();
+(function () {
+  const isl = [{ r: 0, c: 1, n: 3 }, { r: 0, c: 4, n: 3 }, { r: 2, c: 4, n: 2 }, { r: 2, c: 6, n: 3 }, { r: 4, c: 1, n: 3 }, { r: 4, c: 6, n: 4 }];
+  const P = Lib.build(7, 5, isl);
+  const cnt = new Int8Array(P.edges.length);
+  const want = [[0, 1, 2], [1, 2, 1], [2, 3, 1], [3, 5, 2], [0, 4, 1], [4, 5, 2]];
+  for (const [a, b, k] of want) { const e = P.islEdges[a].find(e => P.edges[e].a === Math.min(a, b) && P.edges[e].b === Math.max(a, b)); if (e != null) cnt[e] = k; }
+  titleView.set(P, cnt, cnt);
+})();
+const titleVillagers = new Villagers();
+titleVillagers.spawn(titleView, titleView.cnt, 5);
+
+/* =====================================================================
+ * 開始一題
+ * ===================================================================== */
+function tierLabel(t, lv) { const s = Lib.tierSize(t, lv == null ? 0 : lv); return Lib.TIERS[t].name + ' ' + s + '×' + s; }
+let pendingStart = null, loadingT = 0;
+function startPuzzle(mode, tier, level, seed) {
+  // 先畫一格「準備中」再出題（大題目在慢手機要一點時間）
+  pendingStart = { mode, tier, level, seed };
+  loadingT = 0;
+  scene = 'loading'; overlay = null;
+}
+function doStart(o) {
+  const { mode, tier, level } = o;
+  let seed = o.seed;
+  if (mode === 'level') seed = 7919 * (tier + 1) + level * 104729 + 17;
+  const pz = Lib.generate({ tier, level: mode === 'level' ? level : -1, seed });
+  if (!pz) { KG.toast('出題失敗，再試一次！'); scene = 'title'; return; }
+  const P = Lib.build(pz.w, pz.h, pz.isl);
+  Object.assign(G, {
+    mode, tier, level, seed, puzzle: pz, P, sol: Int8Array.from(pz.sol), cnt: new Int8Array(P.edges.length),
+    undo: [], sel: -1, cursor: -1, drag: null, timer: 0, hints: 0, moves: 0, solved: false, solvedT: 0,
+    hintFx: null, msg: null, blockFx: null, restartArm: -10, built: 0
+  });
+  G.key = mode === 'level' ? 'L' + tier + '-' + level : mode === 'daily' ? 'D' + seed : '';
+  // 接續上次沒完成的進度
+  const cur = Save.get('cur', null);
+  if (cur && G.key && cur.key === G.key && cur.cnt && cur.cnt.length === G.cnt.length) {
+    for (let e = 0; e < G.cnt.length; e++) G.cnt[e] = clamp(cur.cnt[e] | 0, 0, P.cap[e]);
+    G.timer = cur.time || 0; G.hints = cur.hints || 0;
+  }
+  G.tutorial = mode === 'level' && tier === 0 && level === 0 && !Save.get('tutDone', false);
+  view.set(P, G.cnt, G.sol);
+  villagers.list.length = 0;
+  FX.clear();
+  scene = 'play'; overlay = null; sceneT = 0;
+  layoutPlay();
+  musicGame(); updateMusicLayers();
+  jingleStart();
+  sfx('swoosh', { vol: 0.6 });
+}
+function saveCur() {
+  if (!G.key || G.solved) return;
+  Save.set('cur', { key: G.key, cnt: Array.from(G.cnt), time: Math.floor(G.timer), hints: G.hints });
+}
+
+/* =====================================================================
+ * 版面
+ * ===================================================================== */
+let L = {};
+function isLand() { return W > H * 1.05; }
+function layoutPlay() {
+  if (!G.P) return;
+  const land = isLand();
+  if (land) {
+    const left = Math.max(150 * U, 140), right = 92 * U;
+    const x = left, y = 12, w = W - left - right, h = H - 24;
+    view.layout(x, y, w, h, 86 * U);
+    L = { land, tbX: W - right + (right - 64 * U) / 2, tbY: 128, hudX: 10, hudY: 70 };
+  } else {
+    const top = 124, bot = 104 * U;
+    view.layout(12, top, W - 24, H - top - bot, 86 * U);
+    L = { land, tbY: H - bot + 14 * U };
+  }
+}
+function resize() {
+  const r = cv.getBoundingClientRect();
+  W = Math.max(1, r.width || innerWidth); H = Math.max(1, r.height || innerHeight);
+  dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  U = clamp(Math.min(W / 400, H / 720), 0.72, 1.35);
+  buildSea();
+  spriteCache.clear();
+  layoutPlay();
+  view.dirty = true; titleView.dirty = true;
+}
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 120));
+if (window.visualViewport) window.visualViewport.addEventListener('resize', resize);
+
+/* =====================================================================
+ * 遊戲動作
+ * ===================================================================== */
+function setEdge(e, to, opt) {
+  opt = opt || {};
+  const P = G.P, from = G.cnt[e];
+  if (from === to) return;
+  const before = Int8Array.from(view.state);
+  G.cnt[e] = to;
+  view.recount(); view.dirty = true;
+  if (!opt.silentAnim) view.animate(e, from, to, opt.fromA);
+  if (!opt.noUndo) G.undo.push({ e, from, to });
+  G.moves++;
+  const E = P.edges[e], mx = (view.cx(E.a) + view.cx(E.b)) / 2, my = (view.cy(E.a) + view.cy(E.b)) / 2;
+  if (to < from) {
+    sfx('plop', { pitch: vary(0.06), pan: panX(mx) });
+    for (let k = 0; k < 4; k++) {
+      const t = (k + 0.5) / 4, x = lerp(view.cx(E.a), view.cx(E.b), t), y = lerp(view.cy(E.a), view.cy(E.b), t);
+      FX.burst(x, y + view.S * 0.15, { n: 4, colors: ['#ffffff', '#bff4ff', '#7fd9ef'], shape: 'drop', speed: 90, up: 80, g: 420, size: view.S * 0.07, life: 0.6 });
+    }
+  }
+  // 島嶼狀態改變
+  let delay = 0;
+  for (const i of [E.a, E.b]) {
+    const st = view.state[i];
+    if (st === before[i]) continue;
+    const x = view.cx(i), y = view.cy(i);
+    if (st === 1) {
+      view.pop[i] = 0.6;
+      const p = SCALE[clamp(P.isl[i].n - 1, 0, 7)] / 392;
+      setTimeout(() => sfx('isleBell', { pitch: p, pan: panX(x) }), (opt.quietBell ? 0 : 200) + delay);
+      delay += 110;
+      FX.ring(x, y, '#fff5a8', view.S * 0.5, 0.6);
+      FX.burst(x, y - view.S * 0.2, { n: 6, colors: ['#fff6a0', '#ffffff', '#ffd23d'], speed: 110, g: 60, size: view.S * 0.1, life: 0.7 });
+    } else if (st === 2) {
+      sfx('buzz', { pitch: vary(0.03), pan: panX(x) });
+      shake(3, 0.2);
+      KG.vibrate(25);
+    }
+  }
+  if (G.tutorial && to > 0) { G.tutorial = false; Save.set('tutDone', true); }
+  updateMusicLayers();
+  saveCur();
+  checkSolved();
+}
+function cycleEdge(e, fromIsland) {
+  const P = G.P, cur = G.cnt[e];
+  let to = cur + 1; if (to > P.cap[e]) to = 0;
+  if (to > 0 && cur === 0) {
+    const blk = P.cross[e].find(f => G.cnt[f] > 0);
+    if (blk != null) {
+      G.blockFx = { e: blk, t: 0.6, e2: e };
+      sfx('buzz', { pitch: 1.1 });
+      setMsg('橋不能交叉喔！', '#ff6b6b', 1.6);
+      return false;
+    }
+  }
+  const E = P.edges[e];
+  setEdge(e, to, { fromA: fromIsland == null ? true : fromIsland === E.a });
+  return true;
+}
+function doUndo() {
+  if (G.solved || !G.undo.length) { sfx('error'); return; }
+  const u = G.undo.pop();
+  setEdge(u.e, u.from, { noUndo: true });
+  sfx('back', { vol: 0.7 });
+}
+function doRestart() {
+  if (G.solved) return;
+  if (time - G.restartArm > 2.5) { G.restartArm = time; setMsg('再按一次「重來」就會拆掉全部的橋', '#f8b921', 2.4); sfx('ui'); return; }
+  G.restartArm = -10;
+  let any = false;
+  for (let e = 0; e < G.cnt.length; e++) if (G.cnt[e]) { const f = G.cnt[e]; G.cnt[e] = 0; view.animate(e, f, 0); any = true; }
+  view.recount(); G.undo.length = 0; G.sel = -1;
+  if (any) { sfx('plop', { pitch: 0.8 }); shake(4, 0.3); }
+  setMsg('重新開始！', '#3c9ff0', 1.2);
+  updateMusicLayers(); saveCur();
+}
+function doHint() {
+  if (G.solved) return;
+  const h = Lib.hint(G.P, G.cnt, G.sol);
+  if (!h) return;
+  G.hints++;
+  const P = G.P, E = P.edges[h.e];
+  let text;
+  if (h.type === 'wrong') text = '這座橋搭錯了喔！先幫你拆掉。';
+  else if (h.type === 'island') {
+    text = h.maxOther === 0 ? '這個「' + h.n + '」號島只剩這個方向能搭橋，所以這裡要 ' + h.want + ' 座橋！'
+      : '這個「' + h.n + '」號島要 ' + h.n + ' 座橋，其他方向最多只能搭 ' + h.maxOther + ' 座，所以這裡至少要 ' + h.want + ' 座。';
+  } else if (h.type === 'connect') text = '如果這裡不搭橋，島嶼就會分成兩群連不起來，所以這裡一定要有橋！';
+  else text = '仔細想想：如果這裡不搭橋，後面就會走不通喔！';
+  G.hintFx = { e: h.e, island: h.island, t: 3.2 };
+  sfx('hintSpark');
+  setMsg(text, '#9b6ff2', 5.5);
+  const want = h.type === 'wrong' ? h.want : h.want;
+  const fromA = h.island == null || h.island < 0 ? true : h.island === E.a;
+  setTimeout(() => { if (scene === 'play' && !G.solved && G.cnt[h.e] !== want) setEdge(h.e, want, { fromA }); }, 450);
+}
+function setMsg(text, color, dur) {
+  const maxW = Math.min(W - 40, 520 * U) - 36 * U;
+  G.msg = { text, color, t: dur || 3, max: dur || 3, lines: wrapText(text, 17 * U, maxW) };
+}
+function updateMusicLayers() {
+  if (!KG.music || !G.P) return;
+  const N = G.P.isl.length;
+  let ok = 0; for (let i = 0; i < N; i++) if (view.state[i] === 1) ok++;
+  const r = ok / N;
+  KG.music.setLayer('top', r >= 0.4);
+  KG.music.setLayer('perc', r >= 0.7);
+  KG.music.setTempo(r >= 0.85 ? 1.04 : 1);
+}
+function checkSolved() {
+  const P = G.P;
+  for (let i = 0; i < P.isl.length; i++) if (view.state[i] !== 1) return;
+  if (!Lib.connectedLo(P, G.cnt)) {
+    setMsg('數字都對了，但是島嶼還沒全部連在一起喔！', '#ff8a3d', 3);
+    sfx('buzz', { pitch: 1.2, vol: 0.7 });
+    return;
+  }
+  onSolved();
+}
+function starsFor(h) { return h === 0 ? 3 : h <= 2 ? 2 : 1; }
+function onSolved() {
+  G.solved = true; G.solvedT = 0; G.sel = -1; G.drag = null; G.msg = null; G.hintFx = null;
+  Save.set('cur', null);
+  const secs = Math.floor(G.timer), stars = starsFor(G.hints);
+  const o = { stars, secs, hints: G.hints, mode: G.mode, best: null, title: '全部連起來了！', lines: [] };
+  if (G.mode === 'level') {
+    Save.setStars(G.tier, G.level, stars);
+    o.best = KG.best(SLUG + ':t' + G.tier + '-' + G.level, secs, true);
+    o.title = '第 ' + (G.level + 1) + ' 關完成！';
+    if (G.level < 29) o.unlock = '解鎖第 ' + (G.level + 2) + ' 關！';
+  } else if (G.mode === 'daily') {
+    const m = Save.get('daily', {}), k = todayKey();
+    m[k] = m[k] ? Math.min(m[k], secs) : secs;
+    const keys = Object.keys(m).sort(); while (keys.length > 60) delete m[keys.shift()];
+    Save.set('daily', m);
+    o.best = m[k];
+    const st = Save.get('streak', { last: '', n: 0 });
+    if (st.last !== k) {
+      const y = new Date(); y.setDate(y.getDate() - 1);
+      const yk = y.getFullYear() + '-' + String(y.getMonth() + 1).padStart(2, '0') + '-' + String(y.getDate()).padStart(2, '0');
+      st.n = st.last === yk ? st.n + 1 : 1; st.last = k; Save.set('streak', st);
+    }
+    o.title = '今日一題完成！'; o.unlock = '連續 ' + st.n + ' 天完成';
+  } else {
+    const c = Save.get('endless' + G.tier, 0) + 1; Save.set('endless' + G.tier, c);
+    const all = Save.get('endlessAll', 0) + 1; Save.set('endlessAll', all);
+    KG.best(SLUG + ':endless', all);
+    o.best = KG.best(SLUG + ':e' + G.tier, secs, true);
+    o.title = '第 ' + c + ' 題完成！'; o.unlock = '無盡模式共解了 ' + all + ' 題';
+  }
+  o.lines = ['時間 ' + fmtTime(secs) + (o.best != null ? '（最佳 ' + fmtTime(o.best) + '）' : ''), '用了 ' + G.hints + ' 次提示'];
+  resultO = o;
+  // 慶祝：島一個接一個亮、村民出來散步、海鷗叫
+  if (KG.music) KG.music.stop(0.4);
+  setTimeout(jingleWin, 120);
+  setTimeout(() => sfx('gull', { pitch: 1, vol: 0.8, pan: -0.4 }), 1300);
+  setTimeout(() => sfx('gull', { pitch: 1.12, vol: 0.7, pan: 0.5 }), 2100);
+  const P = G.P;
+  const cxm = view.bx + view.S * P.w / 2, cym = view.by + view.S * P.h / 2;
+  const order = P.isl.map((s, i) => i).sort((a, b) => Math.hypot(view.cx(a) - cxm, view.cy(a) - cym) - Math.hypot(view.cx(b) - cxm, view.cy(b) - cym));
+  order.forEach((i, k) => setTimeout(() => {
+    if (scene !== 'play') return;
+    view.pop[i] = 0.6;
+    FX.burst(view.cx(i), view.cy(i) - view.S * 0.2, { n: 5, colors: ['#fff6a0', '#ffffff', '#ffd23d', '#ff8fb1'], speed: 140, g: 120, size: view.S * 0.11, life: 0.8 });
+  }, 250 + k * 45));
+  villagers.spawn(view, G.cnt, clamp(Math.round(P.isl.length / 2), 3, 12));
+  setTimeout(() => { if (scene === 'play') KG.confetti(W / 2, H * 0.4, 90); }, 700);
+  shake(5, 0.35);
+}
+function showResult() {
+  overlay = 'result'; panel.s = 0; resultO.t = 0; resultO.shown = 0;
+  tween(panel, { s: 1 }, 0.5, 'outBack');
+  focusId = 'rnext';
+  musicMenu();
+}
+function nextPuzzle() {
+  if (G.mode === 'level') {
+    if (G.level < 29) startPuzzle('level', G.tier, G.level + 1);
+    else if (G.tier < 4) { curTier = G.tier + 1; Save.set('tier', curTier); startPuzzle('level', curTier, 0); }
+    else goLevels();
+  } else if (G.mode === 'endless') startPuzzle('endless', G.tier, -1, (Math.random() * 1e9) | 0);
+  else goTitle();
+}
+function goTitle() { scene = 'title'; overlay = null; sceneT = 0; focusId = 'tPlay'; musicMenu(); if (KG.music) KG.music.resume(); }
+function goLevels() { scene = 'levels'; overlay = null; sceneT = 0; focusId = 'lv0'; musicMenu(); if (KG.music) KG.music.resume(); }
+function goEndless() { scene = 'endless'; overlay = null; sceneT = 0; focusId = null; musicMenu(); }
+function pauseGame() {
+  if (scene !== 'play' || G.solved || overlay) return;
+  overlay = 'pause'; panel.s = 0; tween(panel, { s: 1 }, 0.35, 'outBack'); focusId = 'pResume';
+  if (KG.music) KG.music.pause();
+  sfx('ui');
+}
+function resumeGame() { overlay = null; if (KG.music) KG.music.resume(); sfx('select'); }
+document.addEventListener('visibilitychange', () => { if (document.hidden && scene === 'play' && !G.solved && !overlay) pauseGame(); });
+function toggleMusic() { if (!KG.music) return; KG.music.setEnabled(!KG.music.isEnabled()); sfx('ui'); }
+function toggleSfx() { sfxOn = !sfxOn; Save.set('sfx', sfxOn); if (sfxOn) sfx('ui'); }
+
+/* =====================================================================
+ * 輸入
+ * ===================================================================== */
+function ptr(e) { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * W / r.width, (e.clientY - r.top) * H / r.height]; }
+cv.addEventListener('pointerdown', (ev) => {
+  ev.preventDefault();
+  try { cv.focus({ preventScroll: true }); } catch (e) { /* 忽略 */ }
+  kbdNav = false;
+  const [x, y] = ptr(ev);
+  const b = hitBtn(x, y);
+  if (b) { pressed = { id: b.id, pid: ev.pointerId }; sfx('click', { pitch: vary(0.03) }); return; }
+  if (scene === 'play' && !overlay && !G.solved) boardDown(x, y, ev.pointerId);
+  else if (scene === 'play' && G.solved && !overlay && G.solvedT > 0.8) { G.solvedT = 99; }
+});
+cv.addEventListener('pointermove', (ev) => { if (G.drag && G.drag.pid === ev.pointerId) { const [x, y] = ptr(ev); boardMove(x, y); } });
+function endPtr(ev, cancel) {
+  const [x, y] = ptr(ev);
+  if (pressed && pressed.pid === ev.pointerId) {
+    const b = hitBtn(x, y), id = pressed.id; pressed = null;
+    if (!cancel && b && b.id === id && b.onClick) b.onClick();
+    return;
+  }
+  if (G.drag && G.drag.pid === ev.pointerId) boardUp(x, y, cancel);
+}
+cv.addEventListener('pointerup', (e) => endPtr(e, false));
+cv.addEventListener('pointercancel', (e) => endPtr(e, true));
+cv.addEventListener('contextmenu', (e) => e.preventDefault());
+
+function boardDown(x, y, pid) {
+  const S = view.S;
+  let i = view.islandAt(x, y, 0.45);
+  let e = -1;
+  if (i < 0) e = view.edgeAt(x, y, 0.32);
+  if (i < 0 && e < 0) i = view.islandAt(x, y, 0.8);
+  if (i >= 0) { G.drag = { i, x0: x, y0: y, x, y, pid, edge: -1, moved: false }; return; }
+  if (e >= 0) { G.drag = { bridge: e, x0: x, y0: y, pid, moved: false }; return; }
+  G.drag = { none: true, x0: x, y0: y, pid };
+  if (G.sel >= 0) { G.sel = -1; }
+  void S;
+}
+/** 從島 i 往 (dx,dy) 方向找最合適的鄰居（容錯） */
+function edgeToward(i, dx, dy) {
+  const nb = G.P.nb[i], d = Math.hypot(dx, dy) || 1;
+  const DX = [0, 1, 0, -1], DY = [-1, 0, 1, 0];
+  let best = -1, bc = Math.cos(Math.PI / 3);
+  for (let k = 0; k < 4; k++) {
+    if (nb[k] < 0) continue;
+    const c = (dx * DX[k] + dy * DY[k]) / d;
+    if (c > bc) { bc = c; best = nb[k]; }
+  }
+  return best;
+}
+function boardMove(x, y) {
+  const D = G.drag; if (!D || D.none) return;
+  D.x = x; D.y = y;
+  const dx = x - D.x0, dy = y - D.y0, dist = Math.hypot(dx, dy);
+  if (dist > view.S * 0.28) D.moved = true;
+  if (D.bridge != null) return;
+  if (!D.moved) { D.edge = -1; return; }
+  // 指到另一個島：直接吸附
+  const j = view.islandAt(x, y, 0.6);
+  let e = -1;
+  if (j >= 0 && j !== D.i) e = G.P.islEdges[D.i].find(f => G.P.edges[f].a === j || G.P.edges[f].b === j);
+  if (e == null || e < 0) e = edgeToward(D.i, dx, dy);
+  if (e !== D.edge && e >= 0) sfx('pick', { pitch: 1 + G.cnt[e] * 0.12, vol: 0.6 });
+  D.edge = e == null ? -1 : e;
+}
+function boardUp(x, y, cancel) {
+  const D = G.drag; G.drag = null;
+  if (!D || cancel || D.none) return;
+  if (D.bridge != null) {
+    if (!D.moved) { const e = D.bridge, E = G.P.edges[e]; cycleEdge(e, E.a); G.sel = -1; }
+    return;
+  }
+  if (D.moved) {
+    if (D.edge >= 0) { cycleEdge(D.edge, D.i); G.sel = -1; }
+    return;
+  }
+  // 點一下：先選島，再點鄰居島就搭橋
+  const i = D.i;
+  if (G.sel >= 0 && G.sel !== i) {
+    const e = G.P.islEdges[G.sel].find(f => G.P.edges[f].a === i || G.P.edges[f].b === i);
+    if (e != null) { cycleEdge(e, G.sel); G.sel = -1; return; }
+  }
+  if (G.sel === i) { G.sel = -1; sfx('back', { vol: 0.5 }); return; }
+  G.sel = i; G.cursor = i;
+  sfx('pick', { pitch: SCALE[clamp(G.P.isl[i].n - 1, 0, 7)] / 600, pan: panX(view.cx(i)) });
+}
+
+const KEYDIR = { ArrowUp: 0, KeyW: 0, ArrowRight: 1, KeyD: 1, ArrowDown: 2, KeyS: 2, ArrowLeft: 3, KeyA: 3 };
+let spaceArm = false;
+window.addEventListener('keydown', (e) => {
+  const code = e.code;
+  if (code === 'Escape' || code === 'KeyP') {
+    if (scene === 'play' && !G.solved) { if (overlay === 'pause') resumeGame(); else if (!overlay) pauseGame(); e.preventDefault(); return; }
+    if (overlay === 'help') { overlay = null; return; }
+    if (scene === 'levels' || scene === 'endless') { goTitle(); return; }
+  }
+  const inBoard = scene === 'play' && !overlay && !G.solved;
+  if (inBoard) {
+    const d = KEYDIR[code];
+    if (d != null) {
+      e.preventDefault(); kbdNav = true;
+      if (G.cursor < 0) { G.cursor = G.sel >= 0 ? G.sel : 0; return; }
+      if (e.shiftKey || spaceArm) {
+        spaceArm = false;
+        const ed = G.P.nb[G.cursor][d];
+        if (ed >= 0) cycleEdge(ed, G.cursor); else sfx('error');
+        return;
+      }
+      // 移到那個方向最近的島
+      const P = G.P, s = P.isl[G.cursor], DR = [-1, 0, 1, 0], DC = [0, 1, 0, -1];
+      let best = -1, bd = 1e9;
+      for (let i = 0; i < P.isl.length; i++) {
+        if (i === G.cursor) continue;
+        const dr = P.isl[i].r - s.r, dc = P.isl[i].c - s.c, along = dr * DR[d] + dc * DC[d];
+        if (along <= 0) continue;
+        const side = Math.abs(dr * DC[d]) + Math.abs(dc * DR[d]), sc = along + side * 2;
+        if (sc < bd) { bd = sc; best = i; }
+      }
+      if (best >= 0) { G.cursor = best; G.sel = best; sfx('tick'); }
+      return;
+    }
+    if (code === 'Space' || code === 'Enter') { e.preventDefault(); if (G.cursor < 0) G.cursor = 0; spaceArm = !spaceArm; G.sel = G.cursor; sfx(spaceArm ? 'select' : 'back', { vol: 0.6 }); return; }
+    if (code === 'KeyZ' || code === 'Backspace') { e.preventDefault(); doUndo(); return; }
+    if (code === 'KeyR') { doRestart(); return; }
+    if (code === 'KeyH') { doHint(); return; }
+    return;
+  }
+  if (scene === 'play' && G.solved && !overlay && (code === 'Enter' || code === 'Space')) { G.solvedT = 99; return; }
+  // 選單：方向鍵移動焦點、Enter 確定
+  const d = KEYDIR[code];
+  if (d != null && code.startsWith('Arrow')) { e.preventDefault(); moveFocus([0, 1, 0, -1][d], [-1, 0, 1, 0][d]); return; }
+  if (code === 'Enter' || code === 'Space') {
+    e.preventDefault();
+    if (!activateFocus()) { kbdNav = true; const b = btnPrev.find(b => !b.disabled); if (b) focusId = b.id; }
+  }
+});
+
+/* =====================================================================
+ * 畫面：標題
+ * ===================================================================== */
+function logo(s, cx, cy, size) {
+  const colors = ['#ffd23d', '#7ee07a', '#5ec8ff', '#ff8fb1'];
+  ctx.font = '900 ' + size + 'px ' + FONT; ctx.textBaseline = 'middle'; ctx.textAlign = 'center'; ctx.lineJoin = 'round';
+  const chars = [...s], ws = chars.map(c => ctx.measureText(c).width * 1.04), tot = ws.reduce((a, b) => a + b, 0);
+  let x = cx - tot / 2;
+  chars.forEach((c, i) => {
+    const w = ws[i], bob = Math.sin(time * 2.4 + i * 0.8) * size * 0.05, rot = Math.sin(time * 1.8 + i) * 0.05;
+    ctx.save(); ctx.translate(x + w / 2, cy + bob); ctx.rotate(rot);
+    ctx.strokeStyle = 'rgba(10,50,70,0.35)'; ctx.lineWidth = size * 0.34; ctx.strokeText(c, 0, size * 0.09);
+    ctx.strokeStyle = '#7a4a22'; ctx.lineWidth = size * 0.32; ctx.strokeText(c, 0, 0);
+    ctx.strokeStyle = '#fff6dc'; ctx.lineWidth = size * 0.15; ctx.strokeText(c, 0, 0);
+    const g = ctx.createLinearGradient(0, -size / 2, 0, size / 2), col = colors[i % 4];
+    g.addColorStop(0, shade(col, 60)); g.addColorStop(0.55, col); g.addColorStop(1, shade(col, -40));
+    ctx.fillStyle = g; ctx.fillText(c, 0, 0);
+    ctx.restore(); x += w;
+  });
+}
+function drawTitle(dt) {
+  drawSea(0);
+  const land = isLand();
+  // 裝飾小島
+  const P = titleView.P;
+  if (land) titleView.layout(W * 0.04, H * 0.26, W * 0.48, H * 0.7, 70 * U);
+  else titleView.layout(W * 0.06, H * 0.2, W * 0.88, H * 0.3, 70 * U);
+  titleVillagers.update(dt, titleView, titleView.cnt);
+  titleView.draw();
+  titleVillagers.draw(titleView);
+  Gulls.draw();
+  void P;
+  const ls = Math.min(land ? 54 * U : 60 * U, W / 6.2);
+  logo('小島搭橋', W / 2, land ? 44 : Math.max(90, H * 0.12), ls);
+  if (!land) txt('把小島用木橋連起來！', W / 2, Math.max(90, H * 0.12) + ls * 0.85, 17 * U, '#ffffff', { stroke: '#1d6a80', sw: 5 * U });
+  // 按鈕
+  const done = dailyDone(), isDone = done != null;
+  const items = [
+    { id: 'tPlay', label: '開始冒險', icon: 'play', color: 'green', pulse: true, on: () => goLevels() },
+    { id: 'tDaily', label: '每日一題', icon: isDone ? 'check' : 'cal', color: 'yellow', sub: isDone ? '今天完成了！' + fmtTime(done) : null, on: () => startPuzzle('daily', 2, -1, todaySeed()) },
+    { id: 'tEndless', label: '無盡模式', icon: 'inf', color: 'blue', on: () => goEndless() }
+  ];
+  let bw, bh, x0, y0, gap;
+  if (land) {
+    bw = Math.min(280 * U, W * 0.38); bh = Math.min(58 * U, (H - 120) / 4.4); gap = bh * 0.28;
+    x0 = W * 0.56 + (W * 0.42 - bw) / 2; y0 = Math.max(84, H * 0.24);
+  } else {
+    bw = Math.min(300 * U, W - 60); bh = 60 * U; gap = 14 * U;
+    x0 = (W - bw) / 2; y0 = Math.max(H * 0.54, H - (bh + gap) * 3 - 118 * U);
+  }
+  items.forEach((b, k) => {
+    const ap = Ease.outBack(clamp(sceneT * 3 - k * 0.25, 0, 1));
+    if (ap <= 0) return;
+    ctx.save(); ctx.translate(W / 2, 0); ctx.globalAlpha = clamp(ap, 0, 1); ctx.translate(-W / 2, 0);
+    button(b.id, x0, y0 + k * (bh + gap), bw, bh, { label: b.label, icon: b.icon, color: b.color, pulse: b.pulse, onClick: b.on, size: bh * 0.4, sub: b.sub });
+    ctx.restore();
+  });
+  // 小按鈕：玩法、音樂、音效
+  const sy = y0 + 3 * (bh + gap) + 6 * U, sw = Math.min(96 * U, (bw - 16) / 3), sh = 44 * U;
+  const sx = x0 + (bw - (sw * 3 + 16)) / 2;
+  const mOn = KG.music ? KG.music.isEnabled() : false;
+  button('tHelp', sx, sy, sw, sh, { label: '玩法', icon: 'help', color: 'white', size: sh * 0.38, onClick: () => { overlay = 'help'; panel.s = 0; tween(panel, { s: 1 }, 0.35, 'outBack'); focusId = 'hClose'; } });
+  button('tMusic', sx + sw + 8, sy, sw, sh, { label: mOn ? '音樂開' : '音樂關', icon: 'music', color: mOn ? 'teal' : 'white', size: sh * 0.34, onClick: toggleMusic });
+  button('tSfx', sx + (sw + 8) * 2, sy, sw, sh, { label: sfxOn ? '音效開' : '音效關', icon: 'sound', color: sfxOn ? 'teal' : 'white', size: sh * 0.34, onClick: toggleSfx });
+}
+
+/* =====================================================================
+ * 畫面：選關
+ * ===================================================================== */
+function backBtn(onClick) { button('back', 66, 10, 48, 48, { icon: 'back', color: 'white', onClick, size: 20 }); }
+function drawLevels() {
+  drawSea(0.12);
+  Gulls.draw();
+  const land = isLand();
+  txt('選擇關卡', W / 2, 34, Math.min(30 * U, W * 0.07), '#fff', { stroke: '#1d6a80', sw: 8 * U });
+  backBtn(() => { sfx('back'); goTitle(); });
+  // 難度分頁
+  const tw = Math.min(118 * U, (W - 24 - 4 * 6) / 5), th = 52 * U, ty = 70;
+  const tx0 = (W - (tw * 5 + 24)) / 2;
+  for (let t = 0; t < 5; t++) {
+    const sel = t === curTier;
+    button('tab' + t, tx0 + t * (tw + 6), ty + (sel ? 0 : 4), tw, th - (sel ? 0 : 4), {
+      label: Lib.TIERS[t].name, color: sel ? TIER_COL[t] : 'white', radius: 16 * U, size: th * 0.34,
+      sub: (t === 4 ? '13×13+' : Lib.TIERS[t].size + '×' + Lib.TIERS[t].size), onClick: () => { if (curTier !== t) { curTier = t; Save.set('tier', t); sceneT = 0; sfx('page'); } }
+    });
+  }
+  const stars = Save.stars(curTier), total = Save.tierTotal(curTier);
+  const iy = ty + th + 20 * U;
+  glossyStar(W / 2 - 44 * U, iy, 11 * U, true);
+  txt(total + ' / 90', W / 2 + 10 * U, iy + 1, 17 * U, '#fff', { stroke: '#1d6a80', sw: 5 * U });
+  // 關卡格
+  const cols = land ? 10 : 5, rows = 30 / cols;
+  const top = iy + 18 * U, bot = H - 14;
+  const gap = Math.max(6, 9 * U);
+  let cw = Math.min(76 * U, (W - 24 - gap * (cols - 1)) / cols);
+  let ch = Math.min(cw * 1.02, (bot - top - gap * (rows - 1)) / rows);
+  cw = Math.min(cw, ch * 1.25);
+  const gx = (W - (cols * cw + (cols - 1) * gap)) / 2, gy = top + Math.max(0, (bot - top - (rows * ch + (rows - 1) * gap)) / 2);
+  for (let i = 0; i < 30; i++) {
+    const c = i % cols, r = Math.floor(i / cols), x = gx + c * (cw + gap), y = gy + r * (ch + gap);
+    const locked = i > 0 && !(stars[i - 1] > 0), st = stars[i] || 0;
+    const ap = Ease.outBack(clamp(sceneT * 4 - i * 0.04, 0, 1));
+    if (ap <= 0) continue;
+    ctx.save(); ctx.translate(x + cw / 2, y + ch / 2); ctx.scale(ap, ap); ctx.translate(-(x + cw / 2), -(y + ch / 2));
+    const next = !locked && !st;
+    button('lv' + i, x, y, cw, ch, { label: '', color: locked ? 'white' : st ? TIER_COL[curTier] : 'yellow', radius: 14 * U, disabled: locked, pulse: next && (i === 0 || stars[i - 1] > 0), onClick: () => startPuzzle('level', curTier, i) });
+    if (locked) drawIcon('lock', x + cw / 2, y + ch * 0.45, ch * 0.4, '#9ab5bd');
+    else {
+      txt(String(i + 1), x + cw / 2, y + ch * 0.4, ch * 0.36, '#fff', { stroke: 'rgba(30,60,80,0.55)', sw: ch * 0.08 });
+      for (let k = 0; k < 3; k++) glossyStar(x + cw / 2 + (k - 1) * ch * 0.25, y + ch * 0.76, ch * 0.1, k < st);
+    }
+    ctx.restore();
+  }
+}
+function drawEndless() {
+  drawSea(0.12);
+  Gulls.draw();
+  txt('無盡模式', W / 2, 34, Math.min(30 * U, W * 0.07), '#fff', { stroke: '#1d6a80', sw: 8 * U });
+  backBtn(() => { sfx('back'); goTitle(); });
+  const all = Save.get('endlessAll', 0);
+  txt('隨機出題，想玩多少題都可以！已解 ' + all + ' 題', W / 2, 76, fitSize('隨機出題，想玩多少題都可以！已解 ' + all + ' 題', 16 * U, W - 40, '800'), '#fff', { stroke: '#1d6a80', sw: 5 * U, weight: '800' });
+  const land = isLand();
+  const cols = land ? 3 : 1, rows = Math.ceil(5 / cols);
+  const top = 100, bot = H - 16, gap = 12 * U;
+  const bw = Math.min(land ? 230 * U : 320 * U, (W - 40 - gap * (cols - 1)) / cols);
+  const bh = Math.min(66 * U, (bot - top - gap * (rows - 1)) / rows);
+  const gx = (W - (cols * bw + (cols - 1) * gap)) / 2, gy = top + Math.max(0, (bot - top - rows * bh - (rows - 1) * gap) / 2);
+  for (let t = 0; t < 5; t++) {
+    const c = t % cols, r = Math.floor(t / cols);
+    const rowN = Math.min(cols, 5 - r * cols), ox = (cols - rowN) * (bw + gap) / 2;
+    const x = gx + ox + c * (bw + gap), y = gy + r * (bh + gap);
+    const ap = Ease.outBack(clamp(sceneT * 4 - t * 0.15, 0, 1));
+    if (ap <= 0) continue;
+    ctx.save(); ctx.globalAlpha = clamp(ap, 0, 1);
+    const sz = Lib.TIERS[t].size;
+    button('en' + t, x, y, bw, bh, { label: Lib.TIERS[t].name + '　' + sz + '×' + sz, color: TIER_COL[t], size: bh * 0.34, onClick: () => startPuzzle('endless', t, -1, (Math.random() * 1e9) | 0) });
+    txt('已解 ' + Save.get('endless' + t, 0), x + bw - bh * 0.5, y + bh * 0.82, 11 * U, '#fff', { align: 'right', weight: '800', shadow: false });
+    ctx.restore();
+  }
+}
+
+/* =====================================================================
+ * 畫面：遊戲
+ * ===================================================================== */
+function hudPanel(x, y, w, h) {
+  rr(x, y + 3, w, h, h / 2); ctx.fillStyle = 'rgba(10,50,70,0.25)'; ctx.fill();
+  rr(x, y, w, h, h / 2); ctx.fillStyle = 'rgba(255,253,245,0.94)'; ctx.fill();
+  ctx.strokeStyle = '#c98d55'; ctx.lineWidth = 3; ctx.stroke();
+}
+function drawPlay(dt) {
+  const P = G.P;
+  drawSea(0);
+  // 震動
+  let sx = 0, sy = 0;
+  if (shakeT > 0) { const k = shakeAmt * Math.min(1, shakeT * 4); sx = (Math.random() * 2 - 1) * k; sy = (Math.random() * 2 - 1) * k; }
+  ctx.save(); ctx.translate(sx, sy);
+  view.draw();
+  const S = view.S, br = view.badgeR();
+  // 擋住的橋（閃紅）
+  if (G.blockFx) {
+    const E = P.edges[G.blockFx.e], a = G.blockFx.t / 0.6;
+    ctx.globalAlpha = a * (0.5 + 0.5 * Math.sin(time * 30));
+    ctx.strokeStyle = '#ff4d4d'; ctx.lineWidth = S * 0.36; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(view.cx(E.a), view.cy(E.a)); ctx.lineTo(view.cx(E.b), view.cy(E.b)); ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+  // 提示光
+  if (G.hintFx) {
+    const E = P.edges[G.hintFx.e], a = Math.min(1, G.hintFx.t);
+    ctx.globalAlpha = a * (0.45 + 0.25 * Math.sin(time * 8));
+    ctx.strokeStyle = '#fff27a'; ctx.lineWidth = S * 0.5; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(view.cx(E.a), view.cy(E.a)); ctx.lineTo(view.cx(E.b), view.cy(E.b)); ctx.stroke();
+    if (G.hintFx.island >= 0) { ctx.strokeStyle = '#b48cff'; ctx.lineWidth = 4; ctx.beginPath(); circ(view.cx(G.hintFx.island), view.cy(G.hintFx.island) + S * 0.06, br + 6 + Math.sin(time * 8) * 2); ctx.stroke(); }
+    ctx.globalAlpha = 1;
+  }
+  // 超過數字：紅圈閃
+  for (let i = 0; i < P.isl.length; i++) if (view.state[i] === 2) {
+    ctx.strokeStyle = 'rgba(255,60,60,' + (0.5 + 0.4 * Math.sin(time * 9)) + ')'; ctx.lineWidth = 3;
+    ctx.beginPath(); circ(view.cx(i), view.cy(i) + S * 0.06, br + 4 + Math.sin(time * 9) * 1.5); ctx.stroke();
+  }
+  // 選取的島＋鄰居
+  const focusI = G.drag && G.drag.i != null ? G.drag.i : G.sel;
+  if (focusI >= 0 && !G.solved) {
+    const x = view.cx(focusI), y = view.cy(focusI) + S * 0.06;
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 3.5; ctx.setLineDash([6, 5]); ctx.lineDashOffset = -time * 20;
+    ctx.beginPath(); circ(x, y, br + 6 + Math.sin(time * 6) * 1.5); ctx.stroke(); ctx.setLineDash([]);
+    for (const e of P.islEdges[focusI]) {
+      const E = P.edges[e], j = E.a === focusI ? E.b : E.a;
+      const blocked = G.cnt[e] === 0 && P.cross[e].some(f => G.cnt[f] > 0);
+      ctx.fillStyle = blocked ? 'rgba(255,90,90,0.5)' : 'rgba(255,255,255,0.55)';
+      ctx.beginPath(); circ(view.cx(j), view.cy(j) + S * 0.06, br + 4); ctx.fill();
+      view.badge(ctx, view.cx(j), view.cy(j) + S * 0.06, br, P.isl[j].n, view.state[j]);
+    }
+  }
+  if (spaceArm && G.cursor >= 0) txt('選方向', view.cx(G.cursor), view.cy(G.cursor) - S * 0.7, 13 * U, '#fff', { stroke: '#22659e', sw: 4 });
+  if (kbdNav && G.cursor >= 0 && G.cursor !== G.sel) { ctx.strokeStyle = '#ffd23d'; ctx.lineWidth = 3; ctx.beginPath(); circ(view.cx(G.cursor), view.cy(G.cursor) + S * 0.06, br + 7); ctx.stroke(); }
+  // 拖曳預覽
+  const D = G.drag;
+  if (D && D.i != null && D.moved) {
+    if (D.edge >= 0) {
+      const E = P.edges[D.edge], cur = G.cnt[D.edge];
+      let nx = cur + 1; if (nx > P.cap[D.edge]) nx = 0;
+      const blocked = cur === 0 && P.cross[D.edge].some(f => G.cnt[f] > 0);
+      const j = E.a === D.i ? E.b : E.a;
+      ctx.globalAlpha = 0.6 + 0.2 * Math.sin(time * 10);
+      ctx.strokeStyle = blocked ? '#ff5a5a' : nx === 0 ? '#ffffff' : '#fff27a'; ctx.lineWidth = S * 0.12; ctx.lineCap = 'round';
+      ctx.setLineDash([S * 0.14, S * 0.12]);
+      ctx.beginPath(); ctx.moveTo(view.cx(D.i), view.cy(D.i)); ctx.lineTo(view.cx(j), view.cy(j)); ctx.stroke(); ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+      const mx = (view.cx(D.i) + view.cx(j)) / 2, my = (view.cy(D.i) + view.cy(j)) / 2;
+      const lab = blocked ? '不行' : nx === 0 ? '拆掉' : nx === 2 ? '兩座' : '搭橋';
+      txt(lab, mx, my - S * 0.32, Math.max(12, S * 0.3), '#fff', { stroke: blocked ? '#b8282e' : '#7a4a22', sw: Math.max(3, S * 0.08) });
+      ctx.strokeStyle = '#fff27a'; ctx.lineWidth = 3; ctx.beginPath(); circ(view.cx(j), view.cy(j) + S * 0.06, br + 6); ctx.stroke();
+    }
+    ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.beginPath(); circ(D.x, D.y, Math.max(8, S * 0.2)); ctx.fill();
+  }
+  // 教學手勢
+  if (G.tutorial && !D) drawTutorial();
+  if (G.solved) villagers.draw(view);
+  FX.draw();
+  ctx.restore();
+  Gulls.draw();
+  drawHud();
+  // 訊息泡泡
+  if (G.msg && !G.solved) {
+    const m = G.msg, a = clamp(Math.min(m.t * 3, (m.max - m.t) * 6), 0, 1), fs = 17 * U, lh = fs * 1.35;
+    const mw = Math.min(W - 40, 520 * U), mh = m.lines.length * lh + 22 * U;
+    const mx = L.land ? view.bx + view.S * P.w / 2 - mw / 2 : (W - mw) / 2;
+    const my = L.land ? H - mh - 12 : Math.min(view.by + view.S * P.h + 8, L.tbY - mh - 10 * U);
+    ctx.globalAlpha = a;
+    rr(mx, my + 3, mw, mh, 16 * U); ctx.fillStyle = 'rgba(10,50,70,0.25)'; ctx.fill();
+    rr(mx, my, mw, mh, 16 * U); ctx.fillStyle = 'rgba(255,253,245,0.97)'; ctx.fill(); ctx.strokeStyle = m.color; ctx.lineWidth = 3.5; ctx.stroke();
+    m.lines.forEach((l, k) => txt(l, mx + mw / 2, my + 11 * U + lh * (k + 0.5), fs, '#35505a', { weight: '800', shadow: false }));
+    ctx.globalAlpha = 1;
+  }
+  void dt;
+}
+function drawTutorial() {
+  const P = G.P;
+  let e = -1;
+  for (let k = 0; k < P.edges.length; k++) if (G.sol[k] > 0 && !G.cnt[k]) { e = k; break; }
+  if (e < 0) return;
+  const E = P.edges[e], x1 = view.cx(E.a), y1 = view.cy(E.a), x2 = view.cx(E.b), y2 = view.cy(E.b);
+  const t = (time % 2.2) / 2.2, k = Ease.inOutSine(clamp((t - 0.15) / 0.6, 0, 1));
+  const hx = lerp(x1, x2, k), hy = lerp(y1, y2, k);
+  ctx.globalAlpha = t > 0.85 ? (1 - t) / 0.15 : 1;
+  ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = view.S * 0.1; ctx.lineCap = 'round'; ctx.setLineDash([view.S * 0.12, view.S * 0.1]);
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(hx, hy); ctx.stroke(); ctx.setLineDash([]);
+  // 小手
+  const s = Math.max(16, view.S * 0.36);
+  ctx.save(); ctx.translate(hx + s * 0.3, hy + s * 0.5); ctx.rotate(-0.4);
+  ctx.fillStyle = '#ffe0c4'; ctx.strokeStyle = '#7a4a22'; ctx.lineWidth = 2.5;
+  rr(-s * 0.18, -s * 0.9, s * 0.36, s * 0.9, s * 0.18); ctx.fill(); ctx.stroke();
+  rr(-s * 0.45, -s * 0.2, s * 0.9, s * 0.75, s * 0.3); ctx.fill(); ctx.stroke();
+  ctx.restore();
+  ctx.globalAlpha = 1;
+  txt('從島拖到另一個島，就能搭橋！', W / 2, L.land ? H - 30 : view.by + view.S * P.h + 22 * U, Math.min(18 * U, W / 18), '#fff', { stroke: '#7a4a22', sw: 6 * U });
+}
+function drawHud() {
+  const land = L.land;
+  const tl = G.mode === 'level' ? Lib.TIERS[G.tier].name + '・第 ' + (G.level + 1) + ' 關' : G.mode === 'daily' ? '每日一題・' + (new Date().getMonth() + 1) + '/' + new Date().getDate() : '無盡・' + Lib.TIERS[G.tier].name;
+  const N = G.P.isl.length; let ok = 0; for (let i = 0; i < N; i++) if (view.state[i] === 1) ok++;
+  if (!land) {
+    const w = Math.min(W - 140, 240 * U), h = 56, x = (W - w) / 2, y = 8;
+    hudPanel(x, y, w, h);
+    txt(tl, W / 2, y + 18, fitSize(tl, 16 * U, w - 30), '#7a4a22', { shadow: false });
+    drawIcon('clock', W / 2 - w * 0.3, y + 39, 14, '#3c9ff0');
+    txt(fmtTime(G.timer), W / 2 - w * 0.3 + 12, y + 39, 15, '#35505a', { align: 'left', shadow: false });
+    txt('亮燈 ' + ok + '/' + N, W / 2 + w * 0.3, y + 39, 14, '#2f8a48', { align: 'right', shadow: false, weight: '800' });
+    // 進度條
+    rr(x + 14, y + h - 7, w - 28, 4, 2); ctx.fillStyle = 'rgba(0,0,0,0.08)'; ctx.fill();
+    if (ok) { rr(x + 14, y + h - 7, (w - 28) * ok / N, 4, 2); ctx.fillStyle = '#5fcf72'; ctx.fill(); }
+  } else {
+    const w = Math.min(view.bx - 22, 190 * U), x = 10, y = 70;
+    hudPanel(x, y, w, 92); ctx.save(); rr(x, y, w, 92, 22); ctx.restore();
+    txt(tl, x + w / 2, y + 20, fitSize(tl, 15 * U, w - 22), '#7a4a22', { shadow: false });
+    drawIcon('clock', x + 22, y + 46, 14, '#3c9ff0');
+    txt(fmtTime(G.timer), x + 34, y + 46, 15, '#35505a', { align: 'left', shadow: false });
+    txt('亮燈 ' + ok + '/' + N, x + w / 2, y + 70, 14, '#2f8a48', { shadow: false, weight: '800' });
+  }
+  // 暫停（在靜音鈕下方）
+  if (!G.solved) button('pause', W - 58, 68, 48, 48, { icon: 'pause', color: 'white', size: 18, onClick: pauseGame });
+  // 工具列
+  if (G.solved) return;
+  const items = [
+    { id: 'bUndo', icon: 'undo', label: '復原', color: 'blue', on: doUndo, dis: !G.undo.length },
+    { id: 'bRestart', icon: 'replay', label: time - G.restartArm < 2.5 ? '確定?' : '重來', color: 'orange', on: doRestart },
+    { id: 'bHint', icon: 'bulb', label: '提示', color: 'purple', on: doHint }
+  ];
+  const bs = 58 * U;
+  if (!land) {
+    const gap = Math.min(30 * U, (W - 3 * bs) / 4), x0 = (W - (3 * bs + 2 * gap)) / 2, y = L.tbY;
+    items.forEach((b, k) => {
+      const x = x0 + k * (bs + gap);
+      button(b.id, x, y, bs, bs, { icon: b.icon, color: b.color, onClick: b.on, size: bs * 0.42, disabled: b.dis });
+      txt(b.label, x + bs / 2, y + bs + 14 * U, 13 * U, '#fff', { stroke: '#1d6a80', sw: 4 * U, weight: '800' });
+    });
+    if (G.hints) hintBadge(x0 + 2 * (bs + gap) + bs, y);
+  } else {
+    const b2 = Math.min(bs, (H - 140 - 3 * 22) / 3), x = W - 58 + (48 - b2) / 2;
+    items.forEach((b, k) => {
+      const y = 132 + k * (b2 + 24);
+      button(b.id, x, y, b2, b2, { icon: b.icon, color: b.color, onClick: b.on, size: b2 * 0.42, disabled: b.dis });
+      txt(b.label, x + b2 / 2, y + b2 + 11, 12, '#fff', { stroke: '#1d6a80', sw: 4, weight: '800' });
+    });
+    if (G.hints) hintBadge(x + b2, 132 + 2 * (b2 + 24));
+  }
+}
+function hintBadge(x, y) {
+  ctx.fillStyle = '#ff5a7a'; ctx.beginPath(); circ(x - 4, y + 4, 11); ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+  txt(String(G.hints), x - 4, y + 5, 12, '#fff', { shadow: false });
+}
+
+/* ---------- 覆蓋畫面：暫停、說明、結算 ---------- */
+function panelBox(w, h, col, title) {
+  const x = (W - w) / 2, y = (H - h) / 2 + 10;
+  ctx.save(); ctx.translate(W / 2, y + h / 2); ctx.scale(panel.s, panel.s); ctx.translate(-W / 2, -(y + h / 2));
+  rr(x, y + 8, w, h, 28 * U); ctx.fillStyle = 'rgba(10,50,70,0.3)'; ctx.fill();
+  rr(x, y, w, h, 28 * U);
+  const g = ctx.createLinearGradient(0, y, 0, y + h); g.addColorStop(0, '#fffdf4'); g.addColorStop(1, '#fff1d6');
+  ctx.fillStyle = g; ctx.fill(); ctx.lineWidth = 6 * U; ctx.strokeStyle = col; ctx.stroke();
+  // 木頭招牌標題
+  const bw = Math.min(w * 0.8, 280 * U), bh = 46 * U, bx = W / 2 - bw / 2, by = y - bh * 0.5;
+  rr(bx, by + 4, bw, bh, 12 * U); ctx.fillStyle = '#7a4a22'; ctx.fill();
+  rr(bx, by, bw, bh, 12 * U);
+  const wg = ctx.createLinearGradient(0, by, 0, by + bh); wg.addColorStop(0, '#e9b47a'); wg.addColorStop(1, '#c98d55');
+  ctx.fillStyle = wg; ctx.fill(); ctx.strokeStyle = '#7a4a22'; ctx.lineWidth = 3; ctx.stroke();
+  ctx.strokeStyle = 'rgba(122,74,34,0.35)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(bx + 10, by + bh * 0.5); ctx.lineTo(bx + bw - 10, by + bh * 0.5); ctx.stroke();
+  txt(title, W / 2, by + bh / 2 + 1, fitSize(title, 24 * U, bw - 24), '#fff', { stroke: '#7a4a22', sw: 6 * U });
+  return { x, y, w, h };
+}
+function drawPause() {
+  ctx.fillStyle = 'rgba(8,40,60,0.5)'; ctx.fillRect(0, 0, W, H);
+  const w = Math.min(W - 32, 340 * U), bh = Math.min(54 * U, (H - 120) / 5.6), gap = bh * 0.3;
+  const h = 40 * U + 3 * (bh + gap) + 4 * U + Math.min(46 * U, bh * 0.9) + 26 * U;
+  const b = panelBox(w, h, '#3c9ff0', '休息一下');
+  const bw = w - 60 * U;
+  let y = b.y + 40 * U;
+  button('pResume', b.x + 30 * U, y, bw, bh, { label: '繼續', icon: 'play', color: 'green', onClick: resumeGame, size: bh * 0.42 }); y += bh + gap;
+  button('pRestart', b.x + 30 * U, y, bw, bh, { label: '重新開始', icon: 'replay', color: 'yellow', size: bh * 0.4, onClick: () => { resumeGame(); G.restartArm = time; doRestart(); } }); y += bh + gap;
+  button('pQuit', b.x + 30 * U, y, bw, bh, { label: G.mode === 'level' ? '回選關' : '回主選單', icon: 'menu', color: 'blue', size: bh * 0.4, onClick: () => { saveCur(); G.mode === 'level' ? goLevels() : goTitle(); } }); y += bh + gap + 4 * U;
+  const tw = (bw - 12) / 2, mOn = KG.music ? KG.music.isEnabled() : false, th = Math.min(46 * U, b.y + b.h - y - 16 * U);
+  button('pMusic', b.x + 30 * U, y, tw, th, { label: mOn ? '音樂 開' : '音樂 關', icon: 'music', color: mOn ? 'teal' : 'white', size: th * 0.36, onClick: toggleMusic });
+  button('pSfx', b.x + 30 * U + tw + 12, y, tw, th, { label: sfxOn ? '音效 開' : '音效 關', icon: 'sound', color: sfxOn ? 'teal' : 'white', size: th * 0.36, onClick: toggleSfx });
+  ctx.restore();
+}
+const HELP = [
+  ['1', '島上的數字＝這個島要連出去的橋數。'],
+  ['2', '橋只能直直的或橫橫的，兩個島之間最多搭兩座。'],
+  ['3', '橋不能交叉，也不能穿過別的島。'],
+  ['4', '所有的島都要連成一片！'],
+  ['手', '從島往旁邊的島拖曳就能搭橋；再拖一次變兩座，第三次就拆掉。也可以先點一個島，再點另一個島；點橋也能切換。'],
+  ['鍵', '鍵盤：方向鍵選島，Shift＋方向鍵搭橋；Z 復原、H 提示、P 暫停。']
+];
+function drawHelp() {
+  ctx.fillStyle = 'rgba(8,40,60,0.55)'; ctx.fillRect(0, 0, W, H);
+  const w = Math.min(W - 24, 520 * U), hMax = Math.min(H - 50, 560 * U);
+  let fs = Math.min(16 * U, w / 22), h = hMax;
+  let lines, total, tries = 0;
+  do {
+    lines = HELP.map(([k, s]) => wrapText(s, fs, w - 92 * U));
+    total = lines.reduce((a, l) => a + l.length * fs * 1.35 + 10 * U, 0);
+    if (total > h - 120 * U) fs *= 0.92;
+  } while (total > h - 120 * U && ++tries < 8);
+  h = Math.min(hMax, total + 124 * U);
+  const b = panelBox(w, h, '#45c05e', '怎麼玩');
+  let y = b.y + 38 * U;
+  HELP.forEach(([k], i) => {
+    const r = 14 * U;
+    ctx.fillStyle = i < 4 ? '#ffd23d' : '#aee4ff'; ctx.beginPath(); circ(b.x + 30 * U, y + fs * 0.65, r); ctx.fill();
+    ctx.strokeStyle = '#7a4a22'; ctx.lineWidth = 2; ctx.stroke();
+    txt(k, b.x + 30 * U, y + fs * 0.7, r * 1.1, '#7a4a22', { shadow: false });
+    lines[i].forEach((l, j) => txt(l, b.x + 54 * U, y + fs * 0.7 + j * fs * 1.35, fs, '#35505a', { align: 'left', weight: '800', shadow: false }));
+    y += lines[i].length * fs * 1.35 + 10 * U;
+  });
+  const bh = 50 * U;
+  button('hClose', W / 2 - 80 * U, b.y + b.h - bh - 18 * U, 160 * U, bh, { label: '知道了', color: 'green', onClick: () => { overlay = null; sfx('select'); }, size: bh * 0.42 });
+  ctx.restore();
+}
+function drawResult(dt) {
+  const o = resultO; o.t += dt;
+  ctx.fillStyle = 'rgba(8,40,60,' + (0.45 * Math.min(1, o.t * 3)) + ')'; ctx.fillRect(0, 0, W, H);
+  const w = Math.min(W - 28, 400 * U), h = Math.min(H - 56, 330 * U);
+  const col = G.mode === 'daily' ? '#f8b921' : G.mode === 'endless' ? '#3c9ff0' : TIER_HEX[G.tier];
+  // 背後光芒
+  ctx.save(); ctx.translate(W / 2, (H - h) / 2 + h * 0.28); ctx.rotate(time * 0.4); ctx.fillStyle = 'rgba(255,245,180,0.16)';
+  for (let i = 0; i < 12; i++) { ctx.rotate(TAU / 12); ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-28 * U, w * 0.8); ctx.lineTo(28 * U, w * 0.8); ctx.fill(); }
+  ctx.restore();
+  const b = panelBox(w, h, col, o.title);
+  // 星星
+  while (o.shown < 3 && o.t > 0.5 + o.shown * 0.35) {
+    if (o.shown < o.stars) { sfx('starTone', { pitch: [1, 1.26, 1.5][o.shown] }); FX.burst(W / 2 + (o.shown - 1) * w * 0.24, b.y + 72 * U, { n: 12, colors: ['#ffe066', '#fff', '#ffb02e'], speed: 220, g: 260, size: 6 * U }); }
+    o.shown++;
+  }
+  const sy = b.y + 34 * U + 38 * U;
+  for (let i = 0; i < 3; i++) {
+    const on = i < o.shown && i < o.stars, tt = o.t - (0.5 + i * 0.35);
+    const k = on ? (tt < 0.4 ? Ease.outElastic(clamp(tt / 0.4, 0, 1)) : 1 + Math.sin(time * 3 + i) * 0.03) : 1;
+    glossyStar(W / 2 + (i - 1) * w * 0.24, sy - (i === 1 ? 10 * U : 0), (i === 1 ? 38 : 31) * U * k, on, on ? Math.sin(time * 2 + i) * 0.08 : 0);
+  }
+  let ty = sy + 54 * U;
+  const fs = Math.min(18 * U, w / 17);
+  o.lines.forEach(l => { txt(l, W / 2, ty, fitSize(l, fs, w - 30, '800'), '#35505a', { weight: '800', shadow: false }); ty += fs * 1.55; });
+  if (o.unlock) { const p = 1 + Math.sin(time * 5) * 0.04; ctx.save(); ctx.translate(W / 2, ty + 2); ctx.scale(p, p); txt(o.unlock, 0, 0, fs, '#f45f93', { stroke: '#fff', sw: 5 * U, shadow: false }); ctx.restore(); }
+  const bh = Math.min(56 * U, h * 0.15), by = b.y + h - bh - 22 * U, ready = o.t > 0.45;
+  const btns = [];
+  btns.push({ id: 'rMenu', icon: 'menu', color: 'blue', cb: () => (G.mode === 'level' ? goLevels() : G.mode === 'endless' ? goEndless() : goTitle()) });
+  if (G.mode !== 'endless') btns.push({ id: 'rRetry', icon: 'replay', color: 'yellow', cb: () => { Save.set('cur', null); startPuzzle(G.mode, G.tier, G.level, G.seed); } });
+  if (G.mode !== 'daily') btns.push({ id: 'rnext', icon: 'next', label: G.mode === 'endless' ? '下一題' : '下一關', color: 'green', cb: nextPuzzle, wide: true });
+  const unit = bh * 1.25, wide = Math.min(150 * U, w * 0.38), gap = 12 * U;
+  const tot = btns.reduce((s, x) => s + (x.wide ? wide : unit), 0) + gap * (btns.length - 1);
+  let bx = W / 2 - tot / 2;
+  for (const x of btns) {
+    const bw = x.wide ? wide : unit;
+    button(x.id, bx, by, bw, bh, { icon: x.icon, label: x.label, color: x.color, pulse: x.wide, disabled: !ready, size: bh * 0.4, onClick: () => { sfx('select'); x.cb(); } });
+    bx += bw + gap;
+  }
+  ctx.restore();
+}
+function drawLoading() {
+  drawSea(0.1);
+  const s = 28 * U;
+  for (let k = 0; k < 3; k++) { const a = time * 4 - k * 0.6; ctx.fillStyle = '#fff'; ctx.globalAlpha = 0.5 + 0.5 * Math.sin(a); ctx.beginPath(); circ(W / 2 + (k - 1) * s, H / 2 + 30 * U, 7 * U); ctx.fill(); }
+  ctx.globalAlpha = 1;
+  txt('小島浮出水面中…', W / 2, H / 2 - 10 * U, 22 * U, '#fff', { stroke: '#1d6a80', sw: 6 * U });
+}
+
+/* =====================================================================
+ * 主迴圈
+ * ===================================================================== */
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
+  last = now; time += dt; sceneT += dt;
+  if (shakeT > 0) shakeT -= dt;
+  updateTweens(dt);
+  updateSea(dt);
+  Gulls.update(dt);
+  FX.update(dt);
+  btnPrev = btnReg; btnReg = [];
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  regOn = !overlay;
+  if (scene === 'loading') {
+    drawLoading();
+    loadingT += dt;
+    if (pendingStart && loadingT > 0.05) { const o = pendingStart; pendingStart = null; doStart(o); }
+  } else if (scene === 'title') drawTitle(dt);
+  else if (scene === 'levels') drawLevels();
+  else if (scene === 'endless') drawEndless();
+  else if (scene === 'play') {
+    if (!overlay && !G.solved && !document.hidden) G.timer += dt;
+    if (!overlay) {
+      view.update(dt);
+      if (G.blockFx && (G.blockFx.t -= dt) <= 0) G.blockFx = null;
+      if (G.hintFx && (G.hintFx.t -= dt) <= 0) G.hintFx = null;
+      if (G.msg && (G.msg.t -= dt) <= 0) G.msg = null;
+      if (G.solved) {
+        G.solvedT += dt;
+        villagers.update(dt, view, G.cnt);
+        if (G.solvedT > 2.6 && !overlay) showResult();
+      }
+    } else if (overlay === 'result') villagers.update(dt, view, G.cnt);
+    drawPlay(dt);
+  }
+  regOn = true;
+  if (overlay === 'pause') drawPause();
+  else if (overlay === 'help') drawHelp();
+  else if (overlay === 'result') drawResult(dt);
+  requestAnimationFrame(frame);
+}
+
+/* ---------- 測試用 ---------- */
+window.__ib = {
+  state: () => ({ scene, overlay, mode: G.mode, tier: G.tier, level: G.level, solved: G.solved, hints: G.hints, timer: G.timer,
+    islands: G.P ? G.P.isl.length : 0, edges: G.P ? G.P.edges.length : 0, cnt: G.cnt ? Array.from(G.cnt) : [], sol: G.sol ? Array.from(G.sol) : [],
+    states: G.P ? Array.from(view.state) : [], music: KG.music ? KG.music.isPlaying() : null, S: view.S, msg: G.msg ? G.msg.text : null }),
+  start: (mode, tier, level, seed) => { doStart({ mode: mode || 'level', tier: tier || 0, level: level || 0, seed: seed || 1 }); return window.__ib.state(); },
+  islandXY: (i) => [view.cx(i), view.cy(i)],
+  edge: (e) => G.P.edges[e],
+  solveAllBut: (k) => { const P = G.P; let left = 0; for (let e = 0; e < P.edges.length; e++) if (G.sol[e]) left++; for (let e = 0; e < P.edges.length && left > (k || 0); e++) if (G.sol[e] && G.cnt[e] !== G.sol[e]) { setEdge(e, G.sol[e], { silentAnim: true, noUndo: false }); left--; } return window.__ib.state(); },
+  hint: () => { doHint(); return G.msg && G.msg.text; },
+  finishResult: () => { G.solvedT = 99; },
+  buttons: () => btnPrev.map(b => ({ id: b.id, x: b.x + b.w / 2, y: b.y + b.h / 2, disabled: !!b.disabled })),
+  view
+};
+
+resize();
+musicMenu();
+requestAnimationFrame((t) => { last = t; frame(t); });
+</script>
+</body>
+</html>

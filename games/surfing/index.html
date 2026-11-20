@@ -1,0 +1,2419 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>3D 衝浪</title>
+<link rel="stylesheet" href="../../assets/common.css">
+<style>
+  html, body { height: 100%; overflow: hidden; background: #7cc6e6; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  #gl { pointer-events: none; }
+  #ui { touch-action: none; z-index: 10; }
+  #msg { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; color: #12355b; font-size: 20px; font-weight: 800; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "../../assets/vendor/three/three.module.min.js" } }
+</script>
+</head>
+<body>
+<div id="msg">3D 衝浪 載入中…</div>
+<canvas id="gl"></canvas>
+<canvas id="ui" aria-label="3D 衝浪遊戲畫面"></canvas>
+<script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
+<script type="module">
+import * as THREE from 'three';
+
+let renderer = null;
+try {
+  renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gl'), antialias: true, powerPreference: 'high-performance' });
+} catch (e) { renderer = null; }
+if (!renderer) document.getElementById('msg').textContent = '這個遊戲需要支援 3D（WebGL）的瀏覽器，請換一個瀏覽器或裝置再試試看。';
+else main();
+
+function main() {
+  const SLUG = 'surfing';
+  const cv = document.getElementById('ui');
+  const ctx = cv.getContext('2d');
+  const FONT = "'Baloo 2','PingFang TC','Noto Sans TC','Microsoft JhengHei','Heiti TC',system-ui,sans-serif";
+  const font = (w, sz) => w + ' ' + Math.round(sz) + 'px ' + FONT;
+  const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const smooth = t => t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t);
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const TAU = Math.PI * 2;
+  const damp = (k, dt) => 1 - Math.exp(-k * dt);
+
+  /* =========================================================
+   * 資料：角色、海灘、任務、對手
+   * ========================================================= */
+  const CHARS = [
+    { id: 'otter', name: '海獺阿浪', desc: '什麼都會一點的好夥伴', stats: { speed: 3, air: 3, turn: 4, tube: 3 },
+      body: 0x9a6a43, belly: 0xf3dcb6, dark: 0x5b3a22, board: 0xffc93c, stripe: 0xff7a35, css: '#9a6a43', css2: '#f3dcb6' },
+    { id: 'penguin', name: '企鵝波波', desc: '速度最快，滑起來像在飛', stats: { speed: 5, air: 2, turn: 3, tube: 3 },
+      body: 0x2b3446, belly: 0xffffff, dark: 0xff9f2e, board: 0x4fb4ff, stripe: 0xffffff, css: '#2b3446', css2: '#ffffff' },
+    { id: 'shiba', name: '柴犬小麥', desc: '跳得最高，最愛空中特技', stats: { speed: 3, air: 5, turn: 3, tube: 2 },
+      body: 0xe8994a, belly: 0xfff3e0, dark: 0x3a2a20, board: 0xff5a6e, stripe: 0xfff1f1, css: '#e8994a', css2: '#fff3e0' },
+    { id: 'panda', name: '小熊貓圓圓', desc: '鑽浪管高手，轉彎超靈活', stats: { speed: 2, air: 3, turn: 5, tube: 5 },
+      body: 0xc4552c, belly: 0xfff6ea, dark: 0x4a2418, board: 0x58c47a, stripe: 0xffe066, css: '#c4552c', css2: '#fff6ea' }
+  ];
+  const STAT_NAMES = [['speed', '速度'], ['air', '跳躍'], ['turn', '轉彎'], ['tube', '管浪']];
+
+  const BEACHES = [
+    { id: 'dawn', name: '晨光海灣', desc: '溫柔的早晨小浪，最適合練習', H: 3.8, peel: 9.4, rocks: 0.15, buoys: 0.45,
+      skyTop: 0x5f8fd0, skyMid: 0xf2b7b0, skyHor: 0xffdcb8, sun: [0.55, 0.13, -0.82], sunCol: 0xffd9a8, sunAmt: 1, stars: 0,
+      deep: 0x1d5a85, shallow: 0x48c2c6, foam: 0xfff7ee, glow: 0, light: 1.05, hemiSky: 0xffe6d0, hemiGround: 0x3a7d9a,
+      sil: '#b9878f', sil2: '#d7aaa6', sand: '#e8c39e', cloud: 'rgba(255,226,214,0.85)', fogFar: 1300 },
+    { id: 'reef', name: '熱帶珊瑚礁', desc: '清澈的藍綠色海水，小心礁石', H: 4.2, peel: 10.2, rocks: 1, buoys: 0.45,
+      skyTop: 0x2a86e0, skyMid: 0x7fcaf8, skyHor: 0xd2f1ff, sun: [0.35, 0.72, -0.6], sunCol: 0xfff6dc, sunAmt: 0.9, stars: 0,
+      deep: 0x0b6a96, shallow: 0x2fe2cf, foam: 0xffffff, glow: 0, light: 1.15, hemiSky: 0xe8f7ff, hemiGround: 0x2a9aa8,
+      sil: '#2f7a62', sil2: '#6fae9a', sand: '#f6e2b0', cloud: 'rgba(255,255,255,0.92)', fogFar: 1500 },
+    { id: 'sunset', name: '夕陽大浪', desc: '金色夕陽下的超大浪', H: 5.0, peel: 11.2, rocks: 0.5, buoys: 0.8,
+      skyTop: 0x35296a, skyMid: 0xe8607a, skyHor: 0xffb45c, sun: [0.62, 0.07, -0.78], sunCol: 0xffa848, sunAmt: 1.2, stars: 0,
+      deep: 0x2a2c62, shallow: 0x3b9fa6, foam: 0xffe6c8, glow: 0, light: 1.0, hemiSky: 0xffc59a, hemiGround: 0x5a3f6a,
+      sil: '#3a2448', sil2: '#7a3f63', sand: '#c98a6a', cloud: 'rgba(255,170,140,0.8)', fogFar: 1200 },
+    { id: 'night', name: '夜光海', desc: '浪花會發出藍色的光', H: 4.5, peel: 10.8, rocks: 0.5, buoys: 0.6,
+      skyTop: 0x040922, skyMid: 0x0f1f52, skyHor: 0x1f3a74, sun: [0.5, 0.3, -0.8], sunCol: 0xdfeaff, sunAmt: 0.75, stars: 1,
+      deep: 0x03152c, shallow: 0x0b5a7c, foam: 0x7ff3ff, glow: 1, light: 0.75, hemiSky: 0x7fa8ff, hemiGround: 0x0c3a5a,
+      sil: '#071026', sil2: '#14244a', sand: '#2a3a5a', cloud: 'rgba(120,150,220,0.35)', fogFar: 1100 }
+  ];
+
+  const MISSIONS = [
+    { name: '起乘練習', goal: '連續衝浪 15 秒不摔倒', beach: 0, key: 'maxClean', n: 15, unit: '秒' },
+    { name: '加速前進', goal: '速度達到時速 50 公里', beach: 0, key: 'maxKmh', n: 50, unit: '公里' },
+    { name: '第一次起飛', goal: '往上衝到浪頂，飛起來 1 次', beach: 0, key: 'launches', n: 1, unit: '次' },
+    { name: '轉個圈圈', goal: '在空中完成「360 旋轉」', beach: 0, key: 'spins', n: 1, unit: '次' },
+    { name: '貝殼收藏家', goal: '收集 8 個貝殼', beach: 1, key: 'shells', n: 8, unit: '個' },
+    { name: '後空翻', goal: '在空中完成「後空翻」', beach: 1, key: 'backflips', n: 1, unit: '次' },
+    { name: '抓好衝浪板', goal: '完成抓板類動作 3 次', beach: 1, key: 'grabs', n: 3, unit: '次' },
+    { name: '浪頂甩尾', goal: '在浪頂急轉彎，甩出水花 3 次', beach: 1, key: 'snaps', n: 3, unit: '次' },
+    { name: '鑽進浪管', goal: '在浪管裡待滿 2 秒', beach: 0, key: 'maxTube', n: 2, unit: '秒' },
+    { name: '閃避高手', goal: '閃過 8 個浮標或礁石', beach: 1, key: 'dodges', n: 8, unit: '個' },
+    { name: '連擊加成', goal: '連擊倍數達到 ×3', beach: 2, key: 'maxMult', n: 3, unit: '倍' },
+    { name: '雙重特技', goal: '一次飛行完成 2 個動作', beach: 2, key: 'maxTricksAir', n: 2, unit: '個' },
+    { name: '小小高手', goal: '一次衝浪拿到 8000 分', beach: 2, key: 'score', n: 8000, unit: '分' },
+    { name: '前空翻', goal: '在空中完成「前空翻」', beach: 2, key: 'frontflips', n: 1, unit: '次' },
+    { name: '大旋風', goal: '一次飛行轉兩圈（720 大旋風）', beach: 2, key: 'maxSpinAir', n: 2, unit: '圈' },
+    { name: '管浪達人', goal: '在浪管裡待滿 4 秒', beach: 3, key: 'maxTube', n: 4, unit: '秒' },
+    { name: '超級連擊', goal: '連擊倍數達到 ×5', beach: 3, key: 'maxMult', n: 5, unit: '倍' },
+    { name: '三重特技', goal: '一次飛行完成 3 個動作', beach: 3, key: 'maxTricksAir', n: 3, unit: '個' },
+    { name: '夜光貝殼', goal: '在夜光海收集 15 個發光貝殼', beach: 3, key: 'shells', n: 15, unit: '個' },
+    { name: '衝浪大師', goal: '在夕陽大浪拿到 30000 分', beach: 2, key: 'score', n: 30000, unit: '分' }
+  ];
+  const MISSION_TIME = 75;
+
+  const AI_POOL = [
+    { name: '海豚小藍', color: '#4fa8f0' }, { name: '螃蟹阿紅', color: '#ff6b5a' }, { name: '海龜慢慢', color: '#5fbf74' },
+    { name: '章魚小紫', color: '#a77cf0' }, { name: '河豚鼓鼓', color: '#f2b631' }, { name: '海豹噗噗', color: '#9aaabb' }
+  ];
+  const AI_SKILL = [[4.6, 5.4, 6.1], [5.4, 6.1, 6.8], [6.0, 6.8, 7.5], [6.6, 7.3, 8.0]];
+  const HEAT_TIME = 45, HEATS = 3;
+
+  const store = {
+    get: (k, d) => KG.store.get(SLUG + ':' + k, d),
+    set: (k, v) => KG.store.set(SLUG + ':' + k, v)
+  };
+  let charIdx = clamp(store.get('char', 0) | 0, 0, CHARS.length - 1);
+  let missionsDone = store.get('missions', []);
+  if (!Array.isArray(missionsDone)) missionsDone = [];
+  let medals = store.get('medals', [0, 0, 0, 0]);
+  if (!Array.isArray(medals) || medals.length !== 4) medals = [0, 0, 0, 0];
+  const missionUnlocked = i => i === 0 || missionsDone.includes(i - 1) || missionsDone.includes(i);
+  const beachUnlockedComp = i => i === 0 || medals[i - 1] > 0;
+
+  /* =========================================================
+   * 聲音：音樂、音效（kg-music.js）
+   * ========================================================= */
+  const S = KG.sfx, M = KG.music;
+  let sfxOn = store.get('sfx', true) !== false;
+  const lastSfx = {};
+  function sfx(name, o) {
+    if (!sfxOn || !S) return;
+    const now = performance.now();
+    if (now - (lastSfx[name] || 0) < 40) return;
+    lastSfx[name] = now;
+    const opt = Object.assign({}, o);
+    opt.pitch = (opt.pitch || 1) * (opt.exact ? 1 : 1 + (Math.random() * 2 - 1) * 0.045);
+    delete opt.exact;
+    try { S.play(name, opt); } catch (e) { /* 忽略 */ }
+  }
+  function audioNodes() { try { return M && M._nodes ? M._nodes() : null; } catch (e) { return null; } }
+  // 浪管回音：低通 + 回聲（在浪管裡的聲音都走這裡）
+  let echo = null;
+  function ensureEcho() {
+    if (echo) return echo;
+    const n = audioNodes();
+    if (!n || !n.sfxBus) return null;
+    const a = n.ctx;
+    const inp = a.createGain();
+    const lpf = a.createBiquadFilter(); lpf.type = 'lowpass'; lpf.frequency.value = 850; lpf.Q.value = 0.9;
+    const dry = a.createGain(); dry.gain.value = 0.7;
+    const dl = a.createDelay(1); dl.delayTime.value = 0.16;
+    const fb = a.createGain(); fb.gain.value = 0.35;
+    const wet = a.createGain(); wet.gain.value = 0.4;
+    inp.connect(lpf); lpf.connect(dry); dry.connect(n.sfxBus);
+    lpf.connect(dl); dl.connect(fb); fb.connect(dl); dl.connect(wet); wet.connect(n.sfxBus);
+    echo = { inp };
+    return echo;
+  }
+  let inTubeAudio = false;
+  const tubeOut = () => (inTubeAudio && echo ? echo.inp : undefined);
+  if (S && S.define) {
+    const T = (s, f, d, o) => s.tone(f, d, Object.assign({ out: tubeOut() }, o));
+    const N = (s, d, o) => s.noise(d, Object.assign({ out: tubeOut() }, o));
+    S.define('carve', (p, s) => { N(s, 0.24, { vol: 0.12, freq: 900 * p, sweep: 2600 * p, q: 1.2, attack: 0.03 }); });
+    S.define('spray', (p, s) => { N(s, 0.34, { vol: 0.08, freq: 5200 * p, type: 'highpass', attack: 0.01 }); N(s, 0.22, { vol: 0.05, freq: 2400 * p, q: 0.6 }); });
+    S.define('pump', (p, s) => { T(s, 150 * p, 0.12, { vol: 0.15, slide: 75 }); N(s, 0.1, { vol: 0.09, freq: 520 * p, type: 'lowpass' }); });
+    S.define('stall', (p, s) => { N(s, 0.3, { vol: 0.08, freq: 1800 * p, sweep: 700 * p, q: 1.4 }); });
+    S.define('launch', (p, s) => { N(s, 0.5, { vol: 0.17, freq: 700 * p, sweep: 3200 * p, q: 0.9, attack: 0.05 }); T(s, 300 * p, 0.35, { type: 'triangle', vol: 0.06, slide: 650 * p }); });
+    S.define('whir', (p, s) => { N(s, 0.32, { vol: 0.12, freq: 500 * p, sweep: 2300 * p, q: 2.5, attack: 0.02 }); T(s, 260 * p, 0.28, { type: 'triangle', vol: 0.05, slide: 520 * p }); });
+    S.define('flipwhir', (p, s) => { N(s, 0.38, { vol: 0.12, freq: 1900 * p, sweep: 450 * p, q: 2.2, attack: 0.02 }); T(s, 440 * p, 0.32, { type: 'triangle', vol: 0.05, slide: 210 * p }); });
+    S.define('grab', (p, s) => { T(s, 900 * p, 0.06, { type: 'triangle', vol: 0.08 }); N(s, 0.06, { vol: 0.12, freq: 3000 * p, q: 2 }); });
+    S.define('landsplash', (p, s) => { N(s, 0.42, { vol: 0.25, freq: 1600 * p, sweep: 350, q: 0.6 }); T(s, 110 * p, 0.18, { vol: 0.18, slide: 55 }); });
+    S.define('whistle', (p, s) => { s.tone(1500 * p, 0.2, { vol: 0.045, slide: 2500 * p, attack: 0.03 }); s.tone(2300 * p, 0.36, { vol: 0.045, slide: 1300 * p, delay: 0.24, attack: 0.03 }); });
+    S.define('cheer', (p, s) => { s.noise(0.9, { vol: 0.055, freq: 1100 * p, q: 0.45, attack: 0.15 }); s.noise(0.7, { vol: 0.04, freq: 2600 * p, q: 0.8, attack: 0.1, delay: 0.1 }); });
+    S.define('wipeout', (p, s) => {
+      N(s, 1.0, { vol: 0.42, freq: 1400 * p, sweep: 120, type: 'lowpass', q: 0.8 }); T(s, 95 * p, 0.6, { vol: 0.28, slide: 38 });
+      for (let i = 0; i < 5; i++) T(s, (380 + i * 90) * p, 0.07, { vol: 0.05, slide: (700 + i * 120) * p, delay: 0.35 + i * 0.09 });
+    });
+    S.define('tube', (p, s) => { T(s, 78 * p, 0.7, { vol: 0.22, slide: 50, attack: 0.08 }); N(s, 0.8, { vol: 0.14, freq: 420 * p, type: 'lowpass', attack: 0.1 }); });
+    S.define('spit', (p, s) => { s.noise(0.6, { vol: 0.2, freq: 600 * p, sweep: 4200 * p, q: 0.7, attack: 0.02 }); });
+    S.define('ding', (p, s) => { s.tone(1568 * p, 0.5, { vol: 0.12 }); s.tone(2350 * p, 0.35, { vol: 0.04 }); s.tone(3136 * p, 0.2, { vol: 0.03 }); });
+    S.define('shell', (p, s) => { s.tone(1320 * p, 0.08, { type: 'triangle', vol: 0.11 }); s.tone(1980 * p, 0.18, { vol: 0.09, delay: 0.06 }); });
+    S.define('gull', (p, s) => { s.tone(1700 * p, 0.14, { type: 'triangle', vol: 0.028, slide: 1250 * p }); s.tone(1650 * p, 0.16, { type: 'triangle', vol: 0.025, slide: 1150 * p, delay: 0.17 }); });
+    S.define('combo', (p, s) => { s.tone(880 * p, 0.08, { type: 'square', vol: 0.045 }); s.tone(1320 * p, 0.14, { type: 'square', vol: 0.045, delay: 0.07 }); });
+    S.define('snap', (p, s) => { N(s, 0.3, { vol: 0.15, freq: 3600 * p, type: 'highpass', attack: 0.005 }); N(s, 0.2, { vol: 0.1, freq: 1200 * p, sweep: 2600 * p, q: 1 }); });
+    S.define('warn', (p, s) => { s.tone(520 * p, 0.09, { type: 'square', vol: 0.035 }); });
+  }
+  const LOOP = { water: null, wind: null };
+  let loopTimer = 0;
+  function ensureLoops() {
+    if (!sfxOn || !S || !audioNodes()) return;
+    ensureEcho();
+    if (!LOOP.water) LOOP.water = S.loop('water');
+    if (!LOOP.wind) LOOP.wind = S.loop('wind');
+  }
+  function stopLoops() { for (const k in LOOP) if (LOOP[k]) { LOOP[k].stop(); LOOP[k] = null; } }
+
+  /* ---------- 曲子（全部原創） ---------- */
+  // 標題：慵懶的海島風（D 大調、94 bpm、搖擺）
+  const SONG_TITLE = {
+    bpm: 94, swing: 0.18,
+    chords: ['D', 'Bm', 'G', 'A', 'D', 'F#m', 'G', 'A'],
+    tracks: [
+      { inst: 'pad', chord: 'hold', vol: 0.6 },
+      { inst: 'bass', chord: ['R.....5.R...8...', 'R.....5.R..5R...'], vol: 0.8 },
+      { inst: 'marimba', arp: 'updown', rate: 2, oct: 4, vol: 0.55 },
+      { inst: 'kalimba', vol: 1.25, seq: [
+        'F#5 - A5 - F#5 E5 D5 -', 'D5 - F#5 - B4 - - .', 'B4 D5 G5 - F#5 - D5 .', 'E5 - C#5 - A4 - - .',
+        'A4 D5 F#5 - A5 - F#5 .', 'C#5 - A4 - F#4 - A4 .', 'B4 - D5 - G5 - F#5 E5', 'C#5 - E5 - A4 - - .'] },
+      { inst: 'shaker', pat: '..x...x...x...x.', vol: 0.7 },
+      { inst: 'rim', pat: '....x.......x..o', vol: 0.45 },
+      { inst: 'kick', pat: 'x.......x.......', vol: 0.45 }
+    ]
+  };
+  // 衝浪中：原創衝浪搖滾（A 小調 → A 大調、160 bpm、彈撥主旋律 + 殘響）
+  const SONG_RIDE = {
+    bpm: 160, swing: 0,
+    chords: ['Am', 'Am', 'G', 'G', 'F', 'F', 'E7', 'E7', 'A', 'A', 'D', 'D', 'A', 'A', 'E7', 'E7'],
+    layers: { combo: false, hype: false },
+    tracks: [
+      { inst: 'kick', pat: 'x...x...x...x...', vol: 0.75 },
+      { inst: 'snare', pat: ['....x.......x...', '....x.......x...', '....x.......x...', '....x.......x.xo'], vol: 0.6 },
+      { inst: 'hat', pat: 'x.x.x.x.x.x.x.x.', vol: 0.45 },
+      { inst: 'ohat', pat: '..x...x...x...x.', vol: 0.4, layer: 'combo' },
+      { inst: 'crash', pat: ['X...............', '', '', '', '', '', '', ''], vol: 0.45 },
+      { inst: 'tom', pitch: 150, pat: ['', '', '', '', '', '', '', '........x.x.xxx.'], vol: 0.45 },
+      { inst: 'bass', chord: ['R.R.R.R.R.R.5.8.', 'R.R.R.R.5.5.3.5.'], vol: 0.75 },
+      { inst: 'pluck', chord: 'hold', rate: 4, vol: 0.22 },
+      { inst: 'pluck', vol: 0.95, seq: [
+        'A4 . C5 E5 A5 - G5 E5', 'F5 E5 D5 C5 E5 - - .', 'D5 . G4 B4 D5 - C5 B4', 'D5 C5 B4 A4 G4 - - .',
+        'C5 . A4 C5 F5 - E5 D5', 'C5 D5 E5 F5 E5 - D5 .', 'E5 - G#4 B4 E5 - D5 B4', 'G#4 - B4 - E5 - - .',
+        'E5 . C#5 E5 A5 - E5 C#5', 'B4 C#5 E5 - C#5 - A4 .', 'F#5 - D5 F#5 A5 - F#5 D5', 'E5 F#5 E5 D5 B4 - A4 .',
+        'C#5 . E5 . A5 - G#5 .', 'F#5 E5 C#5 E5 A4 - - .', 'B4 . E5 G#5 B5 - G#5 E5', 'D5 . B4 . G#4 . B4 .'] },
+      { inst: 'pluck', arp: 'up', rate: 1, oct: 4, span: 1, vol: 0.3, layer: 'combo' },
+      { inst: 'lead', vol: 0.4, layer: 'hype', transpose: -12, seq: [
+        'A4 . C5 E5 A5 - G5 E5', 'F5 E5 D5 C5 E5 - - .', 'D5 . G4 B4 D5 - C5 B4', 'D5 C5 B4 A4 G4 - - .',
+        'C5 . A4 C5 F5 - E5 D5', 'C5 D5 E5 F5 E5 - D5 .', 'E5 - G#4 B4 E5 - D5 B4', 'G#4 - B4 - E5 - - .',
+        'E5 . C#5 E5 A5 - E5 C#5', 'B4 C#5 E5 - C#5 - A4 .', 'F#5 - D5 F#5 A5 - F#5 D5', 'E5 F#5 E5 D5 B4 - A4 .',
+        'C#5 . E5 . A5 - G#5 .', 'F#5 E5 C#5 E5 A4 - - .', 'B4 . E5 G#5 B5 - G#5 E5', 'D5 . B4 . G#4 . B4 .'] }
+    ]
+  };
+  const JINGLE = {
+    big: { bpm: 300, inst: 'pluck', vol: 0.7, notes: [['A4', 1], ['C#5', 1], ['E5', 1], ['A5', 3]] },
+    wipe: { bpm: 220, inst: 'pluck', vol: 0.9, notes: [['E5', 1], ['C5', 1], ['A4', 1], ['E4', 3]], bass: [['A2', 6, 0]], bassVol: 0.6 },
+    mission: { bpm: 170, inst: 'bell', notes: [['A4', 1], ['C#5', 1], ['E5', 1], ['A5', 3]], bass: [['A2', 6, 0]] },
+    heat: { bpm: 190, inst: 'pluck', notes: [['E5', 1], ['A5', 1], ['E5', 1], ['A5', 3]], bass: [['A2', 6, 0]], bassVol: 0.6 },
+    win: { bpm: 150, inst: 'brass', notes: [['E5', 1], ['E5', 1], ['A5', 2], ['C#6', 1], ['B5', 1], ['A5', 3]], bass: [['A2', 3, 0], ['E2', 2, 3], ['A2', 4, 5]] },
+    lose: { bpm: 130, inst: 'kalimba', notes: [['A4', 1], ['G4', 1], ['E4', 1], ['A4', 3]], bass: [['A2', 6, 0]], bassVol: 0.5 },
+    fail: { bpm: 140, inst: 'kalimba', notes: [['E5', 1], ['D5', 1], ['C5', 1], ['A4', 3]] }
+  };
+  function playSong(sg) { if (M) M.play(sg); }
+  function jingle(j) { if (M && sfxOn) M.jingle(j); }
+
+  /* =========================================================
+   * 3D 場景
+   * ========================================================= */
+  THREE.ColorManagement.enabled = false;
+  renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 6000);
+  camera.position.set(-8, 5, 10);
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x336677, 1.0);
+  scene.add(hemi);
+  const sunLight = new THREE.DirectionalLight(0xffffff, 1.1);
+  scene.add(sunLight, sunLight.target);
+  const fillLight = new THREE.DirectionalLight(0xffffff, 0.6);
+  fillLight.position.set(-4, 6, 10);
+  scene.add(fillLight);
+
+  /* ---------- 浪的形狀（在「浪管座標」：d = x - curlX） ---------- */
+  const WV = { H: 4, peel: 10 };
+  const P = { hx: 0, st: 0, zc: 0, wf: 1, wb: 1 };
+  function wp(d) {
+    const H = WV.H;
+    let hx, st;
+    if (d >= 0) { hx = H * (0.5 + 0.5 * Math.exp(-Math.max(0, d - 6) / 40)); st = Math.exp(-Math.max(0, d - 8) / 26); }
+    else { hx = H * (0.42 + 0.58 * Math.exp(d / 12)); st = 0.2 + 0.8 * Math.exp(d / 4); }
+    hx *= smooth((d + 330) / 170) * smooth((540 - d) / 230);
+    P.hx = hx; P.st = st;
+    P.zc = d > 0 ? -d * 0.02 : -d * 0.03;
+    P.wf = Math.max(1.5, hx * (3.0 - 1.2 * st));
+    P.wb = Math.max(2, hx * 2.4 + 2);
+    return P;
+  }
+  function waveY(d, z) {
+    const p = wp(d), u = z - p.zc;
+    if (u <= 0) return p.hx * Math.exp(-1.6 * (u * u) / (p.wb * p.wb));
+    const t = u / p.wf;
+    if (t < 1) { const c = 0.5 + 0.5 * Math.cos(Math.PI * t), q = (1 - t) * (1 - t); return p.hx * (c + (q - c) * p.st); }
+    if (t < 2.5) return -0.07 * p.hx * Math.sin(Math.PI * (t - 1) / 1.5);
+    return 0;
+  }
+  const GR = [0, 0];
+  function waveGrad(d, z) {
+    const e = 0.15;
+    GR[0] = (waveY(d + e, z) - waveY(d - e, z)) / (2 * e);
+    GR[1] = (waveY(d, z + e) - waveY(d, z - e)) / (2 * e);
+    return GR;
+  }
+  function faceT(d, z) { const p = wp(d); return (z - p.zc) / p.wf; }
+  // 浪唇往前捲的角度
+  function lipTheta(d) {
+    if (d > 26) return 0;
+    if (d > 0) return 2.0 * Math.pow(1 - d / 26, 1.35);
+    return 2.0;
+  }
+  const LIP = [0, 0];
+  function lipPoint(d, th) {
+    const p = wp(d), k = 0.45 + 0.55 * smooth((d + 12) / 6);
+    LIP[0] = p.zc + 1.15 * p.hx * k * Math.sin(th);
+    LIP[1] = p.hx + 0.85 * p.hx * k * (Math.cos(th) - 1);
+    return LIP;
+  }
+
+  /* ---------- 水的著色器 ---------- */
+  const WU = {
+    uTime: { value: 0 }, uSun: { value: new THREE.Vector3(0.5, 0.3, -0.8).normalize() }, uSunCol: { value: new THREE.Color() },
+    uSkyTop: { value: new THREE.Color() }, uSkyHor: { value: new THREE.Color() }, uDeep: { value: new THREE.Color() },
+    uShallow: { value: new THREE.Color() }, uFoam: { value: new THREE.Color() }, uGlow: { value: 0 }, uFogFar: { value: 1300 },
+    uDetail: { value: 1 }
+  };
+  const WATER_VS = `
+    uniform float uTime;
+    attribute vec4 aW;
+    varying vec3 vWp; varying vec3 vN; varying vec4 vW;
+    void main() {
+      vec4 wp = modelMatrix * vec4(position, 1.0);
+      float ww = aW.y;
+      float fade = 1.0 - smoothstep(30.0, 90.0, distance(wp.xyz, cameraPosition));
+      float ch = (sin(wp.x * 0.23 + uTime * 1.1) + sin(wp.z * 0.31 + wp.x * 0.11 - uTime * 1.4)) * 0.06 * (1.0 - ww) * fade;
+      float fb = ww * (0.5 + 0.35 * sin(wp.x * 0.9 + uTime * 2.6) * sin(wp.z * 1.2 - uTime * 1.9) + 0.25 * sin(wp.x * 2.3 - uTime * 3.1) * sin(wp.z * 2.9 + uTime * 2.2)) * 0.8;
+      wp.y += ch + fb;
+      vWp = wp.xyz; vN = normal; vW = aW;
+      gl_Position = projectionMatrix * viewMatrix * wp;
+    }`;
+  const WATER_FS = `
+    uniform float uTime, uGlow, uFogFar, uDetail;
+    uniform vec3 uSun, uSunCol, uSkyTop, uSkyHor, uDeep, uShallow, uFoam;
+    varying vec3 vWp; varying vec3 vN; varying vec4 vW;
+    float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    float vnoise(vec2 p) {
+      vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+      return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
+    }
+    void main() {
+      vec3 N = normalize(vN);
+      #ifdef LIP
+      if (!gl_FrontFacing) N = -N;
+      #endif
+      vec2 q = vWp.xz;
+      vec3 toCam = cameraPosition - vWp;
+      float dist = length(toCam);
+      float rfade = 1.0 - smoothstep(12.0, 60.0, dist);
+      float a1 = q.x * 0.8 + q.y * 0.5 + uTime * 1.6, a2 = -q.x * 0.45 + q.y * 1.1 + uTime * 1.9, a3 = q.x * 1.7 - q.y * 0.9 - uTime * 2.3;
+      vec2 rg = vec2(cos(a1) * 0.8 - cos(a2) * 0.45 + cos(a3) * 0.68, cos(a1) * 0.5 + cos(a2) * 1.1 - cos(a3) * 0.36) * 0.07;
+      N = normalize(N + vec3(-rg.x, 0.0, -rg.y) * rfade);
+      if (vW.y > 0.02) {
+        vec3 ng = normalize(cross(dFdx(vWp), dFdy(vWp)));
+        if (ng.y < 0.0) ng = -ng;
+        N = normalize(mix(N, ng, clamp(vW.y * 1.3, 0.0, 0.85)));
+      }
+      vec3 V = toCam / dist;
+      float nv = max(dot(N, V), 0.0);
+      float fres = 0.03 + 0.97 * pow(1.0 - nv, 5.0);
+      vec3 R = reflect(-V, N);
+      vec3 sky = mix(uSkyHor, uSkyTop, clamp(R.y * 1.8, 0.0, 1.0));
+      float hr = clamp(vW.x, 0.0, 1.2), face = vW.z;
+      vec3 base = mix(uDeep, uShallow, clamp(hr * 0.75 + face * 0.55, 0.0, 1.0));
+      base += uShallow * pow(clamp(hr, 0.0, 1.0), 2.0) * face * 0.45;
+      float streak = vnoise(vec2(q.x * 0.07 + uTime * 0.05, q.y * 1.3));
+      base *= 0.86 + 0.22 * streak * face + 0.12 * max(dot(N, normalize(vec3(-0.3, 0.6, 1.0))), 0.0);
+      base = mix(base, uDeep * 0.8, clamp(face * (1.0 - hr) * 0.35, 0.0, 0.35));
+      vec3 col = mix(base, sky, fres * 0.8);
+      float rs = max(dot(R, uSun), 0.0);
+      col += uSunCol * (pow(rs, 160.0) * 1.5 + pow(rs, 14.0) * 0.08);
+      float n1 = vnoise(q * 0.55 + vec2(uTime * 0.35, -uTime * 0.2));
+      float n2 = uDetail > 0.5 ? mix(0.5, vnoise(q * 1.8 - vec2(uTime * 0.5, 0.0)), rfade) : 0.5;
+      float gl = smoothstep(0.82, 0.95, n2) * pow(rs, 8.0) * step(dist, 260.0);
+      col += uSunCol * gl * 0.9;
+      float fn = n1 * 0.62 + n2 * 0.38;
+      float f = vW.y * smoothstep(0.32, 0.62, fn + vW.y * 0.18) + vW.w * smoothstep(0.32, 0.6, fn);
+      f = clamp(f, 0.0, 1.0);
+      vec3 fc = uFoam * (0.68 + 0.22 * max(dot(N, uSun), 0.0) + 0.18 * N.y) * (0.9 + 0.12 * n2);
+      col = mix(col, fc, f);
+      col += uFoam * f * uGlow * 0.55;
+      col += uFoam * uGlow * 0.18 * vW.w;
+      float fg = smoothstep(90.0, uFogFar, dist);
+      col = mix(col, uSkyHor, fg);
+      #ifdef LIP
+      gl_FragColor = vec4(col, mix(0.62, 0.97, clamp(f + vW.y * 0.6, 0.0, 1.0)));
+      #else
+      gl_FragColor = vec4(col, 1.0);
+      #endif
+    }`;
+  const waterMat = new THREE.ShaderMaterial({ uniforms: WU, vertexShader: WATER_VS, fragmentShader: WATER_FS });
+  const lipMat = new THREE.ShaderMaterial({ uniforms: WU, vertexShader: WATER_VS, fragmentShader: WATER_FS, defines: { LIP: 1 },
+    transparent: true, side: THREE.DoubleSide, depthWrite: false });
+
+  function axis(a, b, step, A, B, grow) {
+    const mid = [];
+    for (let v = a; v <= b + 1e-6; v += step) mid.push(v);
+    const lo = []; let st = step, v = a;
+    while (v > A + 1e-6) { st *= grow; v = Math.max(A, v - st); lo.push(v); }
+    const hi = []; st = step; v = mid[mid.length - 1];
+    while (v < B - 1e-6) { st *= grow; v = Math.min(B, v + st); hi.push(v); }
+    return lo.reverse().concat(mid, hi);
+  }
+  const XS = axis(-46, 112, 1.0, -1600, 1700, 1.24);
+  const ZS = axis(-14, 26, 0.45, -1500, 520, 1.2);
+  function gridGeo(nx, nz) {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(nx * nz * 3), 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(nx * nz * 3), 3));
+    g.setAttribute('aW', new THREE.BufferAttribute(new Float32Array(nx * nz * 4), 4));
+    const idx = [];
+    for (let i = 0; i < nx - 1; i++) for (let j = 0; j < nz - 1; j++) {
+      const a = i * nz + j, b = (i + 1) * nz + j;
+      idx.push(a, a + 1, b, b, a + 1, b + 1);
+    }
+    g.setIndex(idx);
+    return g;
+  }
+  const waveGeo = gridGeo(XS.length, ZS.length);
+  const waveMesh = new THREE.Mesh(waveGeo, waterMat);
+  waveMesh.frustumCulled = false;
+  scene.add(waveMesh);
+  const LIP_D0 = -12, LIP_D1 = 26.4, LIP_STEP = 0.4, LIP_J = 16;
+  const LIP_NX = Math.round((LIP_D1 - LIP_D0) / LIP_STEP) + 1;
+  const lipGeo = gridGeo(LIP_NX, LIP_J + 1);
+  const lipMesh = new THREE.Mesh(lipGeo, lipMat);
+  lipMesh.frustumCulled = false;
+  lipMesh.renderOrder = 2;
+  scene.add(lipMesh);
+
+  function buildWave() {
+    const pos = waveGeo.attributes.position.array, nor = waveGeo.attributes.normal.array, aw = waveGeo.attributes.aW.array;
+    const nz = ZS.length;
+    for (let i = 0; i < XS.length; i++) {
+      const d = XS[i];
+      for (let j = 0; j < nz; j++) {
+        const z = ZS[j], k = i * nz + j;
+        const y = waveY(d, z);
+        const g = waveGrad(d, z);
+        let nx = -g[0], ny = 1, nzz = -g[1];
+        const L = Math.hypot(nx, ny, nzz); nx /= L; ny /= L; nzz /= L;
+        pos[k * 3] = d; pos[k * 3 + 1] = y; pos[k * 3 + 2] = z;
+        nor[k * 3] = nx; nor[k * 3 + 1] = ny; nor[k * 3 + 2] = nzz;
+        const p = wp(d), u = z - p.zc, t = u / p.wf;
+        const face = t > 0 && t < 1 ? (1 - t) * (0.4 + 0.6 * p.st) : 0;
+        let ww = 0;
+        if (d < 0) ww = smooth((-d - 1) / 7) * smooth((d + 300) / 140) * smooth((u + 5) / 4) * smooth((p.wf * 2.4 - u) / (p.wf * 1.0));
+        ww = Math.max(ww, 0.12 * smooth((u - p.wf * 1.1) / 4) * smooth((p.wf * 4 - u) / 6) * smooth((d + 200) / 100) * smooth((260 - d) / 120));
+        const cf = Math.exp(-(u * u) / 0.35) * clamp(p.st * 1.3 - 0.15, 0, 1) * (d > -2 ? 1 : 0) * smooth((90 - d) / 40);
+        aw[k * 4] = y / WV.H; aw[k * 4 + 1] = ww; aw[k * 4 + 2] = face; aw[k * 4 + 3] = cf;
+      }
+    }
+    waveGeo.attributes.position.needsUpdate = true;
+    waveGeo.attributes.normal.needsUpdate = true;
+    waveGeo.attributes.aW.needsUpdate = true;
+    const lp = lipGeo.attributes.position.array, la = lipGeo.attributes.aW.array;
+    for (let i = 0; i < LIP_NX; i++) {
+      const d = LIP_D0 + i * LIP_STEP, th = lipTheta(d);
+      const collapse = 1 - smooth((d + 12) / 6);
+      for (let j = 0; j <= LIP_J; j++) {
+        const f = j / LIP_J, k = i * (LIP_J + 1) + j;
+        const pt = lipPoint(d, th * f);
+        lp[k * 3] = d; lp[k * 3 + 1] = pt[1]; lp[k * 3 + 2] = pt[0];
+        la[k * 4] = pt[1] / WV.H; la[k * 4 + 1] = Math.max(collapse, smooth((f - 0.72) / 0.28) * 0.9, smooth((d - 18) / 8) * 0.6);
+        la[k * 4 + 2] = 0.45 + 0.25 * f; la[k * 4 + 3] = 0;
+      }
+    }
+    lipGeo.attributes.position.needsUpdate = true;
+    lipGeo.attributes.aW.needsUpdate = true;
+    lipGeo.computeVertexNormals();
+  }
+
+  /* ---------- 天空 ---------- */
+  const SKU = { uTop: { value: new THREE.Color() }, uMid: { value: new THREE.Color() }, uHor: { value: new THREE.Color() },
+    uSun: WU.uSun, uSunCol: WU.uSunCol, uSunAmt: { value: 1 }, uStars: { value: 0 }, uTime: WU.uTime };
+  const sky = new THREE.Mesh(new THREE.SphereGeometry(3000, 32, 16), new THREE.ShaderMaterial({
+    uniforms: SKU, side: THREE.BackSide, depthWrite: false,
+    vertexShader: `varying vec3 vDir; void main() { vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `
+      uniform vec3 uTop, uMid, uHor, uSun, uSunCol; uniform float uSunAmt, uStars, uTime;
+      varying vec3 vDir;
+      float h3(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }
+      void main() {
+        vec3 d = normalize(vDir);
+        float y = d.y;
+        vec3 col = mix(uHor, uMid, smoothstep(0.0, 0.2, y));
+        col = mix(col, uTop, smoothstep(0.18, 0.75, y));
+        if (y < 0.0) col = uHor;
+        float sd = max(dot(d, uSun), 0.0);
+        col += uSunCol * (smoothstep(0.9993, 0.9996, sd) * 1.4 + pow(sd, 60.0) * 0.35 + pow(sd, 6.0) * 0.12) * uSunAmt;
+        if (uStars > 0.5) {
+          vec3 g = d * 160.0, c = floor(g), f = fract(g) - 0.5;
+          float h = h3(c);
+          float s = step(0.993, h) * smoothstep(0.16, 0.0, length(f)) * smoothstep(0.04, 0.25, y);
+          col += vec3(0.9, 0.95, 1.0) * s * (0.6 + 0.4 * sin(uTime * 3.0 + h * 50.0));
+        }
+        gl_FragColor = vec4(col, 1.0);
+      }`
+  }));
+  sky.renderOrder = -10;
+  sky.frustumCulled = false;
+  scene.add(sky);
+
+  /* ---------- 遠方：島嶼、沙灘、椰子樹剪影（畫在環形布幕上） ---------- */
+  const panoCv = document.createElement('canvas');
+  panoCv.width = 2048; panoCv.height = 512;
+  const panoTex = new THREE.CanvasTexture(panoCv);
+  panoTex.wrapS = THREE.RepeatWrapping;
+  panoTex.repeat.x = 3;
+  const pano = new THREE.Mesh(new THREE.CylinderGeometry(2600, 2600, 1362, 72, 1, true),
+    new THREE.MeshBasicMaterial({ map: panoTex, transparent: true, side: THREE.BackSide, depthWrite: false, fog: false }));
+  pano.renderOrder = -9;
+  pano.frustumCulled = false;
+  scene.add(pano);
+  function palm(c, x, y, h, lean) {
+    c.save();
+    c.translate(x, y);
+    c.lineWidth = Math.max(2, h * 0.07); c.lineCap = 'round';
+    c.beginPath(); c.moveTo(0, 0); c.quadraticCurveTo(lean * h * 0.3, -h * 0.5, lean * h * 0.45, -h);
+    c.stroke();
+    const tx = lean * h * 0.45, ty = -h;
+    for (let i = 0; i < 7; i++) {
+      const a = -Math.PI / 2 + (i - 3) * 0.52 + lean * 0.2, L = h * (0.45 + (i % 2) * 0.1);
+      c.beginPath(); c.moveTo(tx, ty);
+      c.quadraticCurveTo(tx + Math.cos(a) * L * 0.6, ty + Math.sin(a) * L * 0.6 - h * 0.12, tx + Math.cos(a) * L, ty + Math.sin(a) * L + h * 0.22);
+      c.lineWidth = Math.max(2, h * 0.06); c.stroke();
+    }
+    c.beginPath(); c.arc(tx, ty + h * 0.04, h * 0.05, 0, TAU); c.fill();
+    c.restore();
+  }
+  function drawPano(B) {
+    const c = panoCv.getContext('2d'), w = panoCv.width, h = panoCv.height, base = h * 0.94;
+    c.clearRect(0, 0, w, h);
+    // 雲
+    c.fillStyle = B.cloud;
+    const R = (s => () => { s = (s * 16807) % 2147483647; return s / 2147483647; })(7 + B.id.length * 31);
+    for (let i = 0; i < 18; i++) {
+      const cx = R() * w, cy = h * (0.25 + R() * 0.38), cw = 60 + R() * 140;
+      for (let k = 0; k < 5; k++) { c.beginPath(); c.ellipse(cx + (k - 2) * cw * 0.28, cy - Math.sin(k / 4 * Math.PI) * cw * 0.12, cw * 0.32, cw * 0.15, 0, 0, TAU); c.fill(); }
+    }
+    // 遠山
+    c.fillStyle = B.sil2;
+    c.beginPath(); c.moveTo(0, base);
+    for (let x = 0; x <= w; x += 8) {
+      const m = Math.max(0, Math.sin(x / w * TAU * 2 + 1.2)) * 0.7 + Math.max(0, Math.sin(x / w * TAU * 9)) * 0.2;
+      c.lineTo(x, base - m * 34);
+    }
+    c.lineTo(w, base); c.closePath(); c.fill();
+    // 島和長沙灘
+    c.fillStyle = B.sil; c.strokeStyle = B.sil;
+    const isl = (x0, x1, top) => {
+      c.beginPath(); c.moveTo(x0, base);
+      c.bezierCurveTo(x0 + (x1 - x0) * 0.2, base - top, x0 + (x1 - x0) * 0.75, base - top * 1.1, x1, base);
+      c.closePath(); c.fill();
+    };
+    isl(80, 300, 30); isl(1240, 1420, 22); isl(1700, 1800, 14);
+    c.fillStyle = B.sand;
+    c.fillRect(560, base - 4, 480, 5);
+    c.fillStyle = B.sil;
+    c.beginPath(); c.moveTo(540, base - 3); c.bezierCurveTo(680, base - 14, 880, base - 12, 1060, base - 3); c.closePath(); c.fill();
+    const palms = [[120, 26], [150, 32], [196, 25], [232, 29], [600, 22], [626, 27], [668, 24], [720, 30], [770, 23], [830, 27], [884, 21], [940, 26], [990, 22], [1290, 20], [1322, 25], [1366, 19], [1740, 15]];
+    for (const [x, ph] of palms) palm(c, x, base - (x > 540 && x < 1100 ? 7 : x < 400 ? 14 : 10), ph, ((x * 7) % 5 - 2) * 0.12);
+    // 燈塔
+    c.fillRect(1394, base - 44, 6, 30);
+    c.beginPath(); c.moveTo(1391, base - 44); c.lineTo(1403, base - 44); c.lineTo(1397, base - 50); c.closePath(); c.fill();
+    if (B.glow) {
+      c.fillStyle = 'rgba(255,230,140,0.95)'; c.beginPath(); c.arc(1397, base - 46, 3, 0, TAU); c.fill();
+      c.fillStyle = 'rgba(255,220,120,0.85)';
+      for (let i = 0; i < 26; i++) { c.fillRect(600 + i * 17 + (i % 3) * 4, base - 6 - (i % 4) * 2, 2, 2); }
+    }
+    panoTex.needsUpdate = true;
+  }
+
+  /* ---------- 水花粒子 ---------- */
+  const PMAX = 460;
+  const pGeo = new THREE.BufferGeometry();
+  const pPos = new Float32Array(PMAX * 3), pCol = new Float32Array(PMAX * 3), pSize = new Float32Array(PMAX), pAlpha = new Float32Array(PMAX);
+  pGeo.setAttribute('position', new THREE.BufferAttribute(pPos, 3));
+  pGeo.setAttribute('aCol', new THREE.BufferAttribute(pCol, 3));
+  pGeo.setAttribute('aSize', new THREE.BufferAttribute(pSize, 1));
+  pGeo.setAttribute('aAlpha', new THREE.BufferAttribute(pAlpha, 1));
+  const PU = { uScale: { value: 400 } };
+  const pMat = new THREE.ShaderMaterial({
+    uniforms: PU, transparent: true, depthWrite: false,
+    vertexShader: `attribute vec3 aCol; attribute float aSize; attribute float aAlpha; uniform float uScale; varying vec3 vC; varying float vA;
+      void main() { vC = aCol; vA = aAlpha; vec4 mv = modelViewMatrix * vec4(position, 1.0); gl_PointSize = clamp(aSize * uScale / -mv.z, 1.0, 90.0); gl_Position = projectionMatrix * mv; }`,
+    fragmentShader: `varying vec3 vC; varying float vA; void main() { float d = length(gl_PointCoord - 0.5); float a = smoothstep(0.5, 0.12, d) * vA; if (a < 0.01) discard; gl_FragColor = vec4(vC, a); }`
+  });
+  const pts = new THREE.Points(pGeo, pMat);
+  pts.frustumCulled = false;
+  pts.renderOrder = 3;
+  scene.add(pts);
+  const parts = [];
+  let partMul = 1;
+  const PC = { r: 1, g: 1, b: 1 };
+  function emit(x, y, z, vx, vy, vz, size, life, col) {
+    if (parts.length >= PMAX * partMul) return;
+    const c = col || PC;
+    parts.push({ x, y, z, vx, vy, vz, size, life, max: life, r: c.r, g: c.g, b: c.b });
+  }
+  function updateParts(dt) {
+    let n = 0;
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const p = parts[i];
+      p.life -= dt;
+      if (p.life <= 0) { parts[i] = parts[parts.length - 1]; parts.pop(); continue; }
+      p.vy -= 9 * dt; p.vx *= 1 - 0.9 * dt; p.vz *= 1 - 0.9 * dt;
+      p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
+    }
+    for (let i = 0; i < parts.length && n < PMAX; i++, n++) {
+      const p = parts[i], f = p.life / p.max;
+      pPos[n * 3] = p.x; pPos[n * 3 + 1] = p.y; pPos[n * 3 + 2] = p.z;
+      pCol[n * 3] = p.r; pCol[n * 3 + 1] = p.g; pCol[n * 3 + 2] = p.b;
+      pSize[n] = p.size * (1.4 - 0.4 * f);
+      pAlpha[n] = Math.min(1, f * 2.2) * 0.72;
+    }
+    pGeo.setDrawRange(0, n);
+    pGeo.attributes.position.needsUpdate = true;
+    pGeo.attributes.aCol.needsUpdate = true;
+    pGeo.attributes.aSize.needsUpdate = true;
+    pGeo.attributes.aAlpha.needsUpdate = true;
+  }
+
+  /* ---------- 衝浪手（4 個原創角色） ---------- */
+  const lam = c => new THREE.MeshLambertMaterial({ color: c });
+  const SPH = new THREE.SphereGeometry(1, 18, 14);
+  function ball(mat, r, x, y, z, sx, sy, sz) {
+    const m = new THREE.Mesh(SPH, mat);
+    m.scale.set(r * (sx || 1), r * (sy || 1), r * (sz || 1));
+    m.position.set(x, y, z);
+    return m;
+  }
+  function boardGeo() {
+    const sh = new THREE.Shape();
+    sh.moveTo(-0.95, -0.15);
+    sh.quadraticCurveTo(-1.0, 0, -0.95, 0.15);
+    sh.quadraticCurveTo(0.1, 0.32, 1.08, 0);
+    sh.quadraticCurveTo(0.1, -0.32, -0.95, -0.15);
+    const g = new THREE.ExtrudeGeometry(sh, { depth: 0.06, bevelEnabled: true, bevelThickness: 0.025, bevelSize: 0.03, bevelSegments: 2, curveSegments: 10 });
+    g.rotateX(-Math.PI / 2);
+    g.translate(0, -0.02, 0);
+    return g;
+  }
+  const BOARD_G = boardGeo();
+  function buildSurfer(ch) {
+    const root = new THREE.Group(), trick = new THREE.Group();
+    root.add(trick);
+    const board = new THREE.Group();
+    trick.add(board);
+    board.add(new THREE.Mesh(BOARD_G, lam(ch.board)));
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.012, 0.07), lam(ch.stripe));
+    stripe.position.set(0.05, 0.075, 0); board.add(stripe);
+    const fin = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.22, 3), lam(ch.stripe));
+    fin.rotation.x = Math.PI; fin.position.set(-0.8, -0.1, 0); fin.scale.z = 0.2; board.add(fin);
+    const rider = new THREE.Group();
+    rider.position.y = 0.07;
+    trick.add(rider);
+    const mb = lam(ch.body), mw = lam(ch.belly), md = lam(ch.dark), black = lam(0x1a1420), white = lam(0xffffff), pink = lam(0xff9cb4);
+    const legG = new THREE.CapsuleGeometry(0.085, 0.22, 4, 8);
+    const legs = [];
+    for (const sx of [-1, 1]) {
+      const l = new THREE.Mesh(legG, ch.id === 'penguin' ? mb : mb);
+      l.position.set(sx * 0.2, 0.2, 0); l.rotation.z = sx * 0.28; rider.add(l); legs.push(l);
+      const foot = ball(ch.id === 'penguin' ? md : mb, 0.1, sx * 0.25, 0.04, 0.04, 1.3, 0.5, 1.2);
+      rider.add(foot);
+    }
+    const torso = new THREE.Group(); torso.position.y = 0.36; rider.add(torso);
+    torso.add(ball(mb, 0.3, 0, 0.2, 0, 1.05, 1.15, 0.9));
+    torso.add(ball(mw, 0.22, 0, 0.17, 0.15, 1.0, 1.15, 0.55));
+    const head = new THREE.Group(); head.position.y = 0.68; head.rotation.y = 0.45; torso.add(head);
+    head.add(ball(mb, 0.34, 0, 0, 0));
+    if (ch.id === 'penguin') {
+      head.add(ball(mw, 0.27, 0, -0.03, 0.1, 1.05, 0.88, 0.8));
+      const beak = new THREE.Mesh(new THREE.ConeGeometry(0.07, 0.16, 8), md);
+      beak.rotation.x = Math.PI / 2; beak.position.set(0, -0.06, 0.38); head.add(beak);
+      head.add(ball(mb, 0.07, 0, 0.33, 0, 0.6, 1.2, 0.6));
+    } else {
+      head.add(ball(mw, 0.15, 0, -0.08, 0.26, 1.25, 0.85, 0.8));
+      head.add(ball(black, 0.045, 0, -0.03, 0.39));
+    }
+    for (const sx of [-1, 1]) {
+      head.add(ball(black, 0.048, sx * 0.12, 0.05, 0.3));
+      head.add(ball(white, 0.016, sx * 0.12 + 0.016, 0.075, 0.343));
+      head.add(ball(pink, 0.055, sx * 0.21, -0.07, 0.25, 1, 0.6, 0.4));
+      if (ch.id === 'otter') head.add(ball(md, 0.08, sx * 0.24, 0.24, -0.02, 1, 0.9, 0.6));
+      if (ch.id === 'shiba' || ch.id === 'panda') {
+        const big = ch.id === 'panda';
+        const ear = new THREE.Mesh(new THREE.ConeGeometry(big ? 0.12 : 0.1, big ? 0.17 : 0.19, 4), mb);
+        ear.position.set(sx * 0.19, 0.29, 0); ear.rotation.z = -sx * 0.35; ear.rotation.y = Math.PI / 4; head.add(ear);
+        const inner = new THREE.Mesh(new THREE.ConeGeometry(big ? 0.07 : 0.055, big ? 0.1 : 0.11, 4), big ? mw : pink);
+        inner.position.set(sx * 0.19, 0.28, 0.035); inner.rotation.z = -sx * 0.35; inner.rotation.y = Math.PI / 4; head.add(inner);
+        if (big) head.add(ball(mw, 0.05, sx * 0.13, 0.15, 0.27, 1.3, 0.6, 0.5));
+      }
+    }
+    const arms = [];
+    for (const sx of [-1, 1]) {
+      const sh = new THREE.Group(); sh.position.set(sx * 0.28, 0.33, 0); torso.add(sh);
+      const arm = new THREE.Mesh(new THREE.CapsuleGeometry(0.07, 0.24, 4, 8), ch.id === 'penguin' ? mb : mb);
+      arm.rotation.z = Math.PI / 2; arm.position.x = sx * 0.17; sh.add(arm);
+      sh.add(ball(ch.id === 'penguin' ? mb : mw, 0.075, sx * 0.34, 0, 0));
+      sh.rotation.z = sx * -0.45;
+      arms.push(sh);
+    }
+    // 尾巴
+    if (ch.id === 'otter') { const t = ball(mb, 0.1, 0, 0.16, -0.3, 1, 0.8, 2.4); t.rotation.x = 0.5; rider.add(t); }
+    if (ch.id === 'shiba') { const t = new THREE.Mesh(new THREE.TorusGeometry(0.1, 0.05, 8, 14, Math.PI * 1.6), mb); t.position.set(0, 0.58, -0.3); t.rotation.y = Math.PI / 2; rider.add(t); }
+    if (ch.id === 'panda') {
+      for (let i = 0; i < 4; i++) { const t = ball(i % 2 ? mw : md, 0.11 - i * 0.008, 0, 0.42 - i * 0.07, -0.3 - i * 0.12, 1, 1, 0.9); rider.add(t); }
+    }
+    root.userData = { trick, board, rider, torso, head, arms, legs };
+    return root;
+  }
+  const surfers = CHARS.map(buildSurfer);
+  let surferObj = surfers[charIdx];
+  surfers.forEach((o, i) => { o.visible = i === charIdx; scene.add(o); });
+  // 影子
+  const shCv = document.createElement('canvas'); shCv.width = shCv.height = 64;
+  { const c = shCv.getContext('2d'), g = c.createRadialGradient(32, 32, 2, 32, 32, 31); g.addColorStop(0, 'rgba(0,20,40,0.55)'); g.addColorStop(1, 'rgba(0,20,40,0)'); c.fillStyle = g; c.fillRect(0, 0, 64, 64); }
+  const shadow = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 1.2), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(shCv), transparent: true, depthWrite: false }));
+  shadow.renderOrder = 1;
+  scene.add(shadow);
+
+  /* ---------- 礁石、浮標、貝殼 ---------- */
+  const rockGeo = new THREE.IcosahedronGeometry(1, 0);
+  const rockMats = [lam(0x6b625c), lam(0xd98c86), lam(0x5a4a5a), lam(0x1d2840)];
+  const mossMat = lam(0x5aa36a);
+  const buoyRed = lam(0xff4d4d), buoyWhite = lam(0xffffff), flagMat = lam(0xffd23a);
+  const buoyGlow = new THREE.MeshBasicMaterial({ color: 0xfff1a0 });
+  const shellMat = new THREE.MeshLambertMaterial({ color: 0xff9ec0, emissive: 0x552233 });
+  const shellGeo = new THREE.CylinderGeometry(0.34, 0.05, 0.12, 9, 1, false, -1.15, 2.3);
+  const OBJ = [];
+  function makeObj(kind) {
+    const g = new THREE.Group();
+    if (kind === 'rock') {
+      const r = new THREE.Mesh(rockGeo, rockMats[0]); r.scale.set(1.3, 0.9, 1.1); g.add(r);
+      const r2 = new THREE.Mesh(rockGeo, rockMats[0]); r2.scale.set(0.7, 0.6, 0.7); r2.position.set(0.9, -0.2, 0.3); g.add(r2);
+      const ms = new THREE.Mesh(rockGeo, mossMat); ms.scale.set(0.9, 0.25, 0.8); ms.position.y = 0.62; g.add(ms);
+      g.userData.parts = [r, r2];
+    } else if (kind === 'buoy') {
+      const cyl = new THREE.CylinderGeometry(0.42, 0.5, 0.36, 12);
+      for (let i = 0; i < 3; i++) { const m = new THREE.Mesh(cyl, i % 2 ? buoyWhite : buoyRed); m.position.y = i * 0.34; m.scale.setScalar(1 - i * 0.15); g.add(m); }
+      const top = ball(buoyRed, 0.28, 0, 1.0, 0); g.add(top);
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.8, 5), buoyWhite); pole.position.y = 1.5; g.add(pole);
+      const flag = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.4, 3), flagMat); flag.rotation.z = -Math.PI / 2; flag.position.set(0.2, 1.75, 0); flag.scale.z = 0.2; g.add(flag);
+      const lamp = ball(buoyGlow, 0.1, 0, 1.95, 0); g.add(lamp); g.userData.lamp = lamp;
+    } else {
+      const m = new THREE.Mesh(shellGeo, shellMat); m.rotation.x = -1.2; g.add(m);
+      const pearl = ball(new THREE.MeshBasicMaterial({ color: 0xffffff }), 0.09, 0, 0.05, 0.1); g.add(pearl);
+    }
+    g.visible = false;
+    scene.add(g);
+    const o = { kind, mesh: g, alive: false, x: 0, z: 0, y: 0, top: 0, passed: false, ph: Math.random() * 6 };
+    OBJ.push(o);
+    return o;
+  }
+  for (let i = 0; i < 6; i++) makeObj('rock');
+  for (let i = 0; i < 6; i++) makeObj('buoy');
+  for (let i = 0; i < 14; i++) makeObj('shell');
+
+  /* ---------- 海鷗 ---------- */
+  const gulls = [];
+  {
+    const gw = lam(0xffffff), gg = lam(0x9aa6b2), wingG = new THREE.BufferGeometry();
+    wingG.setAttribute('position', new THREE.BufferAttribute(new Float32Array([0, 0, -0.25, 0, 0, 0.25, 1.4, 0, 0.05, 0, 0, 0.25, 0, 0, -0.25, 1.4, 0, 0.05]), 3));
+    wingG.computeVertexNormals();
+    for (let i = 0; i < 6; i++) {
+      const g = new THREE.Group();
+      g.add(ball(gw, 0.22, 0, 0, 0, 1, 0.8, 2.2));
+      g.add(ball(gg, 0.13, 0, 0.08, 0.42));
+      const wl = new THREE.Mesh(wingG, gg), wr = new THREE.Mesh(wingG, gg);
+      wr.scale.x = -1;
+      g.add(wl, wr);
+      scene.add(g);
+      gulls.push({ g, wl, wr, a: i * 1.1, r: 18 + i * 6, h: 13 + (i % 3) * 4, sp: 0.18 + (i % 4) * 0.04, ph: i * 0.9 });
+    }
+  }
+
+  /* ---------- 換海灘 ---------- */
+  let beachIdx = 0;
+  function setBeach(i) {
+    beachIdx = i;
+    const B = BEACHES[i];
+    WV.H = B.H; WV.peel = B.peel;
+    buildWave();
+    const sd = new THREE.Vector3(B.sun[0], B.sun[1], B.sun[2]).normalize();
+    WU.uSun.value.copy(sd);
+    WU.uSunCol.value.setHex(B.sunCol);
+    WU.uSkyTop.value.setHex(B.skyTop); WU.uSkyHor.value.setHex(B.skyHor);
+    WU.uDeep.value.setHex(B.deep); WU.uShallow.value.setHex(B.shallow); WU.uFoam.value.setHex(B.foam);
+    WU.uGlow.value = B.glow; WU.uFogFar.value = B.fogFar;
+    SKU.uTop.value.setHex(B.skyTop); SKU.uMid.value.setHex(B.skyMid); SKU.uHor.value.setHex(B.skyHor);
+    SKU.uSunAmt.value = B.sunAmt; SKU.uStars.value = B.stars;
+    hemi.color.setHex(B.hemiSky); hemi.groundColor.setHex(B.hemiGround); hemi.intensity = 2.3 * B.light;
+    sunLight.color.setHex(B.sunCol); sunLight.intensity = 2.0 * B.light; fillLight.intensity = 1.4 * B.light;
+    sunLight.position.copy(sd).multiplyScalar(100);
+    pMat.blending = B.glow ? THREE.AdditiveBlending : THREE.NormalBlending;
+    pMat.needsUpdate = true;
+    for (const o of OBJ) {
+      if (o.kind === 'rock') o.mesh.userData.parts.forEach(m => { m.material = rockMats[i]; });
+      if (o.kind === 'buoy') o.mesh.userData.lamp.visible = !!B.glow;
+    }
+    shellMat.emissive.setHex(B.glow ? 0xff4f9a : 0x552233);
+    gulls.forEach(g => { g.g.visible = !B.glow; });
+    drawPano(B);
+    renderer.setClearColor(B.skyHor);
+  }
+
+  /* =========================================================
+   * 遊戲狀態
+   * ========================================================= */
+  let sceneName = 'title', paused = false, mode = 'free', missionIdx = 0, missionState = null;
+  let curlX = 0, gameT = 0, timeScale = 1, slowT = 0, shake = 0, sceneT = 0;
+  let rideT = 0, lives = 3, score = 0, scoring = false, autopilot = true, endPending = 0, hintT = 0;
+  let comp = null, result = null;
+  const combo = { meter: 0, mult: 1, idle: 0 };
+  function newStats() {
+    return { maxClean: 0, clean: 0, maxKmh: 0, launches: 0, spins: 0, backflips: 0, frontflips: 0, grabs: 0, snaps: 0, maxTube: 0, tubeTotal: 0,
+      shells: 0, dodges: 0, maxMult: 1, maxTricksAir: 0, maxSpinAir: 0, score: 0, wipes: 0, airs: 0, bestTrick: '', bestTrickPts: 0 };
+  }
+  let ST = newStats();
+  const rider = { x: 20, z: 1, y: 2, v: 11, phi: 0, air: false, vx: 0, vy: 0, vz: 0, state: 'ride', wipeT: 0, inv: 0, carve: 0,
+    pumpCD: 0, pumpAnim: 0, tube: false, tubeT: 0, airT: 0, spin: 0, flip: 0, cur: null, queue: [], tricks: [], grabPose: 0, grabV: 0,
+    snapArm: -9, bottomArm: -9, lean: 0, stall: false, warnT: 0, launchY: 0, maxY: 0, autoDir: -1, autoTrick: 0, wv: { x: 0, y: 0, z: 0 }, tumble: 0, carveSnd: 0 };
+  const inp = { steer: 0, stall: false, pumpReq: false };
+  const C = () => CHARS[charIdx];
+
+  function setChar(i) {
+    charIdx = i;
+    surfers.forEach((o, k) => { o.visible = k === i; });
+    surferObj = surfers[i];
+  }
+
+  function resetRider(d0) {
+    const p = wp(d0);
+    rider.x = curlX + d0; rider.z = p.zc + p.wf * 0.35; rider.y = waveY(d0, rider.z);
+    rider.v = 11.5; rider.phi = 0.1; rider.air = false; rider.state = 'ride'; rider.tube = false; rider.tubeT = 0;
+    rider.cur = null; rider.queue.length = 0; rider.tricks.length = 0; rider.spin = 0; rider.flip = 0; rider.grabPose = 0;
+    rider.carve = 0; rider.lean = 0; rider.vx = rider.vy = rider.vz = 0; rider.tumble = 0;
+    inTubeAudio = false;
+  }
+
+  /* ---------- 分數與連擊 ---------- */
+  function addPoints(base) { const pts = Math.round(base * combo.mult); score += pts; return pts; }
+  function addCombo(a) {
+    combo.meter = Math.min(560, combo.meter + a); combo.idle = 0;
+    const m = Math.min(5, 1 + Math.floor(combo.meter / 100));
+    if (m > combo.mult) {
+      combo.mult = m;
+      if (scoring) { sfx('combo', { pitch: 1 + m * 0.08 }); smallCall('連擊 ×' + m + '！', '#ffe066'); }
+      ST.maxMult = Math.max(ST.maxMult, m);
+    }
+  }
+  function slowmo(d) { slowT = Math.max(slowT, d); }
+
+  /* ---------- 標語（同一時間只顯示一個，新的會取代舊的） ---------- */
+  const CO = { main: null, small: null };
+  function callout(text, sub, color, dur) { CO.main = { text, sub: sub || '', color: color || '#ffffff', t: 0, dur: dur || 1.6 }; }
+  function smallCall(text, color, dur) { CO.small = { text, color: color || '#ffffff', t: 0, dur: dur || 1.1 }; }
+
+  /* ---------- 特技 ---------- */
+  const TRICKS = { spin: 0.6, flip: 0.72, grab: 0.55 };
+  const GRAB_NAMES = ['抓板', '鼻抓', '尾抓', '飛魚抓板'];
+  let grabCycle = 0;
+  function trickName(tr) {
+    if (tr.kind === 'spin') return ['360 旋轉', '720 大旋風', '1080 龍捲風', '1440 超級龍捲風'][Math.min(3, tr.n - 1)];
+    if (tr.kind === 'flip') { const b = tr.dir > 0 ? '後空翻' : '前空翻'; return tr.n === 1 ? b : (tr.n === 2 ? '雙' : '三') + b; }
+    return GRAB_NAMES[tr.v];
+  }
+  function trickPts(tr) {
+    if (tr.kind === 'spin') return [600, 1500, 2700, 4000][Math.min(3, tr.n - 1)];
+    if (tr.kind === 'flip') return [1000, 2500, 4200][Math.min(2, tr.n - 1)];
+    return 450 + tr.v * 30;
+  }
+  const chainName = () => rider.tricks.map(trickName).join(' ＋ ');
+  function requestTrick(kind, dir) {
+    const r = rider;
+    if (!r.air || r.state !== 'ride') return false;
+    if (r.cur) { if (r.queue.length < 2) r.queue.push({ kind, dir }); }
+    else startTrick({ kind, dir });
+    return true;
+  }
+  function startTrick(tk) {
+    const r = rider, k = 1 - 0.07 * (C().stats.air - 3);
+    r.cur = { kind: tk.kind, dir: tk.dir || 1, t: 0, dur: TRICKS[tk.kind] * k };
+    const pp = 1 + r.tricks.length * 0.08;
+    if (tk.kind === 'spin') sfx('whir', { pitch: pp, pan: 0.1 });
+    else if (tk.kind === 'flip') sfx('flipwhir', { pitch: pp });
+    else { r.grabV = grabCycle++ % 4; sfx('grab', { pitch: pp }); }
+  }
+  function completeTrick() {
+    const r = rider, c = r.cur;
+    r.cur = null; r.spin = 0; r.flip = 0; r.grabPose = 0;
+    if (!c) return;
+    const last = r.tricks[r.tricks.length - 1];
+    if (c.kind === 'spin') {
+      if (last && last.kind === 'spin') last.n++; else r.tricks.push({ kind: 'spin', n: 1 });
+      if (scoring) ST.spins++;
+    } else if (c.kind === 'flip') {
+      if (last && last.kind === 'flip' && last.dir === c.dir) last.n++; else r.tricks.push({ kind: 'flip', dir: c.dir, n: 1 });
+      if (scoring) { if (c.dir > 0) ST.backflips++; else ST.frontflips++; }
+    } else {
+      r.tricks.push({ kind: 'grab', v: r.grabV, n: 1 });
+      if (scoring) ST.grabs++;
+    }
+    if (scoring) callout(chainName(), '空中 ' + r.airT.toFixed(1) + ' 秒', '#ffffff', 1.3);
+  }
+
+  /* ---------- 衝浪手物理 ---------- */
+  function faceFactor(t) { return t < 0 ? 0 : smooth((1.15 - t) / 0.6) * smooth((t + 0.05) / 0.17); }
+  function riderUpdate(dt) {
+    const r = rider;
+    if (r.state === 'wipe') { wipeUpdate(dt); return; }
+    if (r.inv > 0) r.inv -= dt;
+    r.pumpCD -= dt; r.pumpAnim = Math.max(0, r.pumpAnim - dt * 3);
+    let steer = inp.steer, stall = inp.stall;
+    if (autopilot || sceneName === 'count') { const a = autoInput(); steer = a.steer; stall = a.stall; if (sceneName === 'count' || sceneName === 'chars') { steer = 0; stall = sceneName === 'chars' && r.x - curlX > 22; } }
+    if (!r.air) groundUpdate(dt, steer, stall); else airUpdate(dt);
+  }
+  function groundUpdate(dt, steer, stall) {
+    const r = rider, ch = C().stats;
+    let d = r.x - curlX;
+    const p = wp(d), t = (r.z - p.zc) / p.wf;
+    const active = Math.abs(steer) > 0.05;
+    let target = active ? steer * 0.95 : clamp((p.zc + p.wf * 0.35 - r.z) * 0.25, -0.35, 0.35);
+    if (t > 1.35) target = Math.min(target, -0.5);
+    const tr = (3.4 + 0.35 * (ch.turn - 3)) * (active ? 1 : 0.55);
+    const prev = r.phi;
+    r.phi += clamp(target - r.phi, -tr * dt, tr * dt);
+    const dphi = (r.phi - prev) / Math.max(dt, 1e-4);
+    r.carve = lerp(r.carve, Math.abs(dphi), damp(8, dt));
+    r.lean = lerp(r.lean, clamp(dphi * 0.22, -0.55, 0.55), damp(10, dt));
+    const cs = Math.cos(r.phi), sn = Math.sin(r.phi);
+    const g = waveGrad(d, r.z);
+    const slope = g[0] * cs + g[1] * sn;
+    const str = d < 10 ? 1 : 0.15 + 0.85 * Math.exp(-(d - 10) / 16);
+    const ff = faceFactor(t);
+    const drag = 0.03 - 0.003 * (ch.speed - 3);
+    let acc = -9.8 * slope * 0.8 + 7.4 * str * ff * (1 + 0.04 * (ch.speed - 3)) - drag * r.v * r.v - 0.35 - r.carve * 0.45;
+    if (stall) acc -= 5.5;
+    if (t > 1.05) acc -= 2.5;
+    r.v = clamp(r.v + acc * dt, 3, 25);
+    if (stall && !r.stall) sfx('stall');
+    r.stall = stall;
+    if (inp.pumpReq) { inp.pumpReq = false; doPump(t, d); }
+    r.x += r.v * cs * dt; r.z += r.v * sn * dt;
+    d = r.x - curlX;
+    const p2 = wp(d), t2 = (r.z - p2.zc) / p2.wf;
+    // 浪頂：夠快就飛出去，不然就沿著浪頂滑
+    if (t2 < 0.03) {
+      const up = -r.v * Math.sin(r.phi);
+      if (d < 2 && lipTheta(d) > 1.0 && scoring && r.inv <= 0) { wipeout('被浪唇打到了！'); return; }
+      if (up > 3.4 && lipTheta(d) < 1.0) { launch(up, d); return; }
+      r.z = p2.zc + p2.wf * 0.03;
+      if (r.phi < 0) r.phi = Math.min(0.1, r.phi + dt * 4);
+      r.v = Math.max(3, r.v - dt * 3);
+    }
+    if (t2 > 1.8) r.z = p2.zc + p2.wf * 1.8;
+    r.y = waveY(d, r.z);
+    // 落後浪管太多：被浪吞沒
+    if (d < -11 && r.inv <= 0 && (scoring || sceneName === 'count')) { wipeout('被浪吞沒了！'); return; }
+    if (d < -11 && !scoring) { resetRider(18); return; }
+    if (d < -5 && scoring) { r.warnT -= dt; if (r.warnT <= 0) { r.warnT = 0.5; sfx('warn', { exact: true }); } } else r.warnT = 0;
+    // 浪頂甩尾、底部轉向
+    if (t2 < 0.3 && r.phi < -0.35) r.snapArm = gameT;
+    if (r.phi > 0.25 && gameT - r.snapArm < 0.7 && t2 < 0.45 && r.v > 7) { r.snapArm = -9; onSnap(); }
+    if (t2 > 0.65 && r.phi > 0.35) r.bottomArm = gameT;
+    if (r.phi < -0.25 && gameT - r.bottomArm < 0.8 && t2 > 0.45) { r.bottomArm = -9; onBottomTurn(); }
+    // 刻水的聲音與水花
+    if (r.carve > 1.2 && r.v > 7) {
+      r.carveSnd -= dt;
+      if (r.carveSnd <= 0) {
+        r.carveSnd = 0.32;
+        sfx('carve', { pitch: 0.8 + Math.min(0.5, r.carve * 0.12), vol: Math.min(1.2, 0.5 + r.carve * 0.2), pan: -0.15 });
+        if (r.carve > 2.2 && r.v > 10) sfx('spray', { vol: 0.6, pan: -0.2 });
+      }
+    }
+    rooster(dt);
+    tubeCheck(dt, d, t2);
+    if (scoring) {
+      score += (16 + r.v) * dt * (d < 18 ? 1.6 : 1) * combo.mult;
+      ST.clean += dt; ST.maxClean = Math.max(ST.maxClean, ST.clean);
+      ST.maxKmh = Math.max(ST.maxKmh, Math.round(r.v * 3.6));
+    }
+  }
+  function rooster(dt) {
+    const r = rider, k = Math.min(1, r.carve / 2.5) * Math.min(1, r.v / 14);
+    const n = (k * 30 + (r.v > 9 ? 4 : 1)) * dt * partMul;
+    const cs = Math.cos(r.phi), sn = Math.sin(r.phi);
+    for (let i = 0; i < n + Math.random() - 0.5; i++) {
+      const sp = 2 + k * 5;
+      emit(r.x - cs * 0.9, r.y + 0.1, r.z - sn * 0.9 + 0.2, -cs * sp * 0.4 + rand(-1, 1), 2 + k * 5 + rand(0, 2), -sn * sp * 0.4 + rand(0.5, 2.5), 0.2 + k * 0.22, rand(0.4, 0.8));
+    }
+  }
+  function doPump(t, d) {
+    const r = rider;
+    if (r.pumpCD > 0 || r.air || r.state !== 'ride') return;
+    r.pumpCD = 0.38; r.pumpAnim = 1;
+    const ff = faceFactor(t);
+    r.v = Math.min(25, r.v + 0.5 + 1.4 * ff * (d < 25 ? 1.2 : 1));
+    sfx('pump', { pitch: 0.9 + ff * 0.25, vol: 0.9 });
+    for (let i = 0; i < 6 * partMul; i++) emit(r.x + rand(-0.6, 0.6), r.y + 0.1, r.z + rand(0, 0.6), rand(-1, 1), rand(1.5, 3), rand(0, 1.5), 0.3, 0.4);
+  }
+  function onSnap() {
+    const r = rider;
+    sfx('snap', { pan: -0.1 });
+    for (let i = 0; i < 26 * partMul; i++) emit(r.x + rand(-0.5, 0.5), r.y + 0.3, r.z + rand(-0.3, 0.3), rand(-2, 3), rand(4, 8), rand(-4, -1), rand(0.4, 0.7), rand(0.6, 1.1));
+    if (!scoring) return;
+    ST.snaps++;
+    addCombo(28);
+    const pts = addPoints(250);
+    callout('浪頂甩尾！', '+' + pts, '#aef7ff', 1.2);
+  }
+  function onBottomTurn() {
+    if (!scoring) return;
+    addCombo(10);
+    const pts = addPoints(120);
+    smallCall('底部轉向 +' + pts, '#d6f6ff');
+  }
+  function tubeCheck(dt, d, t) {
+    const r = rider;
+    const inT = d > -10.5 && d < 7 && lipTheta(d) > 1.25 && t > 0.14 && t < 0.72;
+    if (inT && !r.tube) {
+      r.tube = true; r.tubeT = 0; inTubeAudio = true; ensureEcho();
+      if (gameT - lastTubeSnd > 2) { lastTubeSnd = gameT; sfx('tube'); }
+      if (scoring) callout('鑽進浪管！', '保持住！', '#7ff3ff', 1.2);
+    }
+    if (r.tube) {
+      if (inT) {
+        r.tubeT += dt;
+        if (scoring) {
+          score += 260 * dt * combo.mult * (1 + 0.08 * (C().stats.tube - 3));
+          combo.idle = 0; addCombo(22 * dt);
+          ST.maxTube = Math.max(ST.maxTube, r.tubeT); ST.tubeTotal += dt;
+        }
+      } else exitTube();
+    }
+  }
+  function exitTube() {
+    const r = rider;
+    r.tube = false; inTubeAudio = false;
+    if (r.state !== 'ride' || r.tubeT < 0.6) return;
+    for (let i = 0; i < 40 * partMul; i++) emit(r.x - rand(1, 4), r.y + rand(0.3, 1.8), r.z + rand(-0.5, 1), rand(6, 14), rand(0, 3), rand(-1, 2), rand(0.4, 0.9), rand(0.5, 1));
+    sfx('spit');
+    if (!scoring) return;
+    const pts = addPoints(Math.round(400 + 700 * r.tubeT));
+    addCombo(40);
+    callout('管浪穿越！', r.tubeT.toFixed(1) + ' 秒  +' + pts, '#7ff3ff', 1.8);
+    sfx('whistle'); sfx('cheer');
+    if (r.tubeT > 2) { slowmo(0.6); jingle(JINGLE.big); }
+    if (pts > ST.bestTrickPts) { ST.bestTrickPts = pts; ST.bestTrick = '管浪穿越 ' + r.tubeT.toFixed(1) + ' 秒'; }
+  }
+  function launch(up, d) {
+    const r = rider, ch = C().stats;
+    if (r.tube) exitTube();
+    r.air = true; r.airT = 0;
+    r.vx = r.v * Math.cos(r.phi);
+    r.vy = up * 0.6 + 2.2 + 0.45 * (ch.air - 3) + (d < 20 ? 0.8 : 0);
+    r.vz = -up * 0.3;
+    r.launchY = r.y; r.maxY = r.y;
+    r.cur = null; r.queue.length = 0; r.tricks.length = 0; r.spin = 0; r.flip = 0; r.grabPose = 0; r.autoTrick = 0;
+    sfx('launch', { pitch: 0.9 + Math.min(0.3, up / 30) });
+    sfx('spray', { vol: 0.8 });
+    for (let i = 0; i < 34 * partMul; i++) emit(r.x + rand(-0.8, 0.8), r.y + rand(0, 0.4), r.z + rand(-0.3, 0.5), rand(-2, 2) + r.vx * 0.3, rand(3, 7), rand(-3, 1), rand(0.4, 0.8), rand(0.6, 1.2));
+    if (scoring) {
+      ST.launches++;
+      if (ST.launches <= 2 && mode !== 'comp') smallCall(isTouch ? '快！滑動或按特技鈕' : '快！按方向鍵做特技', '#ffe066');
+    }
+  }
+  function airUpdate(dt) {
+    const r = rider;
+    r.airT += dt;
+    r.vy -= 12.5 * dt;
+    r.vz += 6.5 * dt;
+    r.x += r.vx * dt; r.y += r.vy * dt; r.z += r.vz * dt;
+    r.maxY = Math.max(r.maxY, r.y);
+    if (!r.cur && r.queue.length) startTrick(r.queue.shift());
+    if (r.cur) {
+      const c = r.cur;
+      c.t += dt;
+      const p = Math.min(1, c.t / c.dur), e = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+      if (c.kind === 'spin') r.spin = c.dir * TAU * e;
+      else if (c.kind === 'flip') r.flip = c.dir * TAU * e;
+      else r.grabPose = Math.min(1, p * 5, (1 - p) * 5);
+      if (p >= 1) completeTrick();
+    }
+    const d = r.x - curlX;
+    const wy = waveY(d, r.z);
+    if (r.vy < 0 && r.y <= wy) { r.y = wy; land(d); }
+  }
+  function land(d) {
+    const r = rider;
+    let bad = false;
+    if (r.cur) {
+      const p = r.cur.t / r.cur.dur;
+      if (autopilot) completeTrick();
+      else if (r.cur.kind === 'grab') { if (p > 0.45) completeTrick(); else r.cur = null; }
+      else if (p >= 0.8) completeTrick();
+      else if (p > 0.2) bad = true;
+      else r.cur = null;
+    }
+    r.queue.length = 0; r.spin = 0; r.flip = 0; r.grabPose = 0;
+    r.air = false;
+    const p = wp(d), t = (r.z - p.zc) / p.wf;
+    if (t < -0.3 && !autopilot) bad = 'back';
+    if (bad) { r.tricks.length = 0; wipeout(bad === 'back' ? '掉到浪的後面了！' : '轉到一半落地了！'); return; }
+    r.v = clamp(Math.hypot(r.vx, r.vz) * 0.92 + 1.2, 7, 22);
+    r.phi = clamp(Math.atan2(Math.max(0, r.vz) * 0.4, r.vx), 0.15, 0.7);
+    for (let i = 0; i < 28 * partMul; i++) emit(r.x + rand(-1, 1), r.y + 0.1, r.z + rand(-0.6, 0.8), rand(-3, 3), rand(2, 5), rand(-1, 3), rand(0.4, 0.8), rand(0.5, 1));
+    sfx('landsplash');
+    shake = Math.max(shake, 0.25);
+    const n = r.tricks.reduce((a, tr) => a + tr.n, 0);
+    if (!scoring) { r.tricks.length = 0; return; }
+    ST.airs++;
+    const hgt = r.maxY - r.launchY;
+    let base = r.tricks.reduce((a, tr) => a + trickPts(tr), 0);
+    if (r.tricks.length > 1) base *= 1 + 0.5 * (r.tricks.length - 1);
+    base = Math.round(base + r.airT * 120 + Math.max(0, hgt) * 60);
+    addCombo(n ? 35 * n : 12);
+    const pts = addPoints(base);
+    ST.maxTricksAir = Math.max(ST.maxTricksAir, n);
+    for (const tr of r.tricks) if (tr.kind === 'spin') ST.maxSpinAir = Math.max(ST.maxSpinAir, tr.n);
+    const name = n ? chainName() : '';
+    if (n && pts > ST.bestTrickPts) { ST.bestTrickPts = pts; ST.bestTrick = name; }
+    const big = base >= 1800 || n >= 2;
+    if (n) {
+      callout(big ? '超完美落地！' : '漂亮落地！', name + '  +' + pts, big ? '#ffe066' : '#ffffff', 1.9);
+      sfx('whistle');
+      if (big) { sfx('cheer'); jingle(JINGLE.big); slowmo(0.75); KG.vibrate(40); }
+    } else callout('漂亮的飛躍！', '+' + pts, '#ffffff', 1.2);
+    r.tricks.length = 0;
+  }
+  function wipeout(reason) {
+    const r = rider;
+    if (r.state === 'wipe') return;
+    r.state = 'wipe'; r.wipeT = 0; r.air = false; r.cur = null; r.queue.length = 0; r.tricks.length = 0;
+    r.spin = 0; r.flip = 0; r.grabPose = 0;
+    if (r.tube) { r.tube = false; inTubeAudio = false; }
+    r.wv.x = r.v * Math.cos(r.phi) * 0.35; r.wv.y = 3; r.wv.z = 1.5; r.tumble = 0;
+    combo.meter = 0; combo.mult = 1;
+    if (scoring) { ST.wipes++; ST.clean = 0; if (mode !== 'comp') lives--; }
+    if (scoring || sceneName === 'count') {
+      callout('摔倒了！', reason, '#ff8a8a', 1.9);
+      jingle(JINGLE.wipe);
+    }
+    sfx('wipeout');
+    for (let i = 0; i < 80 * partMul; i++) emit(r.x + rand(-1, 1), r.y + rand(0, 0.6), r.z + rand(-1, 1), rand(-4, 4), rand(3, 9), rand(-3, 4), rand(0.5, 1.1), rand(0.7, 1.4));
+    shake = 0.9;
+    KG.vibrate(150);
+  }
+  function wipeUpdate(dt) {
+    const r = rider;
+    r.wipeT += dt;
+    r.tumble += dt * (r.wipeT < 1 ? 9 : 2);
+    r.x += r.wv.x * dt; r.z += r.wv.z * dt;
+    r.wv.y -= 9 * dt;
+    r.y += r.wv.y * dt;
+    const floor = waveY(r.x - curlX, r.z) - 0.7;
+    if (r.y < floor) { r.y = floor; r.wv.y = 0; }
+    if (r.wipeT > 2.0) {
+      if (scoring && mode !== 'comp' && lives <= 0) { if (!endPending) endPending = 0.01; return; }
+      resetRider(22);
+      rider.inv = 1.6;
+    }
+  }
+
+  /* ---------- 自動駕駛（標題畫面示範、測試） ---------- */
+  function autoInput() {
+    const r = rider, d = r.x - curlX, t = faceT(d, r.z);
+    let stall = d > 26;
+    if (r.autoDir < 0 && t < (r.autoHigh ? -0.2 : 0.14)) r.autoDir = 1;
+    else if (r.autoDir > 0 && t > 0.68) { r.autoDir = -1; r.autoHigh = d > 12 && Math.random() < 0.5; }
+    if (r.air && !r.autoTrick && r.airT > 0.05) {
+      r.autoTrick = 1;
+      const k = Math.random();
+      requestTrick(k < 0.5 ? 'spin' : k < 0.8 ? 'grab' : 'flip', Math.random() < 0.5 ? 1 : -1);
+    }
+    return { steer: r.autoDir * 0.85, stall };
+  }
+
+  /* ---------- 礁石、浮標、貝殼 ---------- */
+  let nextHaz = 0, nextShell = 0;
+  function resetObjects() {
+    OBJ.forEach(o => { o.alive = false; o.mesh.visible = false; });
+    nextHaz = rider.x + 80; nextShell = rider.x + 25;
+  }
+  function freeObj(kind) { return OBJ.find(o => o.kind === kind && !o.alive); }
+  function placeObj(o, x, t, air) {
+    const p = wp(clamp(rider.x - curlX, 5, 40));
+    o.alive = true; o.passed = false; o.x = x; o.z = p.zc + t * p.wf; o.air = !!air;
+    o.mesh.visible = true;
+    o.mesh.rotation.set(0, Math.random() * TAU, 0);
+  }
+  function spawnObjects() {
+    const B = BEACHES[beachIdx], front = rider.x + 125;
+    while (nextShell < front) {
+      const o = freeObj('shell');
+      if (o) { const air = Math.random() < 0.22; placeObj(o, nextShell, air ? 0.02 : rand(0.08, 0.85), air); }
+      nextShell += rand(14, 28);
+    }
+    if (!scoring) { nextHaz = Math.max(nextHaz, front); return; }
+    while (nextHaz < front) {
+      const rock = Math.random() < B.rocks / (B.rocks + B.buoys);
+      const o = freeObj(rock ? 'rock' : 'buoy');
+      if (o) placeObj(o, nextHaz, rock ? rand(0.8, 1.15) : rand(0.25, 0.7));
+      nextHaz += rand(38, 62) / ((B.rocks + B.buoys) * 0.8 + 0.3);
+    }
+  }
+  function updateObjects(dt) {
+    const r = rider;
+    for (const o of OBJ) {
+      if (!o.alive) continue;
+      if (o.x < r.x - 45) { o.alive = false; o.mesh.visible = false; continue; }
+      const d = o.x - curlX;
+      if (o.kind === 'rock') { o.y = -0.25; o.top = 0.75; }
+      else if (o.kind === 'buoy') {
+        o.y = waveY(d, o.z) - 0.25 + Math.sin(gameT * 2 + o.ph) * 0.08; o.top = o.y + 1.3;
+        const g = waveGrad(d, o.z); o.mesh.rotation.x = clamp(g[1] * 0.6, -0.6, 0.6); o.mesh.rotation.z = clamp(-g[0] * 0.6, -0.5, 0.5);
+      } else {
+        o.y = (o.air ? wp(d).hx + 2.6 : waveY(d, o.z) + 0.75) + Math.sin(gameT * 3 + o.ph) * 0.12;
+        o.mesh.rotation.y += dt * 2.2;
+      }
+      o.mesh.position.set(o.x, o.y, o.z);
+      if (r.state !== 'ride') continue;
+      const dx = o.x - r.x, dz = o.z - r.z, dy = o.y - r.y - 0.6;
+      if (o.kind === 'shell') {
+        if (dx * dx + dz * dz + dy * dy < 2.6) collectShell(o);
+        continue;
+      }
+      const rr = o.kind === 'rock' ? 1.45 : 0.95, h2 = dx * dx + dz * dz;
+      if (h2 < rr * rr && r.y < o.top + 0.15 && r.inv <= 0 && scoring) { o.passed = true; wipeout(o.kind === 'rock' ? '撞到礁石了！' : '撞到浮標了！'); }
+      else if (!o.passed && dx < -0.6) {
+        o.passed = true;
+        if (Math.sqrt(h2) < 3.4 && scoring && !r.air) {
+          ST.dodges++;
+          addCombo(15);
+          smallCall('驚險閃過 +' + addPoints(100), '#d6f6ff');
+          sfx('swoosh', { pan: 0.2 });
+        }
+      }
+    }
+  }
+  let shellStreak = 0, shellT = 0, lastTubeSnd = -9;
+  function collectShell(o) {
+    o.alive = false; o.mesh.visible = false;
+    shellStreak = gameT - shellT < 3 ? shellStreak + 1 : 0; shellT = gameT;
+    sfx('shell', { pitch: 1 + Math.min(0.5, shellStreak * 0.08), exact: false });
+    for (let i = 0; i < 12 * partMul; i++) emit(o.x, o.y, o.z, rand(-2, 2), rand(1, 4), rand(-2, 2), 0.3, 0.6, { r: 1, g: 0.75, b: 0.9 });
+    if (!scoring) return;
+    ST.shells++;
+    addCombo(8);
+    smallCall('貝殼 +' + addPoints(o.air ? 300 : 80), '#ffc2dc');
+  }
+
+  /* ---------- 海鷗 ---------- */
+  let gullT = 3;
+  function updateGulls(dt) {
+    for (const g of gulls) {
+      g.a += g.sp * dt;
+      const cx = rider.x + 18, cz = rider.z - 22;
+      g.g.position.set(cx + Math.cos(g.a + g.ph) * g.r, g.h + Math.sin(g.a * 1.7) * 2, cz + Math.sin(g.a + g.ph) * g.r * 0.5);
+      g.g.rotation.y = -(g.a + g.ph) - Math.PI / 2 + Math.PI;
+      const f = Math.sin(gameT * 7 + g.ph) * 0.6;
+      g.wl.rotation.z = f; g.wr.rotation.z = -f;
+    }
+    if (gulls[0].g.visible && scoring) {
+      gullT -= dt;
+      if (gullT <= 0) { gullT = rand(6, 12); sfx('gull', { pan: rand(-0.6, 0.6), vol: 0.8 }); }
+    }
+  }
+
+  /* ---------- 浪唇上的水花 ---------- */
+  function lipSpray(dt) {
+    const n = 26 * dt * partMul;
+    const glow = BEACHES[beachIdx].glow;
+    const col = glow ? { r: 0.5, g: 0.95, b: 1 } : null;
+    for (let i = 0; i < n + Math.random() - 0.5; i++) {
+      const d = rand(-11, 20), th = lipTheta(d);
+      const pt = lipPoint(d, th);
+      if (d < -8) emit(curlX + d, pt[1] + rand(0, 1), pt[0] + rand(-1, 1), rand(-1, 3), rand(3, 7), rand(-1, 3), rand(0.7, 1.4), rand(0.6, 1.1), col);
+      else emit(curlX + d, pt[1], pt[0], rand(-1, 1), rand(0, 2), rand(0.5, 2.5), rand(0.3, 0.6), rand(0.3, 0.6), col);
+    }
+    // 浪頂被風吹起的水霧
+    if (Math.random() < 8 * dt * partMul) {
+      const d = rand(10, 40), p = wp(d);
+      emit(curlX + d, p.hx + 0.2, p.zc, rand(-1, 1), rand(1, 2.5), rand(-3, -1), rand(0.5, 1), rand(0.6, 1.2), col);
+    }
+  }
+
+  /* ---------- 攝影機 ---------- */
+  const camPos = new THREE.Vector3(), camLook = new THREE.Vector3();
+  let camInit = false, camOverride = null;
+  function updateCamera(dt) {
+    const r = rider, portrait = W / H < 0.85;
+    const dd = r.x - curlX, near = smooth((dd - 4) / 26);
+    let ox = lerp(-5.5, -7.5, near), oy = 2.5, oz = 8.6, lx = lerp(1.5, 7, near), ly = 0.8, lz = -1.2;
+    if (portrait) { ox = lerp(-4.5, -6.5, near); oy = 2.8; oz = 10; lx = lerp(0.5, 3.5, near); ly = 0.1; }
+    let tx, ty, tz, ax, ay, az;
+    if (sceneName === 'chars') {
+      const ry = r.y;
+      if (portrait) { tx = r.x + 3.4; ty = ry + 1.8; tz = r.z + 6.4; ax = r.x + 0.4; ay = ry + 0.2; az = r.z; }
+      else if (W > H * 1.2) { tx = r.x + 3.2; ty = ry + 1.6; tz = r.z + 5; ax = r.x + 2.2; ay = ry + 0.8; az = r.z - 1.1; }
+      else { tx = r.x + 3.2; ty = ry + 1.6; tz = r.z + 5.5; ax = r.x + 0.4; ay = ry + 0.4; az = r.z; }
+    } else {
+      if (!inRideScene()) { ox = -9.5; oy = 4.2; oz = 11.5; lx = 8; ly = 0.8; if (portrait) { ox = -8.5; oy = 4.6; oz = 12.5; lx = 3; ly = -1.2; } }
+      else if (r.tube) { ox = -4.8; oy = 2.3; oz = 7.2; lx = 4; ly = 0.8; lz = -1; if (portrait) { ox = -4.6; oy = 2.7; oz = 8.4; lx = 2; } }
+      const ry = r.y;
+      const inR = inRideScene();
+      const airK = inR && r.air ? 0.2 : 0;
+      tx = r.x + ox; ty = Math.max(1.3, ry * (inR ? 0.45 + airK : 0.6) + oy); tz = r.z + oz;
+      ax = r.x + lx; ay = ry * (inR ? 0.7 + airK : 0.6) + ly + 0.8; az = r.z + lz;
+    }
+    if (!camInit) { camPos.set(tx, ty, tz); camLook.set(ax, ay, az); camInit = true; }
+    else {
+      const k = damp(sceneName === 'chars' ? 5 : 3.2, dt);
+      camPos.x += (tx - camPos.x) * Math.max(k, 0.5); // x 跟緊一點，不然速度快時會落後
+      camPos.y += (ty - camPos.y) * k; camPos.z += (tz - camPos.z) * k;
+      camLook.x += (ax - camLook.x) * Math.max(k, 0.5); camLook.y += (ay - camLook.y) * k; camLook.z += (az - camLook.z) * k;
+    }
+    if (camOverride) { camPos.set(rider.x + camOverride[0], camOverride[1], camOverride[2]); camLook.set(rider.x + camOverride[3], camOverride[4], camOverride[5]); }
+    camera.position.copy(camPos);
+    if (shake > 0) camera.position.add(new THREE.Vector3(rand(-1, 1), rand(-1, 1), rand(-1, 1)).multiplyScalar(shake * 0.25));
+    camera.lookAt(camLook);
+    sky.position.copy(camera.position);
+    pano.position.set(camera.position.x, 599, camera.position.z);
+  }
+
+  /* ---------- 把物理狀態套到 3D 模型 ---------- */
+  const qA = new THREE.Quaternion(), mA = new THREE.Matrix4(), vF = new THREE.Vector3(), vU = new THREE.Vector3(), vR = new THREE.Vector3();
+  function syncSurfer(dt) {
+    const r = rider, o = surferObj, u = o.userData;
+    o.position.set(r.x, r.y, r.z);
+    const d = r.x - curlX;
+    if (r.state === 'wipe') {
+      o.rotation.set(r.tumble * 1.3, r.tumble * 0.7, r.tumble);
+      o.quaternion.setFromEuler(o.rotation);
+      u.trick.rotation.set(0, 0, 0);
+    } else {
+      let heading;
+      if (r.air) { heading = Math.atan2(r.vz, r.vx) * 0.3; vU.set(0, 1, 0); }
+      else {
+        heading = r.phi;
+        const g = waveGrad(d, r.z);
+        vU.set(-g[0], 1, -g[1]).normalize().lerp(new THREE.Vector3(0, 1, 0), 0.3).normalize();
+      }
+      vF.set(Math.cos(heading), 0, Math.sin(heading));
+      vF.addScaledVector(vU, -vF.dot(vU)).normalize();
+      vR.crossVectors(vF, vU).normalize();
+      mA.makeBasis(vF, vU, vR);
+      qA.setFromRotationMatrix(mA);
+      o.quaternion.slerp(qA, r.air ? damp(6, dt) : damp(14, dt));
+      u.trick.rotation.set(r.lean * 0.6, r.spin, r.flip, 'YXZ');
+      if (r.air && !r.cur) u.trick.rotation.z = clamp(r.vy * 0.03, -0.25, 0.25);
+    }
+    // 姿勢
+    const crouch = Math.max(r.grabPose, r.pumpAnim * 0.6, r.stall ? 0.35 : 0, r.tube ? 0.55 : 0);
+    u.rider.position.y = 0.07 - crouch * 0.18;
+    u.torso.rotation.x = crouch * 0.35;
+    u.torso.rotation.z = r.lean * 0.5;
+    const wob = Math.sin(gameT * 6) * 0.08;
+    u.arms[0].rotation.z = 0.45 + wob - r.lean * 0.6 + (r.air && !r.grabPose ? -0.9 : 0);
+    u.arms[1].rotation.z = -0.45 - wob - r.lean * 0.6 + (r.air && !r.grabPose ? 0.9 : 0) - r.grabPose * 0.0;
+    if (r.grabPose > 0) { u.arms[1].rotation.z = lerp(u.arms[1].rotation.z, 1.3, r.grabPose); u.arms[1].rotation.y = -r.grabPose * 0.6; u.board.rotation.x = r.grabPose * (r.grabV % 2 ? -0.25 : 0.25); }
+    else { u.arms[1].rotation.y = 0; u.board.rotation.x = 0; }
+    u.head.rotation.y = 0.45 + (sceneName === 'chars' ? Math.sin(gameT * 1.3) * 0.25 : 0);
+    o.visible = !(r.inv > 0 && Math.floor(r.inv * 10) % 2 === 0 && r.state === 'ride');
+    // 影子
+    const sy = waveY(d, r.z);
+    shadow.visible = r.state !== 'wipe';
+    shadow.position.set(r.x, sy + 0.05, r.z);
+    const g = waveGrad(d, r.z);
+    shadow.lookAt(r.x - g[0], sy + 1.05, r.z - g[1]);
+    const hgt = Math.max(0, r.y - sy);
+    shadow.scale.setScalar(1 + hgt * 0.08);
+    shadow.material.opacity = clamp(0.9 - hgt * 0.12, 0.2, 0.9);
+  }
+
+  /* =========================================================
+   * 遊戲流程
+   * ========================================================= */
+  let musicSwap = 0, missionPage = 0, beachMode = 'free', briefKind = 'mission';
+  const inRideScene = () => sceneName === 'ride' || sceneName === 'count';
+  function goTitle() {
+    sceneName = 'title'; sceneT = 0; paused = false; scoring = false; autopilot = true; comp = null; result = null;
+    CO.main = CO.small = null; endPending = 0; slowT = 0;
+    if (M) M.setTempo(1);
+    playSong(SONG_TITLE);
+  }
+  function goMenu(name) { sceneName = name; sceneT = 0; paused = false; scoring = false; autopilot = true; CO.main = CO.small = null; playSong(SONG_TITLE); }
+  function startRide(m, b) {
+    mode = m;
+    if (b !== beachIdx) setBeach(b);
+    curlX = 0; resetRider(20); resetObjects(); parts.length = 0; camInit = false;
+    score = 0; lives = 3; rideT = 0; combo.meter = 0; combo.mult = 1; combo.idle = 0; ST = newStats();
+    missionState = null; endPending = 0; slowT = 0; shake = 0;
+    autopilot = false; scoring = false; paused = false; CO.main = CO.small = null;
+    inp.steer = 0; inp.stall = false; inp.pumpReq = false;
+    sceneName = 'count'; sceneT = 0; countStep = -1;
+    playSong(SONG_RIDE);
+    if (M) { M.setLayer('combo', false); M.setLayer('hype', false); M.setTempo(1); }
+  }
+  let countStep = -1;
+  function updateCount() {
+    const k = Math.floor(sceneT / 0.8);
+    if (k !== countStep) {
+      countStep = k;
+      if (k < 3) sfx('countdown', { exact: true, pitch: 1 });
+      else if (k === 3) {
+        sfx('go', { exact: true });
+        sceneName = 'ride'; scoring = true; sceneT = 0;
+        if (mode === 'free' || (mode === 'mission' && missionIdx < 3)) smallCall(isTouch ? '上下拖曳轉彎，放開手會加速！' : '↑↓ 轉彎・空白鍵加速・衝上浪頂會飛！', '#ffffff', 3.2);
+        else if (mode === 'comp') smallCall('裁判在看喔！做出最多花式吧', '#ffe066', 2.5);
+      }
+    }
+  }
+  function endRide(reason) {
+    if (!scoring && sceneName !== 'ride') return;
+    if (rider.tube) { rider.tube = false; inTubeAudio = false; }
+    scoring = false; autopilot = true; endPending = 0; slowT = 0;
+    inp.steer = 0; inp.stall = false;
+    CO.main = CO.small = null;
+    ST.score = Math.floor(score);
+    if (M) { M.setTempo(1); M.setLayer('hype', false); M.setLayer('combo', false); }
+    if (mode === 'comp') {
+      judgeHeat();
+      sceneName = 'judge'; sceneT = 0; judgeStep = -1;
+      jingle(JINGLE.heat);
+      return;
+    }
+    if (mode === 'mission') {
+      const ok = missionState === 'done';
+      result = { kind: 'mission', ok, idx: missionIdx, val: Math.floor(ST[MISSIONS[missionIdx].key] || 0), reason };
+      if (!ok) jingle(JINGLE.fail);
+    } else {
+      const prev = KG.best('surfing-free') || 0;
+      const best = KG.best('surfing-free', ST.score);
+      result = { kind: 'free', newBest: ST.score > prev && ST.score > 0, best };
+      jingle(result.newBest ? JINGLE.win : JINGLE.lose);
+      if (result.newBest) KG.confetti();
+    }
+    sceneName = 'result'; sceneT = 0;
+    musicSwap = 2.8;
+  }
+  function checkMission() {
+    if (mode !== 'mission' || missionState || !scoring) return;
+    const m = MISSIONS[missionIdx];
+    if ((ST[m.key] || 0) >= m.n) {
+      missionState = 'done';
+      if (!missionsDone.includes(missionIdx)) { missionsDone.push(missionIdx); store.set('missions', missionsDone); }
+      callout('任務完成！', m.name, '#ffe066', 2.2);
+      jingle(JINGLE.mission);
+      KG.confetti(W / 2, H * 0.3, 90);
+      endPending = 2.0;
+    }
+  }
+  /* ---------- 比賽 ---------- */
+  function gauss() { return (Math.random() + Math.random() + Math.random() - 1.5) * 1.15; }
+  function newComp(b) {
+    const pool = AI_POOL.slice().sort(() => Math.random() - 0.5);
+    comp = { beach: b, heat: 0, you: { total: 0, last: 0 }, ais: pool.slice(0, 3).map((a, i) => ({ name: a.name, color: a.color, skill: AI_SKILL[b][i], total: 0, last: 0 })), heats: [] };
+    if (b !== beachIdx) setBeach(b);
+    briefKind = 'comp';
+    goMenu('brief');
+  }
+  let judgeStep = -1;
+  function judgeHeat() {
+    const base = clamp(10 * (1 - Math.exp(-score / 13000)) - 0.35 * ST.wipes, 0.5, 9.9);
+    const cards = [];
+    for (let i = 0; i < 5; i++) cards.push(clamp(Math.round((base + rand(-0.55, 0.55)) * 10) / 10, 0, 10));
+    let hi = 0, lo = 0;
+    cards.forEach((c, i) => { if (c > cards[hi]) hi = i; if (c < cards[lo]) lo = i; });
+    if (hi === lo) lo = (hi + 1) % 5;
+    const mid = cards.filter((c, i) => i !== hi && i !== lo);
+    const you = Math.round(mid.reduce((a, b) => a + b, 0) / 3 * 100) / 100;
+    comp.you.last = you; comp.you.total = Math.round((comp.you.total + you) * 100) / 100;
+    comp.ais.forEach(a => { a.last = Math.round(clamp(a.skill + gauss() * 0.7, 2, 9.8) * 100) / 100; a.total = Math.round((a.total + a.last) * 100) / 100; });
+    comp.heats.push({ cards, hi, lo, you, pts: Math.floor(score) });
+  }
+  function standings() {
+    const rows = [{ you: true, name: C().name, total: comp.you.total, last: comp.you.last }].concat(comp.ais.map(a => ({ name: a.name, color: a.color, total: a.total, last: a.last })));
+    rows.sort((a, b) => b.total - a.total || (a.you ? -1 : 1));
+    return rows;
+  }
+  function finishComp() {
+    const rows = standings(), rank = rows.findIndex(r => r.you) + 1;
+    const medal = rank <= 3 ? 4 - rank : 0;
+    const wasLocked = comp.beach < 3 && !beachUnlockedComp(comp.beach + 1);
+    if (medal > medals[comp.beach]) { medals[comp.beach] = medal; store.set('medals', medals); }
+    comp.rank = rank; comp.medal = medal; comp.unlocked = wasLocked && medal > 0;
+    sceneName = 'final'; sceneT = 0;
+    if (medal) { jingle(JINGLE.win); KG.confetti(); sfx('cheer'); } else jingle(JINGLE.lose);
+    musicSwap = 3;
+  }
+
+  /* =========================================================
+   * 畫面大小、畫質
+   * ========================================================= */
+  let W = 1, H = 1, DPR = 1, s = 1, isTouch = matchMedia('(pointer: coarse)').matches;
+  const QKEY = 'quality:' + SLUG;
+  const baseRatio = Math.min(window.devicePixelRatio || 1, 2);
+  const QL = [{ r: baseRatio, p: 1, det: 1 }, { r: Math.min(baseRatio, 1.4), p: 1, det: 1 }, { r: 1, p: 0.8, det: 1 }, { r: 0.8, p: 0.6, det: 0 }, { r: 0.65, p: 0.45, det: 0 }];
+  let qLevel = clamp(KG.store.get(QKEY, KG.lowEnd ? 2 : 0) | 0, 0, QL.length - 1);
+  const perf = { last: 0, n: 0, sum: 0, cool: 3 };
+  function applyQuality() {
+    const q = QL[qLevel];
+    renderer.setPixelRatio(q.r);
+    renderer.setSize(W, H, false);
+    partMul = q.p;
+    WU.uDetail.value = q.det;
+  }
+  function resize() {
+    const r = cv.getBoundingClientRect();
+    W = Math.max(1, r.width); H = Math.max(1, r.height);
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+    s = clamp(Math.min(W / 400, H / 440), 0.8, 1.45);
+    const asp = W / H;
+    camera.aspect = asp;
+    camera.fov = asp < 0.7 ? 66 : asp < 1.1 ? 58 : 50;
+    camera.updateProjectionMatrix();
+    applyQuality();
+  }
+  window.addEventListener('resize', resize);
+  window.addEventListener('orientationchange', () => setTimeout(resize, 120));
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', resize);
+
+  /* =========================================================
+   * 2D 介面
+   * ========================================================= */
+  let BTN = [], press = null;
+  function rrect(x, y, w, h, r) {
+    r = Math.max(0, Math.min(r, w / 2, h / 2));
+    ctx.beginPath(); ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+  }
+  function txt(str, x, y, size, color, align, weight, outline, maxW) {
+    ctx.font = font(weight || 800, size);
+    ctx.textAlign = align || 'center'; ctx.textBaseline = 'middle';
+    if (maxW) { const w = ctx.measureText(str).width; if (w > maxW) { size *= maxW / w; ctx.font = font(weight || 800, size); } }
+    if (outline) { ctx.lineJoin = 'round'; ctx.lineWidth = Math.max(2, size * 0.2); ctx.strokeStyle = outline; ctx.strokeText(str, x, y); }
+    ctx.fillStyle = color; ctx.fillText(str, x, y);
+    return size;
+  }
+  function wrap(str, maxW, size, weight) {
+    ctx.font = font(weight || 700, size);
+    const out = []; let line = '';
+    for (const ch of str) {
+      if (ctx.measureText(line + ch).width > maxW && line) { out.push(line); line = ch; } else line += ch;
+    }
+    if (line) out.push(line);
+    return out;
+  }
+  const BSTY = {
+    green: ['#86eba0', '#2fb35a', '#1f8a43', '#ffffff'], blue: ['#86d6ff', '#2f8fe0', '#1f68ad', '#ffffff'],
+    yellow: ['#ffe98f', '#f5b52e', '#c48a12', '#5a3d00'], pink: ['#ffa8c4', '#e8648d', '#b8436a', '#ffffff'],
+    white: ['#ffffff', '#e3f3fa', '#8fb8cc', '#16456b'], gray: ['#dfe5ea', '#aab5be', '#7d8891', '#ffffff'],
+    teal: ['#7ff0e0', '#16b3a8', '#0d847c', '#ffffff']
+  };
+  function button(id, x, y, w, h, label, sty, onClick, o) {
+    o = o || {};
+    const st = BSTY[sty] || BSTY.white, r = o.r != null ? o.r : h * 0.5;
+    const pressed = press && press.id === id, dy = pressed ? 3 : 0;
+    ctx.fillStyle = st[2]; rrect(x, y + 4, w, h, r); ctx.fill();
+    const g = ctx.createLinearGradient(0, y, 0, y + h);
+    g.addColorStop(0, st[0]); g.addColorStop(1, st[1]);
+    ctx.fillStyle = g; rrect(x, y + dy, w, h, r); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.28)'; rrect(x + h * 0.16, y + dy + h * 0.08, w - h * 0.32, h * 0.34, r * 0.7); ctx.fill();
+    const fs = o.size || Math.min(h * 0.44, 22 * s);
+    txt(label, x + w / 2, y + dy + h * 0.52, fs, st[3], 'center', 900, st[3] === '#ffffff' ? 'rgba(0,0,0,0.18)' : null, w - 12);
+    if (o.disabled) { ctx.fillStyle = 'rgba(80,90,100,0.45)'; rrect(x, y + dy, w, h, r); ctx.fill(); }
+    BTN.push({ id, x, y, w, h, onClick, disabled: o.disabled });
+  }
+  function panel(x, y, w, h, alpha) {
+    ctx.fillStyle = 'rgba(8,40,70,0.25)'; rrect(x, y + 5, w, h, 18 * s); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,' + (alpha == null ? 0.93 : alpha) + ')'; rrect(x, y, w, h, 18 * s); ctx.fill();
+  }
+  function circ(x, y, r, c) { ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill(); }
+  function star(x, y, r, fill, stroke) {
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, rr2 = i % 2 ? r * 0.45 : r; ctx.lineTo(x + Math.cos(a) * rr2, y + Math.sin(a) * rr2); }
+    ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
+    if (stroke) { ctx.lineWidth = Math.max(1, r * 0.15); ctx.strokeStyle = stroke; ctx.stroke(); }
+  }
+  function lock(x, y, r) {
+    ctx.strokeStyle = '#5b6b78'; ctx.lineWidth = r * 0.22;
+    ctx.beginPath(); ctx.arc(x, y - r * 0.2, r * 0.42, Math.PI, 0); ctx.stroke();
+    ctx.fillStyle = '#7d8c99'; rrect(x - r * 0.62, y - r * 0.25, r * 1.24, r * 0.95, r * 0.18); ctx.fill();
+    circ(x, y + r * 0.15, r * 0.13, '#2e3a44');
+  }
+  function medal(x, y, r, m) {
+    const col = ['', '#d08a4e', '#c6d2dc', '#ffcf3a'][m];
+    ctx.fillStyle = '#e8506a'; ctx.beginPath(); ctx.moveTo(x - r * 0.55, y - r * 1.6); ctx.lineTo(x - r * 0.1, y - r * 0.6); ctx.lineTo(x + r * 0.1, y - r * 0.6); ctx.lineTo(x + r * 0.55, y - r * 1.6); ctx.closePath(); ctx.fill();
+    circ(x, y, r, col); circ(x, y, r * 0.72, 'rgba(255,255,255,0.35)');
+    star(x, y, r * 0.5, col);
+  }
+  function drawCharIcon(ch, x, y, r) {
+    ctx.save(); ctx.translate(x, y);
+    const body = ch.css, light = ch.css2;
+    if (ch.id === 'otter') { circ(-r * 0.7, -r * 0.62, r * 0.26, body); circ(r * 0.7, -r * 0.62, r * 0.26, body); }
+    if (ch.id === 'shiba' || ch.id === 'panda') {
+      for (const sx of [-1, 1]) {
+        ctx.fillStyle = body; ctx.beginPath(); ctx.moveTo(sx * r * 0.25, -r * 0.8); ctx.lineTo(sx * r * 0.9, -r * 1.12); ctx.lineTo(sx * r * 0.88, -r * 0.3); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = ch.id === 'panda' ? light : '#ffb3c6'; ctx.beginPath(); ctx.moveTo(sx * r * 0.42, -r * 0.72); ctx.lineTo(sx * r * 0.8, -r * 0.92); ctx.lineTo(sx * r * 0.78, -r * 0.45); ctx.closePath(); ctx.fill();
+      }
+    }
+    circ(0, 0, r, body);
+    if (ch.id === 'penguin') {
+      ctx.fillStyle = light; ctx.beginPath(); ctx.ellipse(-r * 0.3, r * 0.05, r * 0.42, r * 0.55, 0, 0, TAU); ctx.ellipse(r * 0.3, r * 0.05, r * 0.42, r * 0.55, 0, 0, TAU); ctx.fill();
+    } else {
+      ctx.fillStyle = light; ctx.beginPath(); ctx.ellipse(0, r * 0.38, r * 0.5, r * 0.36, 0, 0, TAU); ctx.fill();
+      if (ch.id === 'panda') { circ(-r * 0.4, -r * 0.42, r * 0.14, light); circ(r * 0.4, -r * 0.42, r * 0.14, light); }
+    }
+    for (const sx of [-1, 1]) { circ(sx * r * 0.36, -r * 0.05, r * 0.13, '#1a1420'); circ(sx * r * 0.36 + r * 0.04, -r * 0.1, r * 0.045, '#ffffff'); circ(sx * r * 0.62, r * 0.28, r * 0.13, 'rgba(255,130,160,0.55)'); }
+    if (ch.id === 'penguin') { ctx.fillStyle = '#ff9f2e'; ctx.beginPath(); ctx.moveTo(-r * 0.16, r * 0.2); ctx.lineTo(r * 0.16, r * 0.2); ctx.lineTo(0, r * 0.45); ctx.closePath(); ctx.fill(); }
+    else { ctx.fillStyle = '#2a1c18'; ctx.beginPath(); ctx.ellipse(0, r * 0.22, r * 0.12, r * 0.08, 0, 0, TAU); ctx.fill(); }
+    ctx.restore();
+  }
+  function drawAIIcon(a, x, y, r) {
+    circ(x, y, r, a.color);
+    circ(x - r * 0.35, y - r * 0.08, r * 0.13, '#1a1420'); circ(x + r * 0.35, y - r * 0.08, r * 0.13, '#1a1420');
+    circ(x - r * 0.31, y - r * 0.13, r * 0.045, '#fff'); circ(x + r * 0.39, y - r * 0.13, r * 0.045, '#fff');
+    ctx.strokeStyle = '#1a1420'; ctx.lineWidth = r * 0.1; ctx.beginPath(); ctx.arc(x, y + r * 0.15, r * 0.25, 0.2, Math.PI - 0.2); ctx.stroke();
+  }
+  function hex(n) { return '#' + n.toString(16).padStart(6, '0'); }
+  function drawBeachArt(B, x, y, w, h) {
+    ctx.save(); rrect(x, y, w, h, 14 * s); ctx.clip();
+    const g = ctx.createLinearGradient(0, y, 0, y + h * 0.62);
+    g.addColorStop(0, hex(B.skyTop)); g.addColorStop(0.6, hex(B.skyMid)); g.addColorStop(1, hex(B.skyHor));
+    ctx.fillStyle = g; ctx.fillRect(x, y, w, h);
+    const sx = x + w * 0.7, sy = y + h * (0.6 - B.sun[1] * 0.6);
+    circ(sx, sy, h * 0.1, B.stars ? '#eef4ff' : '#fff2c8');
+    if (B.stars) for (let i = 0; i < 14; i++) circ(x + ((i * 53) % 100) / 100 * w, y + ((i * 37) % 50) / 100 * h, 1.2, '#ffffff');
+    ctx.fillStyle = B.sil; ctx.beginPath(); ctx.moveTo(x, y + h * 0.62); ctx.quadraticCurveTo(x + w * 0.2, y + h * 0.5, x + w * 0.42, y + h * 0.62); ctx.fill();
+    const sg = ctx.createLinearGradient(0, y + h * 0.6, 0, y + h);
+    sg.addColorStop(0, hex(B.deep)); sg.addColorStop(1, hex(B.shallow));
+    ctx.fillStyle = sg; ctx.fillRect(x, y + h * 0.61, w, h);
+    // 捲起來的浪
+    ctx.fillStyle = hex(B.shallow);
+    ctx.beginPath(); ctx.moveTo(x, y + h); ctx.lineTo(x, y + h * 0.78);
+    ctx.bezierCurveTo(x + w * 0.25, y + h * 0.7, x + w * 0.42, y + h * 0.42, x + w * 0.6, y + h * 0.46);
+    ctx.bezierCurveTo(x + w * 0.72, y + h * 0.48, x + w * 0.74, y + h * 0.62, x + w * 0.64, y + h * 0.64);
+    ctx.bezierCurveTo(x + w * 0.62, y + h * 0.56, x + w * 0.55, y + h * 0.58, x + w * 0.52, y + h * 0.68);
+    ctx.bezierCurveTo(x + w * 0.5, y + h * 0.82, x + w * 0.7, y + h * 0.9, x + w, y + h * 0.86);
+    ctx.lineTo(x + w, y + h); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = hex(B.foam); ctx.lineWidth = Math.max(2, h * 0.025); ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(x + w * 0.3, y + h * 0.62); ctx.bezierCurveTo(x + w * 0.42, y + h * 0.46, x + w * 0.55, y + h * 0.44, x + w * 0.66, y + h * 0.5); ctx.stroke();
+    ctx.restore();
+  }
+
+  /* ---------- 標題 ---------- */
+  function drawLogo(x, y, sz) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(-0.04);
+    ctx.font = font(900, sz);
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = sz * 0.26; ctx.strokeStyle = '#0d3a66'; ctx.strokeText('3D 衝浪', 0, 0);
+    ctx.lineWidth = sz * 0.12; ctx.strokeStyle = '#ffffff'; ctx.strokeText('3D 衝浪', 0, 0);
+    const g = ctx.createLinearGradient(0, -sz * 0.5, 0, sz * 0.5);
+    g.addColorStop(0, '#5ff0ff'); g.addColorStop(0.55, '#1aa6e0'); g.addColorStop(1, '#0f6fc0');
+    ctx.fillStyle = g; ctx.fillText('3D 衝浪', 0, 0);
+    ctx.restore();
+    const sub = '乘著大浪，做出最帥的空中特技！';
+    ctx.font = font(800, sz * 0.25);
+    const tw = ctx.measureText(sub).width + sz * 0.5;
+    ctx.fillStyle = 'rgba(13,58,102,0.75)'; rrect(x - tw / 2, y + sz * 0.62, tw, sz * 0.42, sz * 0.21); ctx.fill();
+    txt(sub, x, y + sz * 0.84, sz * 0.25, '#ffffff', 'center', 800);
+  }
+  function toggleRow(x, y, w, h) {
+    const gw = (w - 10 * s) / 2;
+    button('music', x, y, gw, h, '音樂 ' + (M && M.isEnabled() ? '開' : '關'), M && M.isEnabled() ? 'teal' : 'gray', () => { if (M) M.setEnabled(!M.isEnabled()); sfx('ui'); });
+    button('sfxT', x + gw + 10 * s, y, gw, h, '音效 ' + (sfxOn ? '開' : '關'), sfxOn ? 'teal' : 'gray', () => { sfxOn = !sfxOn; store.set('sfx', sfxOn); if (!sfxOn) stopLoops(); else sfx('ui'); });
+  }
+  function drawTitle() {
+    const land = W > H * 1.2;
+    const g = ctx.createLinearGradient(0, 0, 0, H * 0.45);
+    g.addColorStop(0, 'rgba(255,255,255,0.35)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H * 0.45);
+    const lsz = Math.min(66 * s, (land ? W * 0.42 : W - 40) / 4.3);
+    const lx = land ? W * 0.3 : W / 2, ly = land ? H * 0.36 : Math.max(100 * s, H * 0.15);
+    drawLogo(lx, ly + Math.sin(sceneT * 1.6) * 3, lsz);
+    const bw = Math.min(290 * s, land ? W * 0.38 : W - 56), bh = 50 * s, gap = 11 * s;
+    const total = 3 * bh + 3 * gap + bh * 0.8 * 2 + gap;
+    const bx = land ? W * 0.72 - bw / 2 : W / 2 - bw / 2;
+    let by = land ? Math.max(66, H / 2 - total / 2) : Math.max(ly + lsz * 1.25 + 14 * s, H - total - 46 * s);
+    button('free', bx, by, bw, bh, '自由衝浪', 'green', () => { beachMode = 'free'; goMenu('beaches'); sfx('select'); }); by += bh + gap;
+    button('comp', bx, by, bw, bh, '衝浪比賽', 'yellow', () => { beachMode = 'comp'; goMenu('beaches'); sfx('select'); }); by += bh + gap;
+    button('mis', bx, by, bw, bh, '任務挑戰', 'blue', () => { goMenu('missions'); missionPage = Math.min(1, Math.floor(firstOpenMission() / 10)); sfx('select'); }); by += bh + gap;
+    button('chars', bx, by, bw, bh * 0.8, '角色：' + C().name, 'white', () => { goMenu('chars'); sfx('select'); }); by += bh * 0.8 + gap;
+    toggleRow(bx, by, bw, bh * 0.8); by += bh * 0.8 + gap * 0.6;
+    const best = KG.best('surfing-free');
+    const info = (best ? '自由衝浪最佳 ' + best.toLocaleString() + ' 分　' : '') + '任務 ' + missionsDone.length + '/20';
+    ctx.font = font(800, 13 * s);
+    const iw = ctx.measureText(info).width + 24 * s;
+    const iy = Math.min(by + 14 * s, H - 18 * s);
+    ctx.fillStyle = 'rgba(13,58,102,0.55)'; rrect(bx + bw / 2 - iw / 2, iy - 12 * s, iw, 24 * s, 12 * s); ctx.fill();
+    txt(info, bx + bw / 2, iy, 13 * s, '#ffffff', 'center', 800);
+  }
+  function firstOpenMission() { for (let i = 0; i < 20; i++) if (!missionsDone.includes(i)) return i; return 19; }
+
+  /* ---------- 選角色 ---------- */
+  function drawChars() {
+    const land = W > H * 1.2;
+    txt('選擇衝浪手', W / 2, 34 * s, 26 * s, '#ffffff', 'center', 900, '#0d3a66');
+    let px, py, pw, ph;
+    if (land) { pw = Math.min(400 * s, W * 0.48); px = W - pw - 14; ph = Math.min(H - 80, 2 * Math.min(62 * s, (H - 80) * 0.26) + 190 * s); py = Math.max(66, (H - ph) / 2 + 20); }
+    else { pw = Math.min(W - 24, 460 * s); px = (W - pw) / 2; ph = Math.min(268 * s, H * 0.42); py = H - ph - 14; }
+    panel(px, py, pw, ph);
+    const pad = 10 * s, cols = land ? 2 : 4, rows = land ? 2 : 1;
+    const tw = (pw - pad * (cols + 1)) / cols, th = land ? Math.min(62 * s, ph * 0.26) : 84 * s;
+    CHARS.forEach((ch, i) => {
+      const cx = px + pad + (i % cols) * (tw + pad), cy = py + pad + Math.floor(i / cols) * (th + pad);
+      const sel = i === charIdx;
+      ctx.fillStyle = sel ? '#fff4c2' : '#eef7fb'; rrect(cx, cy, tw, th, 12 * s); ctx.fill();
+      if (sel) { ctx.lineWidth = 3 * s; ctx.strokeStyle = '#f5a623'; rrect(cx, cy, tw, th, 12 * s); ctx.stroke(); }
+      if (land) { drawCharIcon(ch, cx + th * 0.42, cy + th * 0.55, th * 0.3); txt(ch.name, cx + th * 0.8 + (tw - th * 0.8) / 2, cy + th / 2, 14 * s, '#16456b', 'center', 900, null, tw - th * 0.85); }
+      else { drawCharIcon(ch, cx + tw / 2, cy + th * 0.42, Math.min(tw, th) * 0.24); txt(ch.name, cx + tw / 2, cy + th * 0.84, 12.5 * s, '#16456b', 'center', 900, null, tw - 6); }
+      BTN.push({ id: 'ch' + i, x: cx, y: cy, w: tw, h: th, onClick: () => { if (charIdx !== i) { setChar(i); store.set('char', i); sfx('select', { pitch: 0.9 + i * 0.1 }); } } });
+    });
+    let y = py + pad + rows * (th + pad) + 4 * s;
+    const ch = C();
+    txt(ch.desc, px + pw / 2, y + 8 * s, 14 * s, '#16456b', 'center', 800, null, pw - 20); y += 24 * s;
+    const sw = (pw - pad * 3) / 2, lh = 19 * s;
+    STAT_NAMES.forEach(([k, label], i) => {
+      const sx = px + pad + (i % 2) * (sw + pad), sy = y + Math.floor(i / 2) * lh;
+      txt(label, sx, sy + lh / 2, 12.5 * s, '#16456b', 'left', 800);
+      const bx = sx + 38 * s, bw = sw - 40 * s;
+      for (let j = 0; j < 5; j++) { ctx.fillStyle = j < ch.stats[k] ? '#ffb42e' : '#d9e6ee'; rrect(bx + j * bw / 5, sy + lh * 0.28, bw / 5 - 3, lh * 0.44, 3); ctx.fill(); }
+    });
+    y += lh * 2 + 8 * s;
+    const bh = Math.min(46 * s, py + ph - y - 10 * s);
+    button('ok', px + pw * 0.2, Math.max(y, py + ph - bh - 12 * s), pw * 0.6, bh, '就決定是你了！', 'green', () => { goTitle(); sfx('select'); });
+  }
+
+  /* ---------- 選海灘 ---------- */
+  function drawBeaches() {
+    const land = W > H * 1.2, comp2 = beachMode === 'comp';
+    txt(comp2 ? '衝浪比賽：選擇海灘' : '自由衝浪：選擇海灘', W / 2, 34 * s, 22 * s, '#ffffff', 'center', 900, '#0d3a66', W - 130);
+    const gap = 12 * s, top = 64, bottom = H - 66 * s;
+    let cols = land ? 4 : 2, rows = land ? 1 : 2;
+    const cw = (Math.min(W, 1100) - 24 - gap * (cols - 1)) / cols;
+    const ch = Math.min((bottom - top - gap * (rows - 1)) / rows, cw * (land ? 1.3 : 1.15));
+    const x0 = (W - (cw * cols + gap * (cols - 1))) / 2, y0 = top + Math.max(0, (bottom - top - (ch * rows + gap * (rows - 1))) / 2);
+    BEACHES.forEach((B, i) => {
+      const x = x0 + (i % cols) * (cw + gap), y = y0 + Math.floor(i / cols) * (ch + gap);
+      const locked = comp2 && !beachUnlockedComp(i);
+      ctx.fillStyle = 'rgba(8,40,70,0.3)'; rrect(x, y + 5, cw, ch, 14 * s); ctx.fill();
+      drawBeachArt(B, x, y, cw, ch);
+      const lh = Math.min(ch * 0.36, 58 * s);
+      ctx.fillStyle = 'rgba(255,255,255,0.92)'; rrect(x + 6 * s, y + ch - lh - 6 * s, cw - 12 * s, lh, 10 * s); ctx.fill();
+      txt(B.name, x + cw / 2, y + ch - lh * 0.66 - 6 * s, Math.min(18 * s, lh * 0.36), '#16456b', 'center', 900, null, cw - 20 * s);
+      txt(B.desc, x + cw / 2, y + ch - lh * 0.26 - 6 * s, Math.min(11.5 * s, lh * 0.24), '#4a6a80', 'center', 700, null, cw - 20 * s);
+      if (comp2 && medals[i]) medal(x + cw - 20 * s, y + 30 * s, 13 * s, medals[i]);
+      if (locked) { ctx.fillStyle = 'rgba(30,40,60,0.55)'; rrect(x, y, cw, ch, 14 * s); ctx.fill(); lock(x + cw / 2, y + ch * 0.36, 22 * s); txt('上一站拿到獎牌就能來', x + cw / 2, y + ch * 0.36 + 34 * s, 11.5 * s, '#ffffff', 'center', 800, null, cw - 10); }
+      BTN.push({ id: 'b' + i, x, y, w: cw, h: ch, onClick: () => {
+        if (locked) { sfx('error'); smallCall('還沒解鎖喔！', '#ffd0d0'); return; }
+        sfx('select');
+        if (comp2) newComp(i); else startRide('free', i);
+      } });
+    });
+    button('back', 14, H - 56 * s, 110 * s, 44 * s, '返回', 'white', () => { goTitle(); sfx('back'); });
+    if (CO.small) drawSmall(H - 80 * s);
+  }
+
+  /* ---------- 任務列表 ---------- */
+  function drawMissions() {
+    const land = W > H * 1.2;
+    txt('任務挑戰', W / 2, 30 * s, 24 * s, '#ffffff', 'center', 900, '#0d3a66');
+    star(W / 2 - 34 * s, 56 * s, 9 * s, '#ffd23a', '#c48a12');
+    txt(missionsDone.length + ' / 20', W / 2 + 6 * s, 57 * s, 15 * s, '#ffffff', 'center', 900, '#0d3a66');
+    const cols = land ? 5 : 2, rows = land ? 2 : 5, gap = 9 * s;
+    const top = 74 * s, bottom = H - 64 * s;
+    const tw = (Math.min(W, 1000) - 24 - gap * (cols - 1)) / cols;
+    const th = Math.min((bottom - top - gap * (rows - 1)) / rows, 96 * s);
+    const x0 = (W - (tw * cols + gap * (cols - 1))) / 2, y0 = top + Math.max(0, (bottom - top - (th * rows + gap * (rows - 1))) / 2);
+    for (let k = 0; k < 10; k++) {
+      const i = missionPage * 10 + k, m = MISSIONS[i];
+      const x = x0 + (k % cols) * (tw + gap), y = y0 + Math.floor(k / cols) * (th + gap);
+      const open = missionUnlocked(i), done = missionsDone.includes(i);
+      ctx.fillStyle = 'rgba(8,40,70,0.25)'; rrect(x, y + 4, tw, th, 12 * s); ctx.fill();
+      ctx.fillStyle = done ? '#fff6cf' : open ? '#ffffff' : '#c9d5dd'; rrect(x, y, tw, th, 12 * s); ctx.fill();
+      const r = Math.min(th * 0.24, 17 * s);
+      circ(x + r + 8 * s, y + th / 2, r, open ? hex(BEACHES[m.beach].shallow) : '#9aa8b3');
+      txt(String(i + 1), x + r + 8 * s, y + th / 2 + 1, r * 1.05, '#ffffff', 'center', 900, 'rgba(0,0,0,0.25)');
+      const tx = x + r * 2 + 14 * s, tw2 = tw - (tx - x) - (done ? 26 * s : 8 * s);
+      txt(m.name, tx, y + th * 0.36, Math.min(15 * s, th * 0.24), open ? '#16456b' : '#6b7c88', 'left', 900, null, tw2);
+      txt(open ? BEACHES[m.beach].name : '還沒解鎖', tx, y + th * 0.7, Math.min(11 * s, th * 0.18), '#5a7a90', 'left', 700, null, tw2);
+      if (done) star(x + tw - 15 * s, y + th / 2, 10 * s, '#ffd23a', '#c48a12');
+      else if (!open) lock(x + tw - 16 * s, y + th / 2, 10 * s);
+      BTN.push({ id: 'm' + i, x, y, w: tw, h: th, onClick: () => {
+        if (!open) { sfx('error'); smallCall('先完成前一個任務喔！', '#ffd0d0'); return; }
+        missionIdx = i; briefKind = 'mission'; comp = null; if (m.beach !== beachIdx) setBeach(m.beach); goMenu('brief'); sfx('select');
+      } });
+    }
+    const by = H - 54 * s, bh = 42 * s;
+    button('back', 14, by, 100 * s, bh, '返回', 'white', () => { goTitle(); sfx('back'); });
+    const pw = 54 * s;
+    button('pgL', W / 2 - pw - 46 * s, by, pw, bh, '◀', missionPage ? 'blue' : 'gray', () => { if (missionPage) { missionPage = 0; sfx('ui'); } });
+    txt((missionPage + 1) + ' / 2', W / 2, by + bh / 2, 15 * s, '#ffffff', 'center', 900, '#0d3a66');
+    button('pgR', W / 2 + 46 * s, by, pw, bh, '▶', missionPage ? 'gray' : 'blue', () => { if (!missionPage) { missionPage = 1; sfx('ui'); } });
+    if (CO.small) drawSmall(by - 24 * s);
+  }
+
+  /* ---------- 出發前說明 ---------- */
+  function drawBrief() {
+    ctx.fillStyle = 'rgba(5,30,55,0.35)'; ctx.fillRect(0, 0, W, H);
+    const cw = Math.min(380 * s, W - 28), x = (W - cw) / 2;
+    const lines = [];
+    let title, sub;
+    const isComp = briefKind === 'comp' && comp;
+    if (isComp) { title = '第 ' + (comp.heat + 1) + ' 輪比賽'; sub = BEACHES[comp.beach].name + '・共 3 輪'; }
+    else { const m = MISSIONS[missionIdx]; title = '任務 ' + (missionIdx + 1) + '：' + m.name; sub = BEACHES[m.beach].name + '・限時 ' + MISSION_TIME + ' 秒・3 塊衝浪板'; }
+    const ch = isComp ? Math.min(H - 40, 340 * s) : Math.min(H - 40, 270 * s);
+    const y = (H - ch) / 2;
+    panel(x, y, cw, ch);
+    let yy = y + 30 * s;
+    txt(title, W / 2, yy, 22 * s, '#16456b', 'center', 900, null, cw - 24); yy += 26 * s;
+    txt(sub, W / 2, yy, 12.5 * s, '#4a6a80', 'center', 700, null, cw - 24); yy += 24 * s;
+    if (isComp) {
+      txt('45 秒內做出最多花式，5 位裁判會打分數！', W / 2, yy, 12.5 * s, '#16456b', 'center', 800, null, cw - 24); yy += 24 * s;
+      const rowsData = [{ you: true, name: C().name + '（你）', total: comp.you.total }].concat(comp.ais.map(a => ({ a, name: a.name, total: a.total })));
+      const rh = Math.min(30 * s, (y + ch - 70 * s - yy) / 4);
+      rowsData.forEach((r, i) => {
+        const ry = yy + i * rh;
+        ctx.fillStyle = r.you ? '#fff4c2' : (i % 2 ? '#f2f8fb' : '#ffffff'); rrect(x + 14 * s, ry, cw - 28 * s, rh - 3, 8 * s); ctx.fill();
+        if (r.you) drawCharIcon(C(), x + 30 * s, ry + rh / 2 - 1, rh * 0.34); else drawAIIcon(r.a, x + 30 * s, ry + rh / 2 - 1, rh * 0.34);
+        txt(r.name, x + 48 * s, ry + rh / 2, 13.5 * s, '#16456b', 'left', 800, null, cw * 0.5);
+        if (comp.heat > 0) txt('總分 ' + r.total.toFixed(2), x + cw - 24 * s, ry + rh / 2, 13 * s, '#16456b', 'right', 900);
+        else if (!r.you) { for (let k = 0; k < 5; k++) star(x + cw - 30 * s - k * 15 * s, ry + rh / 2, 6 * s, k < Math.round((r.a.skill - 4) * 1.4) ? '#ffb42e' : '#d9e6ee'); }
+      });
+    } else {
+      const m = MISSIONS[missionIdx];
+      const ls = wrap('目標：' + m.goal, cw - 40 * s, 16 * s, 900);
+      ls.forEach(l => { txt(l, W / 2, yy + 6 * s, 16 * s, '#d0572f', 'center', 900); yy += 24 * s; });
+      yy += 4 * s;
+      const tip = missionTip(m);
+      wrap(tip, cw - 40 * s, 12.5 * s, 700).forEach(l => { txt(l, W / 2, yy, 12.5 * s, '#4a6a80', 'center', 700); yy += 19 * s; });
+    }
+    const bh = 46 * s, by = y + ch - bh - 14 * s;
+    button('go', x + cw * 0.5 + 6 * s, by, cw * 0.5 - 20 * s, bh, '開始！', 'green', () => { sfx('select'); startRide(isComp ? 'comp' : 'mission', isComp ? comp.beach : MISSIONS[missionIdx].beach); });
+    button('back', x + 14 * s, by, cw * 0.5 - 20 * s, bh, '返回', 'white', () => { sfx('back'); if (isComp) { comp = null; beachMode = 'comp'; goMenu('beaches'); } else goMenu('missions'); });
+  }
+  function missionTip(m) {
+    const k = m.key;
+    if (k === 'launches' || k === 'spins' || k === 'backflips' || k === 'frontflips' || k === 'grabs' || k === 'maxTricksAir' || k === 'maxSpinAir')
+      return isTouch ? '往上拖曳衝上浪頂就會飛起來，在空中滑動或按特技鈕：左右＝轉圈、上＝後空翻、下＝前空翻、點一下＝抓板。' : '按 ↑ 衝上浪頂就會飛起來，在空中：← → 轉圈、↑ 後空翻、↓ 前空翻、空白鍵抓板。';
+    if (k === 'maxTube') return '浪管在後面捲過來的地方。' + (isTouch ? '按「減速」' : '按住 ← 減速') + '讓浪追上你，待在浪面中間，小心不要太高！';
+    if (k === 'snaps') return '先往上衝到浪頂附近，再馬上往下轉彎，就會甩出大水花。';
+    if (k === 'dodges') return '浮標在浪的中間，礁石在浪的下面，從旁邊擦身而過就算閃過。';
+    if (k === 'shells') return '貝殼漂在浪上，有些在浪頂上空，飛起來才拿得到！';
+    if (k === 'maxKmh') return '從浪頂往下衝會變快，放開手（或按加速）會用力划水加速。';
+    if (k === 'maxMult') return '連續做動作、鑽浪管、撿貝殼，連擊條就會一直漲。';
+    if (k === 'score') return '靠近浪管衝浪、做空中特技、鑽浪管都能拿高分。';
+    return '上下轉彎、跟著浪一起衝，不要被後面的白浪追到。';
+  }
+
+  /* ---------- 衝浪中的介面 ---------- */
+  function touchLayout() {
+    if (!isTouch || sceneName !== 'ride' || paused) return [];
+    const R1 = 40 * s, R2 = 31 * s, bx = W - 16 - R1, by = H - 20 - R1;
+    if (!rider.air) return [
+      { id: 'pump', x: bx, y: by, r: R1, label: '加速', col: '#2fb35a' },
+      { id: 'stall', x: bx - R1 - R2 - 14 * s, y: by + R1 - R2, r: R2, label: '減速', col: '#2f8fe0' }];
+    return [
+      { id: 'spin', x: bx, y: by, r: R1, label: '轉圈', col: '#f5a623' },
+      { id: 'flip', x: bx - R1 - R2 - 14 * s, y: by + R1 - R2, r: R2, label: '翻滾', col: '#e8648d' },
+      { id: 'grab', x: bx - 6 * s, y: by - R1 - R2 - 14 * s, r: R2, label: '抓板', col: '#7a5cff' }];
+  }
+  const tDown = {};
+  function touchBtnDown(id) {
+    tDown[id] = true;
+    if (id === 'pump') inp.pumpReq = true;
+    else if (id === 'stall') inp.stall = true;
+    else if (id === 'spin') requestTrick('spin', 1);
+    else if (id === 'flip') requestTrick('flip', 1);
+    else if (id === 'grab') requestTrick('grab', 1);
+  }
+  function touchBtnUp(id) { tDown[id] = false; if (id === 'stall') inp.stall = false; }
+  let stick = null;
+  function drawHUD() {
+    const pw = 122 * s;
+    // 分數
+    txt(Math.floor(score).toLocaleString(), W / 2, 28 * s, 30 * s, '#ffffff', 'center', 900, '#0d3a66');
+    const bw = Math.min(130 * s, W - 2 * (pw + 24));
+    // 連擊條
+    const by = 50 * s, bx = W / 2 - bw / 2;
+    ctx.fillStyle = 'rgba(13,58,102,0.55)'; rrect(bx, by, bw, 9 * s, 4.5 * s); ctx.fill();
+    const f = combo.mult >= 5 ? 1 : (combo.meter % 100) / 100;
+    if (f > 0) { ctx.fillStyle = combo.mult >= 3 ? '#ffd23a' : '#7ff3ff'; rrect(bx, by, Math.max(9 * s, bw * f), 9 * s, 4.5 * s); ctx.fill(); }
+    if (combo.mult > 1) txt('×' + combo.mult, bx + bw + 6 * s, by + 4.5 * s, 16 * s, combo.mult >= 3 ? '#ffd23a' : '#ffffff', 'left', 900, '#0d3a66');
+    // 浪管距離
+    const d = rider.x - curlX, my = 66 * s;
+    const g = ctx.createLinearGradient(bx, 0, bx + bw, 0);
+    g.addColorStop(0, '#ff5a5a'); g.addColorStop(0.16, '#ffb03a'); g.addColorStop(0.24, '#4fe08a'); g.addColorStop(0.5, '#4fe08a'); g.addColorStop(1, '#5aa8ff');
+    ctx.fillStyle = 'rgba(13,58,102,0.55)'; rrect(bx - 2, my - 2, bw + 4, 10 * s + 4, 6 * s); ctx.fill();
+    ctx.fillStyle = g; rrect(bx, my, bw, 10 * s, 5 * s); ctx.fill();
+    const fx = bx + clamp((d + 12) / 72, 0, 1) * bw;
+    circ(fx, my + 5 * s, 7.5 * s, '#ffffff'); circ(fx, my + 5 * s, 5 * s, rider.tube ? '#7ff3ff' : '#16456b');
+    if (d < -5 && rider.state === 'ride' && Math.floor(gameT * 4) % 2 === 0) txt('快逃！浪追上來了', W / 2, my + 24 * s, 13 * s, '#ff6b6b', 'center', 900, '#ffffff');
+    // 左邊資訊
+    const lx = 10, ly = 66;
+    const lines = [];
+    if (mode === 'comp' && comp) {
+      const left = Math.max(0, HEAT_TIME - rideT);
+      lines.push(['第 ' + (comp.heat + 1) + ' / 3 輪', '#16456b']);
+      lines.push(['剩 ' + Math.ceil(left) + ' 秒', left < 10 ? '#e0405a' : '#16456b']);
+    } else if (mode === 'mission') {
+      const m = MISSIONS[missionIdx];
+      lines.push([m.name, '#16456b']);
+      lines.push(['剩 ' + Math.ceil(Math.max(0, MISSION_TIME - rideT)) + ' 秒', MISSION_TIME - rideT < 10 ? '#e0405a' : '#16456b']);
+    }
+    const kmh = Math.round(rider.v * 3.6);
+    const ph = 22 * s + lines.length * 19 * s + (mode !== 'comp' ? 22 * s : 0) + (mode === 'mission' ? 16 * s : 0);
+    ctx.fillStyle = 'rgba(255,255,255,0.85)'; rrect(lx, ly, pw, ph, 12 * s); ctx.fill();
+    let yy = ly + 14 * s;
+    for (const [t2, c] of lines) { txt(t2, lx + 10 * s, yy, 13.5 * s, c, 'left', 900, null, pw - 16 * s); yy += 19 * s; }
+    if (mode === 'mission') {
+      const m = MISSIONS[missionIdx], v = Math.min(m.n, Math.floor(ST[m.key] || 0));
+      ctx.fillStyle = '#d9e6ee'; rrect(lx + 10 * s, yy - 5 * s, pw - 20 * s, 9 * s, 4 * s); ctx.fill();
+      ctx.fillStyle = missionState ? '#ffb42e' : '#2fb35a'; rrect(lx + 10 * s, yy - 5 * s, Math.max(9 * s, (pw - 20 * s) * v / m.n), 9 * s, 4 * s); ctx.fill();
+      yy += 12 * s;
+      txt(v + ' / ' + m.n + ' ' + m.unit, lx + 10 * s, yy, 11.5 * s, '#4a6a80', 'left', 800); yy += 16 * s;
+    }
+    if (mode !== 'comp') {
+      for (let i = 0; i < 3; i++) {
+        const cx = lx + 18 * s + i * 22 * s, cy = yy - 1;
+        ctx.save(); ctx.translate(cx, cy); ctx.rotate(-0.5);
+        ctx.fillStyle = i < lives ? hex(C().board) : '#c9d5dd';
+        ctx.beginPath(); ctx.ellipse(0, 0, 9 * s, 3.6 * s, 0, 0, TAU); ctx.fill();
+        ctx.restore();
+      }
+      yy += 20 * s;
+    }
+    txt('時速 ' + kmh + ' 公里', lx + 10 * s, yy, 12.5 * s, '#16456b', 'left', 800, null, pw - 16 * s);
+    // 暫停鈕
+    const px = W - 56, py = 64;
+    button('pause', px, py, 46, 46, 'Ⅱ', 'white', () => setPaused(true), { size: 20 });
+    // 觸控按鈕
+    for (const b of touchLayout()) {
+      const down = tDown[b.id];
+      circ(b.x, b.y + 3, b.r, 'rgba(0,30,60,0.3)');
+      circ(b.x, b.y + (down ? 2 : 0), b.r, down ? b.col : 'rgba(255,255,255,0.82)');
+      ctx.lineWidth = 3 * s; ctx.strokeStyle = b.col; ctx.beginPath(); ctx.arc(b.x, b.y + (down ? 2 : 0), b.r - 1.5 * s, 0, TAU); ctx.stroke();
+      txt(b.label, b.x, b.y + (down ? 2 : 0), b.r * 0.5, down ? '#ffffff' : b.col, 'center', 900);
+    }
+    // 搖桿
+    if (stick) {
+      ctx.globalAlpha = 0.7;
+      ctx.lineWidth = 3 * s; ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+      ctx.beginPath(); ctx.arc(stick.x0, stick.y0, 52 * s, 0, TAU); ctx.stroke();
+      const ky = stick.y0 + clamp(stick.y - stick.y0, -52 * s, 52 * s);
+      circ(stick.x0, ky, 22 * s, 'rgba(255,255,255,0.9)');
+      ctx.globalAlpha = 1;
+    } else if (isTouch && sceneName === 'ride' && rideT < 8) {
+      ctx.globalAlpha = 0.55 * (1 - smooth((rideT - 6) / 2));
+      const hx = 70 * s, hy = H - 110 * s;
+      ctx.lineWidth = 3 * s; ctx.strokeStyle = '#ffffff';
+      ctx.beginPath(); ctx.arc(hx, hy, 46 * s, 0, TAU); ctx.stroke();
+      txt('▲', hx, hy - 24 * s, 16 * s, '#ffffff'); txt('▼', hx, hy + 24 * s, 16 * s, '#ffffff');
+      txt('拖曳', hx, hy, 14 * s, '#ffffff', 'center', 900, 'rgba(0,0,0,0.3)');
+      ctx.globalAlpha = 1;
+    }
+  }
+  function calloutY() { return Math.max(H * 0.2, 128 * s); }
+  function drawMain() {
+    const c = CO.main;
+    if (!c) return;
+    const a = c.t < 0.1 ? c.t / 0.1 : c.t > c.dur - 0.3 ? Math.max(0, (c.dur - c.t) / 0.3) : 1;
+    const sc = c.t < 0.18 ? 0.7 + 0.3 * smooth(c.t / 0.18) + Math.sin(c.t / 0.18 * Math.PI) * 0.12 : 1;
+    ctx.save(); ctx.globalAlpha = a; ctx.translate(W / 2, calloutY()); ctx.scale(sc, sc);
+    const sz = txt(c.text, 0, 0, 32 * s, c.color, 'center', 900, 'rgba(10,40,80,0.9)', W - 36);
+    if (c.sub) txt(c.sub, 0, sz * 0.9, Math.min(17 * s, sz * 0.6), '#ffffff', 'center', 800, 'rgba(10,40,80,0.9)', W - 36);
+    ctx.restore();
+  }
+  function drawSmall(y) {
+    const c = CO.small;
+    if (!c) return;
+    const a = c.t < 0.1 ? c.t / 0.1 : c.t > c.dur - 0.25 ? Math.max(0, (c.dur - c.t) / 0.25) : 1;
+    ctx.save(); ctx.globalAlpha = a;
+    ctx.font = font(900, 16 * s);
+    const tw = Math.min(W - 24, ctx.measureText(c.text).width + 26 * s);
+    ctx.fillStyle = 'rgba(13,58,102,0.6)'; rrect(W / 2 - tw / 2, y - 14 * s, tw, 28 * s, 14 * s); ctx.fill();
+    txt(c.text, W / 2, y + 1, 16 * s, c.color, 'center', 900, null, W - 40);
+    ctx.restore();
+  }
+  function drawCount() {
+    const k = Math.floor(sceneT / 0.8), f = (sceneT % 0.8) / 0.8;
+    const label = k < 3 ? String(3 - k) : '出發！';
+    ctx.save(); ctx.globalAlpha = 1 - smooth((f - 0.6) / 0.4);
+    ctx.translate(W / 2, H * 0.42); ctx.scale(1.4 - 0.4 * smooth(f / 0.3), 1.4 - 0.4 * smooth(f / 0.3));
+    txt(label, 0, 0, 80 * s, '#ffffff', 'center', 900, '#0d3a66');
+    ctx.restore();
+  }
+
+  /* ---------- 裁判、排名、頒獎、結算、暫停 ---------- */
+  function drawJudge() {
+    ctx.fillStyle = 'rgba(5,30,55,0.45)'; ctx.fillRect(0, 0, W, H);
+    const h = comp.heats[comp.heats.length - 1];
+    const cw = Math.min(440 * s, W - 24), x = (W - cw) / 2, ch = Math.min(H - 30, 330 * s), y = (H - ch) / 2;
+    panel(x, y, cw, ch);
+    txt('第 ' + comp.heats.length + ' 輪・裁判評分', W / 2, y + 28 * s, 20 * s, '#16456b', 'center', 900, null, cw - 20);
+    txt('這一輪你拿到 ' + h.pts.toLocaleString() + ' 分' + (ST.wipes ? '・摔倒 ' + ST.wipes + ' 次' : ''), W / 2, y + 54 * s, 13 * s, '#4a6a80', 'center', 800, null, cw - 20);
+    const step = Math.floor((sceneT - 0.4) / 0.45);
+    if (step !== judgeStep && step >= 0) {
+      judgeStep = step;
+      if (step < 5) sfx('ding', { pitch: 0.8 + h.cards[step] * 0.05, exact: true });
+      else if (step === 5) sfx('tap', { exact: true });
+      else if (step === 6) { sfx(h.you >= 7 ? 'star' : 'correct', { exact: true }); if (h.you >= 7.5) sfx('cheer'); }
+    }
+    const kw = Math.min(62 * s, (cw - 40 * s) / 5 - 8 * s), kh = kw * 1.25, gap = (cw - 5 * kw) / 6;
+    for (let i = 0; i < 5; i++) {
+      const kx = x + gap + i * (kw + gap), ky = y + 76 * s;
+      const shown = step >= i;
+      const pop = shown ? smooth((sceneT - 0.4 - i * 0.45) / 0.18) : 0;
+      ctx.fillStyle = 'rgba(8,40,70,0.25)'; rrect(kx, ky + 4, kw, kh, 8 * s); ctx.fill();
+      ctx.fillStyle = shown ? '#ffffff' : '#d7e6ee'; rrect(kx, ky - pop * 6 * s, kw, kh, 8 * s); ctx.fill();
+      ctx.lineWidth = 2 * s; ctx.strokeStyle = '#16456b'; rrect(kx, ky - pop * 6 * s, kw, kh, 8 * s); ctx.stroke();
+      txt('裁判' + (i + 1), kx + kw / 2, ky + kh + 12 * s, 10.5 * s, '#4a6a80', 'center', 800);
+      if (shown) {
+        const struck = step >= 5 && (i === h.hi || i === h.lo);
+        txt(h.cards[i].toFixed(1), kx + kw / 2, ky + kh / 2 - pop * 6 * s, kw * 0.42, struck ? '#9aa8b3' : '#e0405a', 'center', 900);
+        if (struck) { ctx.strokeStyle = '#9aa8b3'; ctx.lineWidth = 3 * s; ctx.beginPath(); ctx.moveTo(kx + 6, ky + kh * 0.75); ctx.lineTo(kx + kw - 6, ky + kh * 0.25); ctx.stroke(); }
+      } else txt('?', kx + kw / 2, ky + kh / 2, kw * 0.42, '#9aa8b3', 'center', 900);
+    }
+    let yy = y + 76 * s + kh + 34 * s;
+    if (step >= 5) txt('去掉最高和最低分，平均：', W / 2, yy, 12.5 * s, '#4a6a80', 'center', 800);
+    if (step >= 6) {
+      const pop = smooth((sceneT - 0.4 - 6 * 0.45) / 0.2);
+      ctx.save(); ctx.translate(W / 2, yy + 30 * s); ctx.scale(0.6 + 0.4 * pop, 0.6 + 0.4 * pop);
+      txt(h.you.toFixed(2) + ' 分', 0, 0, 34 * s, '#f08a1c', 'center', 900, '#ffffff');
+      ctx.restore();
+    }
+    const bh = 44 * s;
+    if (step >= 6) button('next', x + cw * 0.25, y + ch - bh - 12 * s, cw * 0.5, bh, '看排名', 'green', () => { sfx('select'); sceneName = 'standings'; sceneT = 0; });
+  }
+  function drawStandings() {
+    ctx.fillStyle = 'rgba(5,30,55,0.45)'; ctx.fillRect(0, 0, W, H);
+    const rows = standings();
+    const cw = Math.min(420 * s, W - 24), x = (W - cw) / 2, ch = Math.min(H - 30, 320 * s), y = (H - ch) / 2;
+    panel(x, y, cw, ch);
+    const last = comp.heats.length >= HEATS;
+    txt(last ? '最後排名' : '目前排名（' + comp.heats.length + ' / 3 輪）', W / 2, y + 28 * s, 20 * s, '#16456b', 'center', 900, null, cw - 20);
+    const rh = Math.min(42 * s, (ch - 130 * s) / 4);
+    txt('這輪', x + cw - 104 * s, y + 54 * s, 11 * s, '#4a6a80', 'center', 800);
+    txt('總分', x + cw - 40 * s, y + 54 * s, 11 * s, '#4a6a80', 'center', 800);
+    rows.forEach((r, i) => {
+      const ry = y + 64 * s + i * rh, a = smooth((sceneT - i * 0.12) / 0.25);
+      ctx.save(); ctx.globalAlpha = a; ctx.translate((1 - a) * 30, 0);
+      ctx.fillStyle = r.you ? '#fff4c2' : (i % 2 ? '#f2f8fb' : '#ffffff'); rrect(x + 12 * s, ry, cw - 24 * s, rh - 4, 10 * s); ctx.fill();
+      txt(String(i + 1), x + 28 * s, ry + rh / 2 - 2, 18 * s, i === 0 ? '#f0a020' : '#16456b', 'center', 900);
+      if (r.you) drawCharIcon(C(), x + 56 * s, ry + rh / 2 - 2, rh * 0.32); else drawAIIcon(r, x + 56 * s, ry + rh / 2 - 2, rh * 0.32);
+      txt(r.name + (r.you ? '（你）' : ''), x + 76 * s, ry + rh / 2 - 2, 14 * s, '#16456b', 'left', 900, null, cw - 210 * s);
+      txt(r.last.toFixed(2), x + cw - 104 * s, ry + rh / 2 - 2, 14 * s, '#4a6a80', 'center', 800);
+      txt(r.total.toFixed(2), x + cw - 40 * s, ry + rh / 2 - 2, 16 * s, '#16456b', 'center', 900);
+      ctx.restore();
+    });
+    const bh = 44 * s;
+    button('next', x + cw * 0.2, y + ch - bh - 12 * s, cw * 0.6, bh, last ? '頒獎典禮' : '下一輪', 'green', () => {
+      sfx('select');
+      if (last) finishComp(); else { comp.heat++; briefKind = 'comp'; goMenu('brief'); }
+    });
+  }
+  function drawFinal() {
+    ctx.fillStyle = 'rgba(5,30,55,0.4)'; ctx.fillRect(0, 0, W, H);
+    const rows = standings();
+    const cw = Math.min(440 * s, W - 24), x = (W - cw) / 2, ch = Math.min(H - 24, 380 * s), y = (H - ch) / 2;
+    panel(x, y, cw, ch);
+    const rank = comp.rank;
+    txt(rank === 1 ? '冠軍！太厲害了！' : rank <= 3 ? '上台領獎囉！' : '再接再厲！', W / 2, y + 30 * s, 24 * s, '#16456b', 'center', 900, null, cw - 20);
+    txt(BEACHES[comp.beach].name + '　第 ' + rank + ' 名', W / 2, y + 58 * s, 14 * s, '#4a6a80', 'center', 800);
+    // 頒獎台
+    const baseY = y + ch - 84 * s, pw = Math.min(90 * s, cw / 3.6);
+    const order = [1, 0, 2], hts = [70 * s, 100 * s, 50 * s], cols = ['#ffcf3a', '#c6d2dc', '#d08a4e'];
+    order.forEach((ri, k) => {
+      const r = rows[ri];
+      const px = W / 2 + (k - 1) * (pw + 6 * s) - pw / 2, ph2 = Math.min(hts[k], (baseY - y - 130 * s)) * smooth((sceneT - k * 0.15) / 0.4);
+      ctx.fillStyle = cols[ri]; rrect(px, baseY - ph2, pw, ph2, 8 * s); ctx.fill();
+      txt(String(ri + 1), px + pw / 2, baseY - ph2 / 2, 24 * s, '#ffffff', 'center', 900, 'rgba(0,0,0,0.2)');
+      const iy = baseY - ph2 - 24 * s + Math.sin(sceneT * 4 + k) * 2;
+      if (r.you) drawCharIcon(C(), px + pw / 2, iy, 18 * s); else drawAIIcon(r, px + pw / 2, iy, 18 * s);
+      txt(r.name, px + pw / 2, baseY + 12 * s, 11 * s, '#16456b', 'center', 800, null, pw + 4);
+    });
+    if (comp.medal) medal(x + cw - 34 * s, y + 46 * s, 16 * s, comp.medal);
+    if (comp.unlocked) txt('解鎖新海灘：' + BEACHES[comp.beach + 1].name + '！', W / 2, y + 80 * s, 13 * s, '#2fb35a', 'center', 900);
+    const bh = 42 * s, by = y + ch - bh - 12 * s, bw = (cw - 48 * s) / 3;
+    button('again', x + 12 * s, by, bw, bh, '再比一次', 'green', () => { sfx('select'); newComp(comp.beach); });
+    button('beach', x + 24 * s + bw, by, bw, bh, '選海灘', 'blue', () => { sfx('select'); beachMode = 'comp'; comp = null; goMenu('beaches'); });
+    button('home', x + 36 * s + bw * 2, by, bw, bh, '回選單', 'white', () => { sfx('back'); goTitle(); });
+  }
+  function drawResult() {
+    ctx.fillStyle = 'rgba(5,30,55,0.35)'; ctx.fillRect(0, 0, W, H);
+    const R = result;
+    const cw = Math.min(380 * s, W - 28), x = (W - cw) / 2, ch = Math.min(H - 24, 330 * s), y = (H - ch) / 2;
+    panel(x, y, cw, ch);
+    let yy = y + 30 * s;
+    if (R.kind === 'mission') {
+      const m = MISSIONS[R.idx];
+      txt(R.ok ? '任務完成！' : '差一點點！', W / 2, yy, 26 * s, R.ok ? '#f08a1c' : '#16456b', 'center', 900); yy += 30 * s;
+      txt('任務 ' + (R.idx + 1) + '：' + m.name, W / 2, yy, 14 * s, '#4a6a80', 'center', 800, null, cw - 20); yy += 34 * s;
+      if (R.ok) { for (let i = 0; i < 3; i++) star(W / 2 + (i - 1) * 40 * s, yy + 4 * s - (i === 1 ? 6 * s : 0), 16 * s * smooth((sceneT - i * 0.15) / 0.3), '#ffd23a', '#c48a12'); yy += 36 * s; }
+      else { txt('進度 ' + Math.min(R.val, m.n) + ' / ' + m.n + ' ' + m.unit, W / 2, yy, 18 * s, '#e0405a', 'center', 900); yy += 30 * s; }
+      txt('分數 ' + ST.score.toLocaleString(), W / 2, yy, 15 * s, '#16456b', 'center', 800); yy += 22 * s;
+      if (!R.ok) wrap(missionTip(m), cw - 40 * s, 12 * s, 700).slice(0, 3).forEach(l => { txt(l, W / 2, yy, 12 * s, '#4a6a80', 'center', 700); yy += 18 * s; });
+    } else {
+      txt(R.newBest ? '新紀錄！' : '衝浪結束', W / 2, yy, 26 * s, R.newBest ? '#f08a1c' : '#16456b', 'center', 900); yy += 40 * s;
+      txt(ST.score.toLocaleString() + ' 分', W / 2, yy, 34 * s, '#16456b', 'center', 900); yy += 30 * s;
+      txt('最佳紀錄 ' + (R.best || 0).toLocaleString() + ' 分', W / 2, yy, 13 * s, '#4a6a80', 'center', 800); yy += 26 * s;
+      const st = [['飛行次數', ST.airs], ['最長浪管', ST.maxTube.toFixed(1) + ' 秒'], ['最高連擊', '×' + ST.maxMult], ['貝殼', ST.shells]];
+      st.forEach((a, i) => {
+        const cx = x + cw * (i % 2 ? 0.72 : 0.28), cy = yy + Math.floor(i / 2) * 22 * s;
+        txt(a[0] + '　' + a[1], cx, cy, 13 * s, '#16456b', 'center', 800, null, cw * 0.44);
+      });
+      yy += 48 * s;
+      if (ST.bestTrick) txt('最強招式：' + ST.bestTrick, W / 2, yy, 12.5 * s, '#d0572f', 'center', 800, null, cw - 24);
+    }
+    const bh = 44 * s, by = y + ch - bh - 12 * s, bw = (cw - 36 * s) / 2;
+    if (R.kind === 'mission') {
+      if (R.ok && R.idx < 19) button('next', x + 12 * s, by, bw, bh, '下一個任務', 'green', () => { sfx('select'); missionIdx = R.idx + 1; briefKind = 'mission'; if (MISSIONS[missionIdx].beach !== beachIdx) setBeach(MISSIONS[missionIdx].beach); goMenu('brief'); });
+      else button('again', x + 12 * s, by, bw, bh, '再試一次', 'green', () => { sfx('select'); startRide('mission', MISSIONS[R.idx].beach); });
+      button('list', x + 24 * s + bw, by, bw, bh, '任務列表', 'white', () => { sfx('back'); missionPage = R.idx >= 10 ? 1 : 0; goMenu('missions'); });
+    } else {
+      button('again', x + 12 * s, by, bw, bh, '再玩一次', 'green', () => { sfx('select'); startRide('free', beachIdx); });
+      button('home', x + 24 * s + bw, by, bw, bh, '回選單', 'white', () => { sfx('back'); goTitle(); });
+    }
+  }
+  function drawPause() {
+    ctx.fillStyle = 'rgba(5,30,55,0.5)'; ctx.fillRect(0, 0, W, H);
+    const cw = Math.min(320 * s, W - 28), bh = 46 * s, gap = 10 * s;
+    const ch = 56 * s + 4 * (bh + gap) + 10 * s, x = (W - cw) / 2, y = (H - ch) / 2;
+    panel(x, y, cw, ch);
+    txt('暫停', W / 2, y + 30 * s, 24 * s, '#16456b', 'center', 900);
+    let yy = y + 56 * s;
+    const bx = x + 16 * s, bw = cw - 32 * s;
+    button('resume', bx, yy, bw, bh, '繼續衝浪', 'green', () => { sfx('select'); setPaused(false); }); yy += bh + gap;
+    button('restart', bx, yy, bw, bh, mode === 'comp' ? '重來這一輪' : '重新開始', 'yellow', () => { sfx('select'); paused = false; if (M) M.resume(); startRide(mode, beachIdx); }); yy += bh + gap;
+    button('quit', bx, yy, bw, bh, '回選單', 'white', () => { sfx('back'); paused = false; if (M) M.resume(); goTitle(); }); yy += bh + gap;
+    toggleRow(bx, yy, bw, bh);
+  }
+  function setPaused(p) {
+    if (p === paused) return;
+    if (p && !inRideScene()) return;
+    paused = p;
+    inp.steer = 0; inp.stall = false; stick = null;
+    for (const k in tDown) tDown[k] = false;
+    if (p) { if (M) M.pause(); stopLoops(); sfx('ui'); }
+    else if (M) M.resume();
+  }
+
+  function drawUI(rdt) {
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    BTN = [];
+    if (CO.main) { CO.main.t += rdt; if (CO.main.t > CO.main.dur) CO.main = null; }
+    if (CO.small) { CO.small.t += rdt; if (CO.small.t > CO.small.dur) CO.small = null; }
+    switch (sceneName) {
+      case 'title': drawTitle(); break;
+      case 'chars': drawChars(); break;
+      case 'beaches': drawBeaches(); break;
+      case 'missions': drawMissions(); break;
+      case 'brief': drawBrief(); break;
+      case 'count': drawHUD(); drawCount(); drawMain(); break;
+      case 'ride': drawHUD(); drawMain(); drawSmall(calloutY() + 58 * s); break;
+      case 'judge': drawJudge(); break;
+      case 'standings': drawStandings(); break;
+      case 'final': drawFinal(); break;
+      case 'result': drawResult(); break;
+    }
+    if (paused) { BTN = []; drawPause(); }
+  }
+
+  /* =========================================================
+   * 輸入
+   * ========================================================= */
+  function local(e) { const r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+  function hitBtn(x, y, slack) {
+    let best = null, bd = Infinity;
+    for (const b of BTN) {
+      const dx = Math.max(b.x - x, 0, x - (b.x + b.w)), dy = Math.max(b.y - y, 0, y - (b.y + b.h)), dd = Math.hypot(dx, dy);
+      if (dd < bd) { bd = dd; best = b; }
+    }
+    return best && bd <= slack ? best : null;
+  }
+  const ptrs = new Map();
+  cv.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    if (e.pointerType === 'touch') isTouch = true;
+    const p = local(e);
+    try { cv.setPointerCapture(e.pointerId); } catch (err) { /* 忽略 */ }
+    const riding = sceneName === 'ride' && !paused;
+    const b = hitBtn(p.x, p.y, riding ? 6 : 22);
+    if (b) { press = { id: b.id, pid: e.pointerId }; return; }
+    if (!riding) return;
+    for (const tb of touchLayout()) {
+      if (Math.hypot(p.x - tb.x, p.y - tb.y) < tb.r + 10 * s) { touchBtnDown(tb.id); ptrs.set(e.pointerId, { role: 'tbtn', id: tb.id }); return; }
+    }
+    if (stick) return;
+    const st = { role: 'steer', x0: p.x, y0: p.y, x: p.x, y: p.y, ax: p.x, ay: p.y, t0: performance.now(), swiped: false, moved: 0 };
+    ptrs.set(e.pointerId, st);
+    stick = st;
+  });
+  cv.addEventListener('pointermove', e => {
+    const st = ptrs.get(e.pointerId);
+    if (!st || st.role !== 'steer') return;
+    const p = local(e);
+    st.x = p.x; st.y = p.y;
+    st.moved = Math.max(st.moved, Math.hypot(p.x - st.x0, p.y - st.y0));
+    if (rider.air) {
+      const dx = p.x - st.ax, dy = p.y - st.ay;
+      if (Math.hypot(dx, dy) > 30 * s) {
+        if (Math.abs(dx) > Math.abs(dy)) requestTrick('spin', dx > 0 ? 1 : -1);
+        else requestTrick('flip', dy < 0 ? 1 : -1);
+        st.ax = p.x; st.ay = p.y; st.swiped = true;
+      }
+      inp.steer = 0;
+    } else {
+      st.ax = p.x; st.ay = p.y;
+      const dy = (p.y - st.y0) / (50 * s);
+      inp.steer = Math.abs(dy) < 0.12 ? 0 : clamp(dy, -1, 1);
+    }
+  });
+  function endPtr(e, cancel) {
+    const p = local(e);
+    if (press && press.pid === e.pointerId) {
+      const b = hitBtn(p.x, p.y, sceneName === 'ride' ? 10 : 26);
+      const id = press.id;
+      press = null;
+      if (!cancel && b && b.id === id && b.onClick && !b.disabled) b.onClick();
+      return;
+    }
+    const st = ptrs.get(e.pointerId);
+    ptrs.delete(e.pointerId);
+    if (!st) return;
+    if (st.role === 'tbtn') { touchBtnUp(st.id); return; }
+    if (stick === st) stick = null;
+    inp.steer = 0;
+    if (cancel || sceneName !== 'ride' || paused) return;
+    if (rider.air) { if (!st.swiped && st.moved < 14 * s) requestTrick('grab', 1); }
+    else inp.pumpReq = true;
+  }
+  cv.addEventListener('pointerup', e => endPtr(e, false));
+  cv.addEventListener('pointercancel', e => endPtr(e, true));
+  cv.addEventListener('contextmenu', e => e.preventDefault());
+
+  const keys = {};
+  const KMAP = { ArrowUp: 'up', KeyW: 'up', ArrowDown: 'down', KeyS: 'down', ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right', Space: 'space' };
+  window.addEventListener('keydown', e => {
+    const k = KMAP[e.code];
+    if (k || e.code === 'Escape' || e.code === 'KeyP' || e.code === 'Enter') e.preventDefault();
+    if (e.code === 'Escape' || e.code === 'KeyP') { if (inRideScene()) setPaused(!paused); else if (sceneName !== 'title' && e.code === 'Escape') { const b = BTN.find(x => x.id === 'back' || x.id === 'home' || x.id === 'list'); if (b) b.onClick(); } return; }
+    if (e.code === 'Enter' && !e.repeat) {
+      const pri = ['resume', 'go', 'next', 'again', 'ok', 'free'];
+      for (const id of pri) { const b = BTN.find(x => x.id === id); if (b) { b.onClick(); return; } }
+      return;
+    }
+    if (!k || paused) return;
+    if (sceneName !== 'ride') return;
+    const first = !keys[k];
+    keys[k] = true;
+    if (e.repeat || !first) return;
+    if (rider.air) {
+      if (k === 'left') requestTrick('spin', -1);
+      else if (k === 'right') requestTrick('spin', 1);
+      else if (k === 'up') requestTrick('flip', 1);
+      else if (k === 'down') requestTrick('flip', -1);
+      else if (k === 'space') requestTrick('grab', 1);
+    } else if (k === 'space' || k === 'right') inp.pumpReq = true;
+  });
+  window.addEventListener('keyup', e => { const k = KMAP[e.code]; if (k) keys[k] = false; });
+  window.addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+  function keyInput() {
+    if (stick) return;
+    const v = (keys.down ? 1 : 0) - (keys.up ? 1 : 0);
+    if (v || inp._kb) { inp.steer = v; inp._kb = !!v; }
+    let stall = !!keys.left && !rider.air;
+    if (tDown.stall) stall = true;
+    inp.stall = stall;
+  }
+  document.addEventListener('visibilitychange', () => { if (document.hidden && inRideScene()) setPaused(true); });
+
+  /* =========================================================
+   * 主迴圈
+   * ========================================================= */
+  function simulate(dt) {
+    gameT += dt;
+    curlX += WV.peel * (1 + 0.1 * Math.sin(gameT * 0.31) + 0.05 * Math.sin(gameT * 0.83 + 1)) * dt;
+    if (sceneName === 'ride') keyInput();
+    riderUpdate(dt);
+    spawnObjects();
+    updateObjects(dt);
+    lipSpray(dt);
+    updateParts(dt);
+    updateGulls(dt);
+    combo.idle += dt;
+    if (combo.idle > 2.5 && combo.meter > 0) {
+      combo.meter = Math.max(0, combo.meter - 22 * dt);
+      combo.mult = Math.max(1, Math.min(combo.mult, 1 + Math.floor(combo.meter / 100)));
+    }
+    if (sceneName === 'ride' && scoring) {
+      rideT += dt;
+      ST.maxMult = Math.max(ST.maxMult, combo.mult);
+      checkMission();
+      if (M) {
+        M.setLayer('combo', combo.mult >= 3);
+        const late = mode === 'comp' && HEAT_TIME - rideT < 10;
+        M.setLayer('hype', combo.mult >= 5 || late);
+        M.setTempo(late ? 1.07 : 1);
+      }
+      if (!endPending) {
+        if (mode === 'comp' && rideT >= HEAT_TIME) { callout('時間到！', '', '#ffe066', 1.2); sfx('go', { exact: true, pitch: 0.8 }); endPending = 1.2; }
+        if (mode === 'mission' && !missionState && rideT >= MISSION_TIME) { callout('時間到！', '', '#ffe066', 1.2); endPending = 1.2; }
+      }
+    }
+    if (endPending > 0) {
+      endPending -= dt;
+      if (endPending <= 0) { endPending = 0; endRide(missionState === 'done' ? 'done' : 'time'); }
+    }
+  }
+  function updateAudio(rdt) {
+    loopTimer -= rdt;
+    if (loopTimer > 0) return;
+    loopTimer = 0.1;
+    const want = sfxOn && !paused && !document.hidden;
+    if (!want) { if (LOOP.water) stopLoops(); return; }
+    ensureLoops();
+    if (!LOOP.water) return;
+    const r = rider, sp = clamp(r.v / 20, 0, 1);
+    if (inRideScene() && r.state === 'ride') {
+      if (r.tube) LOOP.water.set(0.1, 0.17);
+      else if (r.air) LOOP.water.set(0.2, 0.07);
+      else LOOP.water.set(0.2 + sp * 0.6, 0.08 + sp * 0.08);
+      LOOP.wind.set(r.air ? 0.6 : 0.1, r.air ? 0.07 : 0.0001);
+    } else if (inRideScene()) { LOOP.water.set(0.5, 0.12); LOOP.wind.set(0, 0.0001); }
+    else { LOOP.water.set(0.15, 0.05); LOOP.wind.set(0, 0.0001); }
+  }
+  let last = performance.now(), first = true;
+  function renderFrame() {
+    renderer.render(scene, camera);
+    const now = performance.now(), dt = perf.last ? Math.min(0.5, (now - perf.last) / 1000) : 0;
+    perf.last = now;
+    if (document.hidden || qLevel >= QL.length - 1) return;
+    perf.cool -= dt;
+    if (perf.cool > 0) return;
+    perf.sum += dt; perf.n++;
+    if (perf.n >= 60) {
+      if (perf.sum / perf.n > 1 / 42) { qLevel++; KG.store.set(QKEY, qLevel); applyQuality(); perf.cool = 1.5; }
+      perf.n = 0; perf.sum = 0;
+    }
+  }
+  function draw3D(rdt) {
+    WU.uTime.value = gameT;
+    waveMesh.position.x = curlX; lipMesh.position.x = curlX;
+    syncSurfer(rdt);
+    updateCamera(rdt);
+    PU.uScale.value = H * QL[qLevel].r / (2 * Math.tan(camera.fov * Math.PI / 360));
+  }
+  function frame(now) {
+    const rdt = Math.min(0.05, Math.max(0, (now - last) / 1000));
+    last = now;
+    if (!paused) {
+      if (slowT > 0) slowT -= rdt;
+      timeScale = slowT > 0 ? 1 - 0.68 * clamp(slowT / 0.2, 0, 1) : 1;
+      sceneT += rdt;
+      shake = Math.max(0, shake - rdt * 2);
+      if (sceneName === 'count') updateCount();
+      simulate(rdt * timeScale);
+      if (musicSwap > 0) { musicSwap -= rdt; if (musicSwap <= 0 && !inRideScene()) playSong(SONG_TITLE); }
+    }
+    updateAudio(rdt);
+    draw3D(rdt);
+    renderFrame();
+    drawUI(paused ? 0 : rdt);
+    if (first) { first = false; const m = document.getElementById('msg'); if (m) m.remove(); }
+    requestAnimationFrame(frame);
+  }
+
+  resize();
+  setBeach(0);
+  resetRider(20);
+  resetObjects();
+  playSong(SONG_TITLE);
+  requestAnimationFrame(frame);
+
+  /* ---------- 測試用掛鉤 ---------- */
+  window.__surf = {
+    state: () => ({ scene: sceneName, mode, paused, beach: beachIdx, char: charIdx, score: Math.floor(score), lives, mult: combo.mult, meter: Math.round(combo.meter),
+      d: +(rider.x - curlX).toFixed(2), t: +faceT(rider.x - curlX, rider.z).toFixed(3), y: +rider.y.toFixed(2), v: +rider.v.toFixed(2), phi: +rider.phi.toFixed(2),
+      air: rider.air, tube: rider.tube, rstate: rider.state, rideT: +rideT.toFixed(2), q: qLevel, music: M ? M.isPlaying() : null,
+      cur: rider.cur ? rider.cur.kind : null, tricks: rider.tricks.map(trickName), callout: CO.main ? CO.main.text + '|' + CO.main.sub : null, small: CO.small ? CO.small.text : null,
+      stats: Object.assign({}, ST), missionState, comp: comp ? { heat: comp.heat, heats: comp.heats.length, you: comp.you.total, rank: comp.rank } : null, parts: parts.length }),
+    start: (m, b, opt) => { opt = opt || {}; if (m === 'comp') { newComp(b || 0); startRide('comp', b || 0); } else { if (m === 'mission') missionIdx = opt.mission || 0; startRide(m || 'free', m === 'mission' ? MISSIONS[missionIdx].beach : (b || 0)); } if (!opt.count) { sceneT = 2.39; } },
+    ff: (secs, auto) => { const was = autopilot; if (auto != null) autopilot = auto; const n = Math.round(secs * 60); for (let i = 0; i < n; i++) { if (sceneName === 'count') { sceneT += 1 / 60; updateCount(); } simulate(1 / 60); } autopilot = was; },
+    launch: up => { const d = rider.x - curlX; if (!rider.air) launch(up || 8, d); },
+    trick: (k, dir) => requestTrick(k, dir || 1),
+    wipe: () => wipeout('測試'),
+    endRide: () => { rideT = 99; endPending = 0.01; },
+    place: (d, t) => { const p = wp(d); rider.x = curlX + d; rider.z = p.zc + p.wf * (t == null ? 0.35 : t); rider.y = waveY(d, rider.z); rider.air = false; },
+    auto: on => { autopilot = !!on; },
+    quality: q => { qLevel = clamp(q | 0, 0, QL.length - 1); perf.cool = 1e9; applyQuality(); },
+    scene: n => { sceneName = n; sceneT = 5; },
+    setStat: (k, v) => { ST[k] = v; },
+    judgeT: t => { sceneT = t; },
+    comp: () => comp,
+    btns: () => BTN.map(b => ({ id: b.id, x: Math.round(b.x + b.w / 2), y: Math.round(b.y + b.h / 2), w: Math.round(b.w), h: Math.round(b.h) })),
+    touch: () => touchLayout().map(b => ({ id: b.id, x: Math.round(b.x), y: Math.round(b.y), r: Math.round(b.r) })),
+    setChar: i => setChar(i),
+    setBeach: i => setBeach(i),
+    cam: a => { camOverride = a; },
+    lip: d => lipTheta(d), wave: (d, z) => waveY(d, z), wp: d => Object.assign({}, wp(d))
+  };
+}
+</script>
+</body>
+</html>

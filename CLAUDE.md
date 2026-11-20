@@ -56,6 +56,11 @@
   暫停時 `KG.music.pause()`、繼續時 `KG.music.resume()`；遊戲結束換音樂或停掉，播 jingle。
 - 引擎已經處理：🔊 靜音、切到別的分頁（音樂和 loop 都會停）、使用者第一次點擊前不建立聲音（不會有瀏覽器警告）、手指放開才解鎖（第一下就有聲音）。
 - 有語音（`KG.say`）的遊戲：講話時把音樂調小，講完再恢復。
+- 實作經驗：
+  - jingle 走音效那一路、不會跟著音樂音量縮放，`vol` 大約 0.2～0.4、`bassVol` 調小，不然過關音樂會太大聲。
+  - 安靜的曲風（解謎、選單）RMS 容易低於 0.05，可以用 `KG.music.setVolume(0.3~0.4)` 拉高。
+  - 鼓的 `pat` 只能用內建鼓聲；自己做的鼓聲（註冊到 `KG.music.INST`）要用 `seq` 寫。
+  - 需要「跟拍子對齊」（節奏判定、煙火落在拍點）時，引擎沒有提供拍點時間：在 `KG.music.INST` 註冊一個不出聲的樂器、放在一條 `seq` 軌，它被排程時就會收到每拍的精確音訊時間（參考 drum-kit、fireworks）。音樂關掉時要有自己的時鐘備援。
 - **驗證**：Chromium 加 `--autoplay-policy=no-user-gesture-required`，點一下解鎖、開始遊戲，確認 `KG.music.isPlaying()` 遊戲中 true、暫停 false。
   量混音：
   ```js

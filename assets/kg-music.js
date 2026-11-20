@@ -407,7 +407,7 @@
       musicEnabled = !!on; KG.store.set('music', musicEnabled);
       if (!musicEnabled) halt(0.2); else if (song) start();
     },
-    /** 短樂句（過關、失敗、升級）：會暫時壓低背景音樂。def = {bpm, notes:[['C5',1],['E5',1],...] , inst, chord?} 或 曲子格式 */
+    /** 短樂句（過關、失敗、升級）：會暫時壓低背景音樂。def = {bpm, inst, vol, notes:[['C5',1],['E5+G5',2],...], bass:[['C3',長度,開始拍]], bassVol} */
     jingle: function (def) {
       if (KG.isMuted()) return 0;
       var a = getCtx(); if (!a) return 0;
@@ -418,7 +418,7 @@
         names.forEach(function (nm) { var m = midiOf(nm); if (m != null) inst(hz(m), t + total * spb, len * spb * 0.95, def.vol || 1, sfxBus); });
         total += len;
       });
-      if (def.bass) def.bass.forEach(function (n, i) { var m = midiOf(n[0]); if (m != null) INST.sub(hz(m), t + n[2] * spb, n[1] * spb, 0.8, sfxBus); });
+      if (def.bass) def.bass.forEach(function (n) { var m = midiOf(n[0]); if (m != null) INST.sub(hz(m), t + n[2] * spb, n[1] * spb, def.bassVol == null ? 0.8 : def.bassVol, sfxBus); });
       var dur = total * spb;
       if (playing && musicOut) {
         musicOut.gain.setTargetAtTime(musicVol * 0.25, t, 0.05);

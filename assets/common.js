@@ -47,8 +47,13 @@
   }
   /** 共用的 AudioContext（kg-music.js 會用到） */
   KG.audio = audio;
-  // 第一次觸碰時解鎖音效（行動裝置需要）
-  window.addEventListener('pointerdown', function () { audio(); }, { once: true, capture: true });
+  // 手指觸碰要等放開（pointerup / touchend）瀏覽器才算「使用者操作」，那時候再開，第一下就有聲音
+  function unlock(e) {
+    if (e.type === 'pointerdown' && e.pointerType && e.pointerType !== 'mouse') return;
+    var a = audio();
+    if (a && a.state === 'running') ['pointerdown', 'pointerup', 'touchend', 'keydown'].forEach(function (t) { window.removeEventListener(t, unlock, true); });
+  }
+  ['pointerdown', 'pointerup', 'touchend', 'keydown'].forEach(function (t) { window.addEventListener(t, unlock, true); });
 
   /** 播放一個音符。freq 頻率(Hz)、dur 秒、type 波形、vol 音量、delay 延遲秒、slide 結束頻率 */
   KG.note = function (freq, dur, type, vol, delay, slide) {

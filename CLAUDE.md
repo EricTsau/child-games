@@ -11,6 +11,8 @@
   - 年齡：`k` 小小孩、`a` 大家、`o` 大朋友
   - 標籤：`''`、`'3D'`、`'雙人'`、`'3D,雙人'`
   - 最後 `NEW_COUNT`（20）個顯示「NEW」。
+  - `SUBS`：每個分類再分小分類（`['名稱', '搜尋別名', 'slug slug …']`），**新遊戲要把 slug 加進對應的小分類**，不然會跑到「其他」。
+  - 「我的最愛」存在 `KG.store` 的 `home:fav`（slug 陣列），「最近玩過」在 `home:recent`。
   - 首頁會在背景預先下載每個遊戲的 `games/<slug>/` 和縮圖；遊戲如果有**額外的檔案**（多個 .js 模組、第二個 html），要加進 `urls.push(...)` 那一行，才能離線玩。
 - `games/<slug>/index.html`：一個遊戲一個資料夾，通常是單一檔案（CSS/JS 內嵌）。全部圖案用程式畫（Canvas / SVG / three.js），**不用 emoji 當角色圖、不用外部圖片字型、不用 CDN**。
 - `assets/common.js` + `common.css`：共用的 `window.KG`（`KG.store`、`KG.best`、`KG.toast`、`KG.confetti`、`KG.say` 中文語音、`KG.vibrate`、`KG.lowEnd`、`KG.audio()` 共用 AudioContext）。
@@ -25,7 +27,7 @@
 
 1. `games/<slug>/index.html`（和額外檔案）。
 2. `assets/thumbs/<slug>.jpg` 縮圖。
-3. `index.html`：`GAMES` 加一列；「N 個」出現 2 次（meta description、`.sub`）都要改；有額外檔案就加進預先下載清單。
+3. `index.html`：`GAMES` 加一列、`SUBS` 對應小分類加 slug；「N 個」出現 2 次（meta description、`.sub`）都要改；有額外檔案就加進預先下載清單。
 4. `manifest.webmanifest`：description 裡的「N 個」。
 5. `README.md`：開頭「N 個」、遊戲表加一列 `| N | emoji 名稱 | 分類 | 玩法 |`；3D 遊戲加進「…用 three.js」那一句。
 6. 上線：推到工作分支 → 開 PR 到 `main` → squash merge → 等 GitHub Pages（約 1～2 分鐘）→ 確認線上「N 個」和每個新遊戲網址都是 200。

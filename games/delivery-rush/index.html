@@ -1,0 +1,3183 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>小小外送員</title>
+<link rel="stylesheet" href="../../assets/common.css">
+<style>
+  html, body { height: 100%; overflow: hidden; background: #8fcf7e; overscroll-behavior: none; }
+  #game {
+    position: fixed; inset: 0; display: block;
+    width: 100vw; height: 100vh; height: 100dvh;
+    touch-action: none; -webkit-user-select: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" aria-label="小小外送員"></canvas>
+<script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+ * 小小外送員：騎著機車在台灣小鎮送餐！
+ * 到店家取餐、送到客人家；易灑的豆花、湯要小心騎，熱食有時間限制。
+ * 一天 3 分鐘，賺小費升級機車；紅燈要停、禮讓行人，安全帽一定戴好。
+ * ===================================================================== */
+(function () {
+const SLUG = 'delivery-rush';
+const cv = document.getElementById('game');
+const ctx = cv.getContext('2d');
+const FONT = '"PingFang TC","Noto Sans TC","Microsoft JhengHei","Heiti TC",system-ui,sans-serif';
+const TAU = Math.PI * 2;
+const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+const lerp = (a, b, t) => a + (b - a) * t;
+const rand = (a, b) => a + Math.random() * (b - a);
+const randi = (a, b) => Math.floor(a + Math.random() * (b - a + 1));
+const pick = a => a[Math.floor(Math.random() * a.length)];
+const dist = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by);
+function angDiff(a, b) { let d = (b - a) % TAU; if (d > Math.PI) d -= TAU; if (d < -Math.PI) d += TAU; return d; }
+function rng(seed) {
+  let s = (seed | 0) || 7;
+  return () => { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; return (s >>> 0) / 4294967296; };
+}
+const easeOutBack = t => { const c = 1.70158, c3 = c + 1; return 1 + c3 * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); };
+const easeOutCubic = t => 1 - Math.pow(1 - t, 3);
+
+let W = 390, H = 844, dpr = 1, U = 1, time = 0;
+
+/* ---------- 存檔 ---------- */
+const Save = { get: (k, d) => KG.store.get(SLUG + ':' + k, d), set: (k, v) => KG.store.set(SLUG + ':' + k, v) };
+const UP0 = { box: 0, speed: 0, bag: 0, phone: 0 };
+const prog = Object.assign({ unlocked: 1, stars: [], wallet: 0, next: 1, ctrl: 'stick', seenHelp: false }, Save.get('prog', {}));
+prog.up = Object.assign({}, UP0, prog.up || {});
+if (!Array.isArray(prog.stars)) prog.stars = [];
+function saveProg() { Save.set('prog', prog); }
+
+/* =====================================================================
+ * 聲音：音效＋原創配樂（E♭ 大調城市放克）
+ * ===================================================================== */
+const S = KG.sfx, M = KG.music;
+let sfxOn = Save.get('sfx', true) !== false;
+const sfxLast = Object.create(null);
+/** 播放音效：同一種 40ms 內只播一次、音高隨機 ±5% */
+function sfx(name, o) {
+  if (!sfxOn || !S) return;
+  const now = performance.now();
+  if (now - (sfxLast[name] || 0) < 40) return;
+  sfxLast[name] = now;
+  o = o || {};
+  const pitch = (o.pitch || 1) * (o.exact ? 1 : 0.95 + Math.random() * 0.1);
+  S.play(name, { vol: o.vol, pitch, pan: o.pan });
+}
+function panX(sx) { return clamp((sx / Math.max(1, W)) * 2 - 1, -1, 1) * 0.6; }
+
+if (S) {
+  // 機車喇叭：嗶嗶
+  S.define('dr_horn', (p, s) => {
+    [0, 0.15].forEach(d => {
+      s.tone(440 * p, 0.11, { type: 'square', vol: 0.035, delay: d });
+      s.tone(554 * p, 0.11, { type: 'square', vol: 0.03, delay: d });
+      s.tone(440 * p, 0.11, { type: 'triangle', vol: 0.12, delay: d });
+    });
+  });
+  // 汽車喇叭（比較低）
+  S.define('dr_carhorn', (p, s) => {
+    s.tone(311 * p, 0.3, { type: 'square', vol: 0.03 }); s.tone(392 * p, 0.3, { type: 'square', vol: 0.025 });
+    s.tone(311 * p, 0.3, { type: 'triangle', vol: 0.09 });
+  });
+  // 煞車：短短的吱
+  S.define('dr_brake', (p, s) => {
+    s.tone(2100 * p, 0.26, { vol: 0.035, slide: 1750 * p, attack: 0.03 });
+    s.tone(3150 * p, 0.2, { vol: 0.012, slide: 2700 * p, attack: 0.03 });
+    s.noise(0.22, { vol: 0.05, freq: 4200 * p, q: 3, attack: 0.02 });
+  });
+  // 新訂單：手機叮咚
+  S.define('dr_order', (p, s) => {
+    s.tone(1245 * p, 0.16, { vol: 0.13 }); s.tone(2490 * p, 0.07, { vol: 0.02 });
+    s.tone(1661 * p, 0.3, { vol: 0.12, delay: 0.11 }); s.tone(3322 * p, 0.08, { vol: 0.02, delay: 0.11 });
+  });
+  // 取餐：塑膠袋窸窣＋放進外送箱
+  S.define('dr_bag', (p, s) => {
+    let d = 0;
+    for (let i = 0; i < 6; i++) { s.noise(0.03, { vol: 0.14, freq: (2600 + Math.random() * 2600) * p, q: 2, delay: d }); d += 0.022 + Math.random() * 0.022; }
+    s.tone(180 * p, 0.09, { vol: 0.2, slide: 110 * p, delay: d });
+    s.noise(0.05, { vol: 0.08, freq: 700 * p, type: 'lowpass', delay: d });
+  });
+  // 門鈴：叮～咚
+  S.define('dr_doorbell', (p, s) => {
+    s.tone(784 * p, 0.5, { vol: 0.13 }); s.tone(1568 * p, 0.18, { vol: 0.025 });
+    s.tone(622 * p, 0.7, { vol: 0.13, delay: 0.27 }); s.tone(1244 * p, 0.22, { vol: 0.025, delay: 0.27 });
+  });
+  // 謝謝！小鈴聲
+  S.define('dr_thanks', (p, s) => {
+    [932, 1245, 1568].forEach((f, i) => s.tone(f * p, 0.28, { vol: 0.08, delay: i * 0.07 }));
+    s.tone(1865 * p, 0.4, { vol: 0.05, delay: 0.21 });
+  });
+  // 收到小費
+  S.define('dr_coin', (p, s) => { s.tone(1319 * p, 0.06, { type: 'square', vol: 0.045 }); s.tone(1760 * p, 0.18, { type: 'square', vol: 0.045, delay: 0.06 }); s.tone(3520 * p, 0.1, { vol: 0.02, delay: 0.06 }); });
+  // 撞到：軟軟的咚
+  S.define('dr_bump', (p, s) => { s.tone(130 * p, 0.16, { vol: 0.34, slide: 62 }); s.noise(0.09, { vol: 0.16, freq: 520 * p, type: 'lowpass' }); s.tone(300 * p, 0.08, { type: 'triangle', vol: 0.06, slide: 180 * p }); });
+  // 湯灑出來
+  S.define('dr_spill', (p, s) => {
+    s.noise(0.34, { vol: 0.18, freq: 1700 * p, sweep: 420, q: 0.8 });
+    [0.04, 0.1, 0.17].forEach((d, i) => s.tone((520 + i * 140) * p, 0.07, { vol: 0.07, slide: (900 + i * 200) * p, delay: d }));
+  });
+  // 闖紅燈警告：嗶嗶嗶（柔和）
+  S.define('dr_red', (p, s) => {
+    for (let i = 0; i < 3; i++) { s.tone(740 * p, 0.09, { type: 'triangle', vol: 0.16, delay: i * 0.13 }); s.tone(740 * p, 0.09, { type: 'square', vol: 0.025, delay: i * 0.13 }); }
+  });
+  // 等紅燈好棒
+  S.define('dr_good', (p, s) => { s.tone(1047 * p, 0.12, { type: 'triangle', vol: 0.12 }); s.tone(1397 * p, 0.22, { type: 'triangle', vol: 0.11, delay: 0.08 }); });
+  // 快冷掉了
+  S.define('dr_hurry', (p, s) => { s.tone(988 * p, 0.08, { type: 'triangle', vol: 0.12 }); s.tone(988 * p, 0.08, { type: 'triangle', vol: 0.12, delay: 0.12 }); });
+  // 冷掉了
+  S.define('dr_cold', (p, s) => { s.tone(660 * p, 0.2, { type: 'triangle', vol: 0.11, slide: 520 * p }); s.tone(494 * p, 0.3, { type: 'triangle', vol: 0.1, delay: 0.16, slide: 440 * p }); });
+  // 行人嚇一跳
+  S.define('dr_ped', (p, s) => { s.tone(620 * p, 0.12, { vol: 0.12, slide: 1100 * p }); s.tone(900 * p, 0.1, { vol: 0.06, delay: 0.1, slide: 760 * p }); });
+  // 戴安全帽：喀
+  S.define('dr_buckle', (p, s) => { s.noise(0.025, { vol: 0.28, freq: 3200 * p, q: 3 }); s.tone(1900 * p, 0.03, { vol: 0.06 }); s.noise(0.02, { vol: 0.2, freq: 2400 * p, q: 3, delay: 0.07 }); });
+  // 星星
+  S.define('dr_star', (p, s) => { s.tone(1568 * p, 0.1, { vol: 0.08 }); s.tone(2093 * p, 0.2, { vol: 0.06, delay: 0.05 }); });
+  // 卡片滑進來
+  S.define('dr_slide', (p, s) => { s.noise(0.12, { vol: 0.07, freq: 1500 * p, sweep: 3500 * p, q: 1.2 }); });
+  // 倒數
+  S.define('dr_tick', (p, s) => { s.tone(1180 * p, 0.04, { type: 'triangle', vol: 0.08 }); });
+  // 夜市的人聲（嘻嘻哈哈的小音）
+  S.define('dr_crowd', (p, s) => { for (let i = 0; i < 3; i++) s.tone((500 + Math.random() * 400) * p, 0.06, { type: 'triangle', vol: 0.025, delay: i * 0.07, slide: (600 + Math.random() * 500) * p }); });
+}
+
+/* ---------- 自製樂器：電鋼琴、Slap 貝斯 ---------- */
+if (M && M.INST) {
+  M.INST.epiano = function (f, t, d, v, out) {
+    const A = out.context, g = A.createGain(), end = t + Math.max(0.08, d);
+    const pk = v * 0.1;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(pk, t + 0.006);
+    g.gain.setTargetAtTime(pk * 0.3, t + 0.006, 0.3);
+    g.gain.setTargetAtTime(0.0001, end, 0.09);
+    if (A.createStereoPanner) { const pn = A.createStereoPanner(); pn.pan.value = -0.12; g.connect(pn); pn.connect(out); } else g.connect(out);
+    const o1 = A.createOscillator(); o1.type = 'sine'; o1.frequency.value = f; o1.connect(g);
+    const m = A.createOscillator(); m.frequency.value = f;
+    const mg = A.createGain(); mg.gain.setValueAtTime(f * 1.1, t); mg.gain.setTargetAtTime(f * 0.12, t, 0.12);
+    m.connect(mg); mg.connect(o1.frequency);
+    const g2 = A.createGain(); g2.gain.setValueAtTime(0.32, t); g2.gain.setTargetAtTime(0.0001, t, 0.06); g2.connect(g);
+    const o2 = A.createOscillator(); o2.type = 'sine'; o2.frequency.value = f * 4; o2.connect(g2);
+    const stop = end + 0.6;
+    [o1, m, o2].forEach(o => { o.start(t); o.stop(stop); });
+  };
+  M.INST.slap = function (f, t, d, v, out) {
+    const A = out.context, g = A.createGain(), end = t + Math.max(0.06, d);
+    const pk = v * 0.3;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(pk, t + 0.004);
+    g.gain.setTargetAtTime(pk * 0.45, t + 0.004, 0.08);
+    g.gain.setTargetAtTime(0.0001, end, 0.04);
+    g.connect(out);
+    const lp = A.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = 5;
+    lp.frequency.setValueAtTime(Math.min(5000, f * 16), t); lp.frequency.exponentialRampToValueAtTime(Math.max(120, f * 3), t + 0.14);
+    lp.connect(g);
+    const o1 = A.createOscillator(); o1.type = 'sawtooth'; o1.frequency.value = f; o1.connect(lp);
+    const bg = A.createGain(); bg.gain.value = 0.7; bg.connect(g);
+    const o2 = A.createOscillator(); o2.type = 'sine'; o2.frequency.value = f; o2.connect(bg);
+    const cg = A.createGain(); cg.gain.setValueAtTime(v * 0.05, t); cg.gain.exponentialRampToValueAtTime(0.0001, t + 0.015); cg.connect(out);
+    const o3 = A.createOscillator(); o3.type = 'square'; o3.frequency.value = 1700; o3.connect(cg);
+    const stop = end + 0.3;
+    o1.start(t); o1.stop(stop); o2.start(t); o2.stop(stop); o3.start(t); o3.stop(t + 0.03);
+  };
+}
+
+/* ---------- 原創配樂 ---------- */
+const E16 = '................';
+const NN = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
+const CH_IV = { maj7: [0, 4, 7, 11], m7: [0, 3, 7, 10], '7': [0, 4, 7, 10], sus4: [0, 5, 7], '': [0, 4, 7], m: [0, 3, 7] };
+function chordNotes(name, oct) {
+  const m = /^([A-G])(b?)(.*)$/.exec(name);
+  const root = NN.indexOf(m[1]) + (m[2] ? -1 : 0);
+  const iv = CH_IV[m[3]] || CH_IV[''];
+  return iv.map(i => { const n = root + i + 12 * (oct + 1); return NN[((n % 12) + 12) % 12] + Math.floor(n / 12 - 1); });
+}
+// 遊戲中：116 bpm，電鋼琴切分和弦＋Slap 貝斯＋拍手，長笛和鐘琴唱主旋律
+const PLAY_CH = ['Ebmaj7', 'Cm7', 'Abmaj7', 'Bb7', 'Gm7', 'Cm7', 'Fm7', 'Bb7', 'Abmaj7', 'Bb7', 'Gm7', 'Cm7', 'Fm7', 'Gm7', 'Abmaj7', 'Bbsus4'];
+const MEL_PLAY = [
+  '. Bb4 Eb5 F5 G5 - F5 Eb5',
+  'G5 - . Eb5 C5 - Bb4 .',
+  '. C5 Eb5 F5 G5 - Ab5 G5',
+  'F5 - - . D5 Eb5 F5 .',
+  '. Bb4 D5 F5 G5 - F5 D5',
+  'Eb5 - C5 . Bb4 - G4 .',
+  'Ab4 . C5 Eb5 F5 - Eb5 C5',
+  'D5 - - - Bb4 . . .',
+  'C5 Eb5 G5 - Ab5 G5 Eb5 .',
+  'F5 - D5 . Bb4 D5 F5 .',
+  'G5 - F5 D5 Bb4 - D5 .',
+  'Eb5 - G5 . C5 - . .',
+  'Ab5 - G5 F5 Eb5 - C5 .',
+  'Bb4 - D5 F5 G5 - F5 .',
+  'Eb5 - C5 Eb5 G5 - Ab5 .',
+  'G5 - F5 - Eb5 - - .'
+];
+const BELL_PLAY = MEL_PLAY.map((s, i) => (i < 8 ? '' : s));
+// 趕時間時的銅管切音（反拍）
+const BRASS_RUSH = PLAY_CH.map(c => { const n = chordNotes(c, 4).slice(1, 4).join('+'); return '. . . ' + n + ' . . ' + n + ' .'; });
+const SONG_PLAY = {
+  bpm: 116, steps: 16, swing: 0.1,
+  chords: PLAY_CH,
+  layers: { rush: false },
+  tracks: [
+    { inst: 'kick', pat: ['X.....x...x.....', 'X.....x.x.....x.'], vol: 0.8 },
+    { inst: 'clap', pat: '....x.......x...', vol: 0.62 },
+    { inst: 'hat', pat: 'o.x.o.x.o.x.o.xo', vol: 0.55 },
+    { inst: 'crash', pat: ['x...............', E16, E16, E16, E16, E16, E16, E16], vol: 0.3 },
+    { inst: 'tom', pat: [E16, E16, E16, E16, E16, E16, E16, '..........x.x.x.'], vol: 0.3, pitch: 180 },
+    { inst: 'slap', chord: ['R..8..R.5.R.8.7.', 'R..R.8..5..R.7.8'], oct: 2, vol: 0.85 },
+    { inst: 'epiano', chord: 'hold', rate: 6, oct: 4, vol: 0.55 },
+    { inst: 'flute', seq: MEL_PLAY, vol: 0.8 },
+    { inst: 'bell', seq: BELL_PLAY, vol: 0.45 },
+    { inst: 'shaker', pat: 'xoxoxoxoxoxoxoxo', layer: 'rush', vol: 0.8 },
+    { inst: 'ohat', pat: '......x.......x.', layer: 'rush', vol: 0.4 },
+    { inst: 'chip', arp: 'updown', rate: 2, oct: 4, layer: 'rush', vol: 0.12 },
+    { inst: 'brass', seq: BRASS_RUSH, layer: 'rush', vol: 0.4, legato: 0.5 }
+  ]
+};
+// 標題：100 bpm，比較輕鬆的城市流行
+const TITLE_CH = ['Abmaj7', 'Bb7', 'Gm7', 'Cm7', 'Fm7', 'Bb7', 'Ebmaj7', 'Ebmaj7'];
+const MEL_TITLE = [
+  'Eb5 . C5 Eb5 G5 - F5 Eb5',
+  'D5 - Bb4 . F5 - D5 .',
+  'Bb4 - D5 F5 G5 . F5 D5',
+  'Eb5 - - . C5 . Bb4 .',
+  'Ab4 . C5 . Eb5 F5 Ab5 G5',
+  'F5 - D5 . Bb4 . D5 Eb5',
+  'G5 - - Eb5 D5 - Bb4 .',
+  'Eb5 - - - . . . .'
+];
+const SONG_TITLE = {
+  bpm: 100, steps: 16, swing: 0.16,
+  chords: TITLE_CH,
+  tracks: [
+    { inst: 'kick', pat: 'x.......x.....x.', vol: 0.7 },
+    { inst: 'rim', pat: '....x.......x...', vol: 0.5 },
+    { inst: 'shaker', pat: '..o...o...o...oo', vol: 0.6 },
+    { inst: 'slap', chord: 'R...R..5R...8.5.', oct: 2, vol: 0.7 },
+    { inst: 'epiano', arp: 'up', rate: 2, oct: 4, vol: 0.42 },
+    { inst: 'bell', seq: MEL_TITLE, vol: 0.75 },
+    { inst: 'flute', seq: MEL_TITLE.map((s, i) => (i >= 4 ? s : '')), vol: 0.45, transpose: -12 }
+  ]
+};
+// 車庫：84 bpm，安靜的卡林巴琴
+const GARAGE_CH = ['Ebmaj7', 'Abmaj7', 'Fm7', 'Bbsus4', 'Gm7', 'Cm7', 'Abmaj7', 'Bb7'];
+const MEL_GARAGE = [
+  'G4 . Bb4 . D5 - - .',
+  'C5 . Eb5 . G5 - Eb5 .',
+  'F5 - Eb5 . C5 - Ab4 .',
+  'Bb4 - - . . . F4 .',
+  'G4 . Bb4 . D5 - F5 .',
+  'Eb5 - D5 . C5 - G4 .',
+  'Ab4 . C5 . Eb5 - G5 .',
+  'F5 - - D5 Bb4 - - .'
+];
+const SONG_GARAGE = {
+  bpm: 84, steps: 16, swing: 0.12,
+  chords: GARAGE_CH,
+  tracks: [
+    { inst: 'pad', chord: 'hold', oct: 4, vol: 0.5 },
+    { inst: 'sub', chord: 'R.......5.......', oct: 2, vol: 0.6 },
+    { inst: 'marimba', arp: 'up', rate: 4, oct: 4, vol: 0.32 },
+    { inst: 'kalimba', seq: MEL_GARAGE, vol: 0.9 },
+    { inst: 'rim', pat: '........x.......', vol: 0.35 },
+    { inst: 'shaker', pat: 'o.o.o.o.o.o.o.o.', vol: 0.35 }
+  ]
+};
+let curSong = null;
+function playSong(s) {
+  if (!M) return;
+  curSong = s;
+  M.play(s);
+  M.setVolume(s === SONG_PLAY ? 0.3 : s === SONG_GARAGE ? 0.44 : 0.38);
+}
+function jingle(def) { if (M && sfxOn) M.jingle(def); }
+const J = {
+  start: () => { jingle({ bpm: 170, inst: 'bell', vol: 0.3, notes: [['Bb4', 1], ['Eb5', 1], ['G5', 1], ['Bb5', 3]] }); jingle({ bpm: 170, inst: 'epiano', vol: 0.5, notes: [['Eb4+G4+Bb4', 3], ['Eb4+G4+Bb4+D5', 3]], bass: [['Eb3', 6, 0]], bassVol: 0.3 }); },
+  win: () => {
+    const n = [['Eb5', 1], ['G5', 1], ['Bb5', 1], ['Ab5', 1], ['G5', 1], ['F5', 1], ['G5', 2], ['Eb5+G5+Bb5', 4]];
+    jingle({ bpm: 150, inst: 'bell', vol: 0.3, notes: n });
+    jingle({ bpm: 150, inst: 'epiano', vol: 0.6, notes: [['Eb4+G4+Bb4', 4], ['Ab4+C5+Eb5', 4], ['Bb4+D5+F5', 2], ['Eb4+G4+Bb4+D5', 6]], bass: [['Eb3', 4, 0], ['Ab2', 4, 4], ['Bb2', 2, 8], ['Eb3', 6, 10]], bassVol: 0.3 });
+  },
+  fail: () => {
+    jingle({ bpm: 112, inst: 'epiano', vol: 0.7, notes: [['G5', 1], ['F5', 1], ['Eb5', 1], ['D5', 1], ['C5', 2], ['Bb4+D5+F5', 2], ['Eb5+G4+Bb4', 4]], bass: [['Ab2', 4, 0], ['Bb2', 4, 4], ['Eb3', 4, 8]], bassVol: 0.25 });
+  },
+  upgrade: () => { jingle({ bpm: 190, inst: 'bell', vol: 0.3, notes: [['Eb5', 1], ['G5', 1], ['Bb5', 1], ['Eb6', 3]] }); },
+  end: () => { jingle({ bpm: 140, inst: 'flute', vol: 0.5, notes: [['Bb4', 1], ['C5', 1], ['Eb5', 2], ['D5', 1], ['Bb4', 1], ['Eb5', 4]] }); }
+};
+
+/* ---------- 引擎聲 ---------- */
+let engine = null;
+function engineOn() {
+  if (engine || !S || !sfxOn || KG.isMuted()) return;
+  if (!M || !M._nodes()) return; // 還沒點過畫面
+  try { engine = S.loop('engine'); } catch (e) { engine = null; }
+}
+function engineOff() { if (engine) { try { engine.stop(); } catch (e) { /* 忽略 */ } engine = null; } }
+
+/* =====================================================================
+ * 小鎮地圖：6×6 個街區，道路寬 96（雙向各一線，靠右行駛）
+ * ===================================================================== */
+const N = 6, BS = 400, RW = 96, BLK = BS - RW, SWK = 14, WORLD = N * BS + RW;
+const DIRS = [{ x: 1, y: 0 }, { x: 0, y: 1 }, { x: -1, y: 0 }, { x: 0, y: -1 }]; // 東 南 西 北
+const DIRANG = [0, Math.PI / 2, Math.PI, -Math.PI / 2];
+const ROAD_V = ['蘋果街', '香蕉街', '芭樂街', '芒果街', '西瓜街', '鳳梨街', '荔枝街'];
+const ROAD_H = ['晴天路', '彩虹路', '星星路', '月亮路', '白雲路', '微風路', '花開路'];
+// H 住家 M 店家 P 公園 O 辦公大樓 T 廟 N 夜市 K 學校
+const MAP = ['HMHPHO', 'MHOMHH', 'HPTMKH', 'HMNHMH', 'OHMHPM', 'HHHMHH'];
+const LD = 66; // 房子深度
+/** 車道中心：往東 y=路+72、往西 y=路+24、往南 x=路+24、往北 x=路+72 */
+function laneCoord(dir, roadStart) { return roadStart + (dir === 0 || dir === 3 ? 72 : 24); }
+
+const ROOF = ['#f6c9a4', '#eaa985', '#f7e0b8', '#cfe0f0', '#f4b9b4', '#d5e8c3', '#e7d4f0', '#fbe39c', '#d9d4cc', '#bfe3dc'];
+const SURN = ['林', '陳', '王', '張', '李', '黃', '吳', '劉', '蔡', '楊', '許', '鄭', '謝', '郭', '洪', '曾', '邱', '廖', '賴', '周', '葉', '蘇', '江', '呂'];
+const NICK = ['小美家', '阿公家', '外婆家', '小明家', '阿姨家', '大雄家', '小花家', '阿伯家', '小胖家', '舅舅家', '小安家', '阿嬤家'];
+
+/* ---------- 店家（取餐點）---------- */
+const ITEMS = {
+  roll: { col: '#f2c14e', sp: '#f6d77a' }, sand: { col: '#f3e1b0', sp: '#f0d890' }, cup: { col: '#c9925d', sp: '#b07a4a' },
+  rice: { col: '#f5f1e6', sp: '#e8e0c8' }, egg: { col: '#8a5a33', sp: '#a07040' }, bread: { col: '#d99a4e', sp: '#d99a4e' },
+  bowl: { col: '#e9d6a8', sp: '#e6d29c' }, noodle: { col: '#b5642e', sp: '#b0602a' }, steamer: { col: '#d8b07a', sp: '#e8d8b0' },
+  box: { col: '#d06d3a', sp: '#d9a066' }, cutlet: { col: '#e0a03a', sp: '#e0a03a' }, plate: { col: '#e86d5a', sp: '#e8806a' },
+  fruit: { col: '#ffb02e', sp: '#ffb02e' }, juice: { col: '#ff6b6b', sp: '#ff7d7d' }, jelly: { col: '#4b3a2e', sp: '#5d4a3a' }
+};
+const SHOPS = [
+  { id: 'breakfast', name: '晨光早餐店', bx: 1, by: 0, side: 1, col: '#ffcf3f', ic: 'roll', day: 1,
+    items: [{ n: '蛋餅', k: 'roll', hot: 1 }, { n: '三明治', k: 'sand' }, { n: '奶茶', k: 'cup', fr: 1 }] },
+  { id: 'store', name: '好鄰居超商', bx: 3, by: 1, side: 2, col: '#2fb8a6', ic: 'rice', day: 1,
+    items: [{ n: '飯糰', k: 'rice' }, { n: '茶葉蛋', k: 'egg', hot: 1 }, { n: '麵包', k: 'bread' }] },
+  { id: 'bento', name: '飽飽便當', bx: 3, by: 5, side: 3, col: '#ff8a3d', ic: 'box', day: 1,
+    items: [{ n: '排骨便當', k: 'box', hot: 1 }, { n: '雞腿便當', k: 'box', hot: 1 }] },
+  { id: 'tea', name: '啵啵茶舖', bx: 0, by: 1, side: 0, col: '#ff7fb0', ic: 'cup', day: 2,
+    items: [{ n: '珍珠奶茶', k: 'cup', fr: 1 }, { n: '檸檬綠茶', k: 'cup', fr: 1 }, { n: '冬瓜茶', k: 'cup', fr: 1 }] },
+  { id: 'xlb', name: '蒸蒸小籠包', bx: 4, by: 3, side: 3, col: '#e9b66b', ic: 'steamer', day: 3,
+    items: [{ n: '小籠包', k: 'steamer', hot: 1 }, { n: '鮮肉包', k: 'steamer', hot: 1 }] },
+  { id: 'store2', name: '好鄰居超商', bx: 5, by: 4, side: 3, col: '#2fb8a6', ic: 'rice', day: 4,
+    items: [{ n: '飯糰', k: 'rice' }, { n: '茶葉蛋', k: 'egg', hot: 1 }, { n: '豆漿', k: 'cup', fr: 1 }] },
+  { id: 'chicken', name: '金脆雞排', night: 1, col: '#ffb020', ic: 'cutlet', day: 4,
+    items: [{ n: '雞排', k: 'cutlet', hot: 1 }, { n: '鹽酥雞', k: 'cutlet', hot: 1 }] },
+  { id: 'oyster', name: '夜市蚵仔煎', night: 2, col: '#ff6f5e', ic: 'plate', day: 4,
+    items: [{ n: '蚵仔煎', k: 'plate', hot: 1 }] },
+  { id: 'douhua', name: '阿嬤豆花', bx: 3, by: 2, side: 1, col: '#f3dfa6', ic: 'bowl', day: 5,
+    items: [{ n: '花生豆花', k: 'bowl', fr: 1 }, { n: '仙草凍', k: 'jelly', fr: 1 }] },
+  { id: 'noodle', name: '老街牛肉麵', bx: 1, by: 3, side: 0, col: '#d9573b', ic: 'noodle', day: 6,
+    items: [{ n: '牛肉麵', k: 'noodle', hot: 1, fr: 1 }, { n: '餛飩湯', k: 'bowl', hot: 1, fr: 1 }] },
+  { id: 'fruit', name: '甜甜水果行', bx: 2, by: 4, side: 2, col: '#ffa726', ic: 'fruit', day: 7,
+    items: [{ n: '芒果切盤', k: 'fruit' }, { n: '西瓜汁', k: 'juice', fr: 1 }] }
+];
+
+/* ---------- 建立街區 ---------- */
+const blocks = [];
+const dests = [];   // 送餐地點
+const solids = [];  // 撞得到的方塊 {x,y,w,h}
+const slowZones = []; // {x,y,w,h,cap}
+function sideOfLot(l, b) { return l.side; }
+function lotZone(b, l) {
+  // 門口在街區外緣，停車點往路上推 18
+  const cx = l.x + l.w / 2, cy = l.y + l.h / 2;
+  if (l.side === 3) return { dx: cx, dy: b.y, x: cx, y: b.y - 18 };
+  if (l.side === 1) return { dx: cx, dy: b.y + BLK, x: cx, y: b.y + BLK + 18 };
+  if (l.side === 2) return { dx: b.x, dy: cy, x: b.x - 18, y: cy };
+  return { dx: b.x + BLK, dy: cy, x: b.x + BLK + 18, y: cy };
+}
+function roadNameFor(b, side) {
+  if (side === 3) return ROAD_H[b.by];
+  if (side === 1) return ROAD_H[b.by + 1];
+  if (side === 2) return ROAD_V[b.bx];
+  return ROAD_V[b.bx + 1];
+}
+function makeLots(b, r) {
+  const x0 = b.x + SWK, y0 = b.y + SWK, IN = BLK - SWK * 2;
+  const lots = [];
+  const mid = IN - LD * 2;
+  // 四個角
+  lots.push({ x: x0, y: y0, w: LD, h: LD, side: 3, corner: 1 });
+  lots.push({ x: x0 + IN - LD, y: y0, w: LD, h: LD, side: 3, corner: 1 });
+  lots.push({ x: x0, y: y0 + IN - LD, w: LD, h: LD, side: 1, corner: 1 });
+  lots.push({ x: x0 + IN - LD, y: y0 + IN - LD, w: LD, h: LD, side: 1, corner: 1 });
+  // 四邊
+  for (let side = 0; side < 4; side++) {
+    const n = r() < 0.5 ? 3 : 2;
+    let acc = 0;
+    for (let i = 0; i < n; i++) {
+      const len = i === n - 1 ? mid - acc : Math.round(mid / n + (r() - 0.5) * 14);
+      const a = LD + acc;
+      if (side === 3) lots.push({ x: x0 + a, y: y0, w: len, h: LD, side, idx: i, n });
+      if (side === 1) lots.push({ x: x0 + a, y: y0 + IN - LD, w: len, h: LD, side, idx: i, n });
+      if (side === 2) lots.push({ x: x0, y: y0 + a, w: LD, h: len, side, idx: i, n });
+      if (side === 0) lots.push({ x: x0 + IN - LD, y: y0 + a, w: LD, h: len, side, idx: i, n });
+      acc += len;
+    }
+  }
+  lots.forEach(l => {
+    l.col = ROOF[Math.floor(r() * ROOF.length)];
+    l.tank = r() < 0.55; l.tin = r() < 0.3; l.ac = r() < 0.6; l.plant = r() < 0.35;
+    l.tinCol = r() < 0.5 ? '#7fb2d6' : '#d98b62';
+    l.kind = 'house';
+    l.r1 = r(); l.r2 = r();
+  });
+  return lots;
+}
+(function buildWorld() {
+  const r = rng(20261124);
+  let surnI = 0, nickI = 0;
+  for (let by = 0; by < N; by++) for (let bx = 0; bx < N; bx++) {
+    const type = MAP[by][bx];
+    const b = { bx, by, type, x: bx * BS + RW, y: by * BS + RW, w: BLK, h: BLK, lots: [], seed: (bx * 31 + by * 17) * 977 + 13 };
+    blocks.push(b);
+    if (type === 'H' || type === 'M') {
+      b.lots = makeLots(b, r);
+      b.court = r() < 0.5 ? 'garden' : 'roofs';
+      solids.push({ x: b.x, y: b.y, w: BLK, h: BLK });
+    } else if (type === 'N') {
+      // 夜市：中間一條橫向小巷
+      b.alleyY = b.y + 120; b.alleyH = 64;
+      solids.push({ x: b.x, y: b.y, w: BLK, h: 120 });
+      solids.push({ x: b.x, y: b.y + 184, w: BLK, h: 120 });
+      slowZones.push({ x: b.x - 6, y: b.alleyY, w: BLK + 12, h: b.alleyH, cap: 0.5, night: 1 });
+    } else if (type === 'T') {
+      solids.push({ x: b.x, y: b.y, w: BLK, h: 30 });
+      solids.push({ x: b.x, y: b.y + 30, w: 50, h: BLK - 30 });
+      solids.push({ x: b.x + BLK - 50, y: b.y + 30, w: 50, h: BLK - 30 });
+      solids.push({ x: b.x + 50, y: b.y + 30, w: BLK - 100, h: 120 });
+      solids.push({ x: b.x + 138, y: b.y + 196, w: 28, h: 28 });
+      slowZones.push({ x: b.x + 50, y: b.y + 150, w: BLK - 100, h: BLK - 150, cap: 0.65 });
+    } else {
+      solids.push({ x: b.x, y: b.y, w: BLK, h: BLK });
+    }
+  }
+  const blockAt = (bx, by) => blocks[by * N + bx];
+  // 店家換到對應的房子
+  SHOPS.forEach(s => {
+    if (s.night) {
+      const b = blocks.find(q => q.type === 'N');
+      const top = s.night === 1;
+      const cx = b.x + (top ? 96 : 208);
+      s.lot = null; s.block = b;
+      s.door = { x: cx, y: top ? b.alleyY : b.alleyY + b.alleyH };
+      s.zone = { x: cx, y: top ? b.alleyY + 16 : b.alleyY + b.alleyH - 16 };
+      return;
+    }
+    const b = blockAt(s.bx, s.by);
+    const cand = b.lots.filter(l => l.side === s.side && !l.corner && l.kind === 'house');
+    const l = cand[Math.min(cand.length - 1, 1)] || cand[0];
+    l.kind = 'shop'; l.shop = s; l.col = s.col;
+    s.lot = l; s.block = b;
+    const z = lotZone(b, l);
+    s.door = { x: z.dx, y: z.dy }; s.zone = { x: z.x, y: z.y };
+  });
+  // 住家地址
+  blocks.forEach(b => {
+    b.lots.forEach(l => {
+      if (l.kind !== 'house') return;
+      const z = lotZone(b, l);
+      let along = (l.side === 1 || l.side === 3) ? z.x : z.y;
+      let no = Math.max(1, Math.round(along / 24)) * 2 + ((l.side === 0 || l.side === 1) ? 1 : 0);
+      const nm = r() < 0.2 ? NICK[nickI++ % NICK.length] : SURN[surnI++ % SURN.length] + '家';
+      dests.push({ kind: 'house', name: nm, addr: roadNameFor(b, l.side) + ' ' + no + ' 號', lot: l, block: b, door: { x: z.dx, y: z.dy }, zone: { x: z.x, y: z.y } });
+      l.dest = dests[dests.length - 1];
+    });
+  });
+  // 特別的地點
+  const special = (bx, by, side, at, name, kind) => {
+    const b = blockAt(bx, by);
+    let dx, dy;
+    if (side === 3) { dx = b.x + at; dy = b.y; }
+    else if (side === 1) { dx = b.x + at; dy = b.y + BLK; }
+    else if (side === 2) { dx = b.x; dy = b.y + at; }
+    else { dx = b.x + BLK; dy = b.y + at; }
+    const z = { x: dx + DIRS[side].x * 18, y: dy + DIRS[side].y * 18 };
+    dests.push({ kind, name, addr: roadNameFor(b, side), block: b, door: { x: dx, y: dy }, zone: z, side });
+  };
+  special(5, 0, 1, 150, '彩虹大樓', 'office');
+  special(2, 1, 1, 150, '星光科技', 'office');
+  special(0, 4, 0, 150, '雲朵大樓', 'office');
+  special(3, 0, 1, 210, '快樂公園', 'park');
+  special(1, 2, 0, 120, '榕樹公園', 'park');
+  special(4, 4, 2, 180, '小河公園', 'park');
+  special(4, 2, 1, 152, '向日葵國小', 'school');
+  const tb = blocks.find(q => q.type === 'T');
+  dests.push({ kind: 'temple', name: '平安宮廟口', addr: '星星路', block: tb, door: { x: tb.x + 152, y: tb.y + 150 }, zone: { x: tb.x + 152, y: tb.y + 172 } });
+})();
+
+/* ---------- 紅綠燈 ---------- */
+const LG = 6.5, LY = 1.6, LAR = 0.7, LP = LG + LY + LAR, LC = LP * 2;
+const lights = [], lightMap = {};
+for (let i = 1; i < N; i++) for (let j = 1; j < N; j++) {
+  if ((i + j) % 2) continue;
+  const L = { i, j, x: i * BS, y: j * BS, off: ((i * 7 + j * 13) % 10) / 10 * LC, prev: ['g', 'g'], cyc: -1, reward: -1 };
+  lights.push(L); lightMap[i + ',' + j] = L;
+}
+let lightClock = 0;
+/** axis 0 = 東西向的車，1 = 南北向的車 */
+function lightState(L, axis) {
+  let t = (lightClock + L.off) % LC;
+  if (axis === 1) t = (t + LP) % LC;
+  return t < LG ? 'g' : t < LG + LY ? 'y' : 'r';
+}
+function lightLeft(L, axis) {
+  let t = (lightClock + L.off) % LC;
+  if (axis === 1) t = (t + LP) % LC;
+  if (t < LG) return LG - t;
+  if (t < LG + LY) return LG + LY - t;
+  return LC - t;
+}
+
+/* =====================================================================
+ * 靜態畫面：分塊預先畫好（每塊 = 一格街區大小）
+ * ===================================================================== */
+function rrp(g, x, y, w, h, r) {
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  g.beginPath();
+  g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + h, r);
+  g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r);
+  g.arcTo(x, y, x + w, y, r);
+  g.closePath();
+}
+function shade(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  const f = v => clamp(v + amt, 0, 255);
+  return 'rgb(' + f(n >> 16) + ',' + f((n >> 8) & 255) + ',' + f(n & 255) + ')';
+}
+function rgba(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return 'rgba(' + (n >> 16) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+}
+function gFont(g, size, weight) { g.font = (weight || '900') + ' ' + size + 'px ' + FONT; }
+function tree(g, x, y, r, col) {
+  g.fillStyle = 'rgba(30,60,30,0.22)'; g.beginPath(); g.arc(x + r * 0.25, y + r * 0.3, r, 0, TAU); g.fill();
+  g.fillStyle = col || '#4fa64a'; g.beginPath(); g.arc(x, y, r, 0, TAU); g.fill();
+  g.fillStyle = 'rgba(255,255,255,0.18)'; g.beginPath(); g.arc(x - r * 0.3, y - r * 0.3, r * 0.55, 0, TAU); g.fill();
+  g.fillStyle = 'rgba(0,60,0,0.15)'; g.beginPath(); g.arc(x + r * 0.35, y + r * 0.3, r * 0.45, 0, TAU); g.fill();
+}
+
+/* ---------- 食物小圖示 ---------- */
+function drawFood(g, k, x, y, s, cold) {
+  g.save(); g.translate(x, y); g.scale(s / 20, s / 20);
+  g.lineJoin = 'round'; g.lineCap = 'round'; g.lineWidth = 1.4; g.strokeStyle = '#5a4030';
+  const it = ITEMS[k] || ITEMS.box;
+  if (k === 'cup' || k === 'juice') {
+    g.fillStyle = 'rgba(255,255,255,0.85)';
+    g.beginPath(); g.moveTo(-6, -6); g.lineTo(6, -6); g.lineTo(4.6, 9); g.lineTo(-4.6, 9); g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = it.col; g.beginPath(); g.moveTo(-5.6, -2); g.lineTo(5.6, -2); g.lineTo(4.5, 8.2); g.lineTo(-4.5, 8.2); g.closePath(); g.fill();
+    if (k === 'cup') { g.fillStyle = '#3a2418'; [[-2.5, 6.5], [0, 7], [2.5, 6.3], [-1.2, 4.6], [1.6, 4.8]].forEach(p => { g.beginPath(); g.arc(p[0], p[1], 1.1, 0, TAU); g.fill(); }); }
+    g.fillStyle = '#fff'; rrp(g, -7, -8.5, 14, 3, 1.5); g.fill(); g.stroke();
+    g.strokeStyle = '#ff6b8b'; g.lineWidth = 2; g.beginPath(); g.moveTo(1.5, -8); g.lineTo(3.5, -12.5); g.stroke();
+  } else if (k === 'bowl' || k === 'noodle' || k === 'jelly') {
+    g.fillStyle = '#fff'; g.beginPath(); g.moveTo(-9, -1); g.quadraticCurveTo(-8, 9, 0, 9); g.quadraticCurveTo(8, 9, 9, -1); g.closePath(); g.fill(); g.stroke();
+    g.strokeStyle = '#4f8fd8'; g.lineWidth = 1.2; g.beginPath(); g.moveTo(-7, 3); g.quadraticCurveTo(0, 6, 7, 3); g.stroke();
+    g.fillStyle = it.col; g.beginPath(); g.ellipse(0, -1, 9, 2.6, 0, 0, TAU); g.fill();
+    if (k === 'noodle') { g.strokeStyle = '#f3d08a'; g.lineWidth = 1; for (let i = -1; i <= 1; i++) { g.beginPath(); g.moveTo(-5 + i * 3, -1.5); g.quadraticCurveTo(-3 + i * 3, -3, -1 + i * 3, -1); g.stroke(); } g.fillStyle = '#6fbf4a'; g.beginPath(); g.arc(4, -1.5, 1.4, 0, TAU); g.fill(); }
+    if (k === 'bowl') { g.fillStyle = '#c98a4a'; [[-4, -1.5], [2, -0.6], [5, -1.8]].forEach(p => { g.beginPath(); g.arc(p[0], p[1], 1.1, 0, TAU); g.fill(); }); }
+  } else if (k === 'box') {
+    g.fillStyle = '#fff'; rrp(g, -9, -6, 18, 13, 2); g.fill(); g.stroke();
+    g.fillStyle = '#fffdf3'; rrp(g, -7.5, -4.5, 8, 10, 1.5); g.fill();
+    g.fillStyle = it.col; rrp(g, 1, -4.5, 6.5, 5, 1.5); g.fill();
+    g.fillStyle = '#6cbf4c'; rrp(g, 1, 1.5, 3, 3.5, 1); g.fill();
+    g.fillStyle = '#f2c14e'; rrp(g, 4.5, 1.5, 3, 3.5, 1); g.fill();
+  } else if (k === 'roll') {
+    g.fillStyle = it.col; rrp(g, -9, -5, 18, 10, 5); g.fill(); g.stroke();
+    g.strokeStyle = '#d99a2b'; g.beginPath(); g.moveTo(-4, -4.5); g.lineTo(-4, 4.5); g.moveTo(1, -4.5); g.lineTo(1, 4.5); g.moveTo(6, -4); g.lineTo(6, 4); g.stroke();
+    g.fillStyle = '#7cc44f'; g.beginPath(); g.arc(-7, 0, 1.5, 0, TAU); g.fill();
+  } else if (k === 'sand') {
+    g.fillStyle = '#fff6dc'; g.beginPath(); g.moveTo(-9, 7); g.lineTo(9, 7); g.lineTo(0, -8); g.closePath(); g.fill(); g.stroke();
+    g.fillStyle = '#7cc44f'; g.fillRect(-7, 4, 14, 1.6); g.fillStyle = '#f2c14e'; g.fillRect(-6, 2.2, 12, 1.6);
+  } else if (k === 'rice') {
+    g.fillStyle = '#fbf8ef'; rrp(g, -10, -5, 20, 10, 5); g.fill(); g.stroke();
+    g.fillStyle = '#2f4a2f'; g.fillRect(-3, -5, 6, 10);
+    g.fillStyle = '#e06a4a'; g.beginPath(); g.arc(-6, 0, 1.4, 0, TAU); g.fill();
+  } else if (k === 'egg') {
+    g.fillStyle = it.col; g.beginPath(); g.ellipse(0, 0, 7, 9, 0, 0, TAU); g.fill(); g.stroke();
+    g.strokeStyle = '#c99a6a'; g.lineWidth = 0.9; g.beginPath(); g.moveTo(-5, -3); g.lineTo(-2, 0); g.lineTo(-4, 3); g.moveTo(2, -6); g.lineTo(4, -2); g.lineTo(2, 2); g.lineTo(5, 5); g.stroke();
+  } else if (k === 'bread') {
+    g.fillStyle = it.col; g.beginPath(); g.ellipse(0, 1, 10, 6.5, 0, 0, TAU); g.fill(); g.stroke();
+    g.strokeStyle = '#f6d9a0'; g.beginPath(); g.moveTo(-5, -2); g.lineTo(-3, 3); g.moveTo(0, -3); g.lineTo(2, 3); g.moveTo(5, -2); g.lineTo(6.5, 2); g.stroke();
+  } else if (k === 'steamer') {
+    g.fillStyle = '#d8b07a'; g.beginPath(); g.arc(0, 0, 10, 0, TAU); g.fill(); g.stroke();
+    g.fillStyle = '#c4945a'; g.beginPath(); g.arc(0, 0, 7.5, 0, TAU); g.fill();
+    g.fillStyle = '#fffaf0'; [[-3.5, -2.5], [3.5, -2.5], [0, 3.5]].forEach(p => { g.beginPath(); g.arc(p[0], p[1], 3.2, 0, TAU); g.fill(); g.strokeStyle = '#e0d4bc'; g.lineWidth = 0.8; g.stroke(); });
+  } else if (k === 'cutlet') {
+    g.fillStyle = '#fff1d6'; rrp(g, -8, -9, 16, 18, 3); g.fill(); g.stroke();
+    g.fillStyle = it.col; g.beginPath(); g.moveTo(-6, -6); g.quadraticCurveTo(0, -11, 6, -5); g.lineTo(5, 5); g.quadraticCurveTo(0, 8, -5, 5); g.closePath(); g.fill();
+    g.fillStyle = '#c47a1a'; [[-2, -3], [2, 0], [-1, 3], [3, -4]].forEach(p => { g.beginPath(); g.arc(p[0], p[1], 0.9, 0, TAU); g.fill(); });
+  } else if (k === 'plate') {
+    g.fillStyle = '#fff'; g.beginPath(); g.ellipse(0, 1, 10, 7.5, 0, 0, TAU); g.fill(); g.stroke();
+    g.fillStyle = '#f6e3a8'; g.beginPath(); g.ellipse(0, 1, 7.5, 5, 0, 0, TAU); g.fill();
+    g.fillStyle = it.col; g.beginPath(); g.ellipse(0, 1, 5, 2.6, 0.3, 0, TAU); g.fill();
+    g.fillStyle = '#6fbf4a'; g.beginPath(); g.arc(-4, -1, 1.3, 0, TAU); g.arc(4, 3, 1.3, 0, TAU); g.fill();
+  } else if (k === 'fruit') {
+    g.fillStyle = '#fff'; g.beginPath(); g.ellipse(0, 2, 10, 6, 0, 0, TAU); g.fill(); g.stroke();
+    g.fillStyle = it.col; [[-4, 0], [0, -1.5], [4, 0], [-2, 3], [2, 3]].forEach(p => { rrp(g, p[0] - 2.3, p[1] - 2.3, 4.6, 4.6, 1.2); g.fill(); });
+  }
+  if (cold) {
+    g.fillStyle = 'rgba(120,180,255,0.35)'; g.beginPath(); g.arc(0, 0, 11, 0, TAU); g.fill();
+  }
+  g.restore();
+}
+
+/* ---------- 一棟房子（俯視）---------- */
+function drawLot(g, b, l) {
+  const { x, y, w, h } = l;
+  // 騎樓：靠路那一側 12 寬
+  const AR = 12;
+  let ax = x, ay = y, aw = w, ah = h;
+  if (l.side === 3) { ah = AR; } else if (l.side === 1) { ay = y + h - AR; ah = AR; } else if (l.side === 2) { aw = AR; } else { ax = x + w - AR; aw = AR; }
+  g.fillStyle = l.kind === 'shop' ? '#cbbfa8' : '#c9c1b2'; g.fillRect(ax, ay, aw, ah);
+  // 屋頂（扣掉騎樓）
+  let rx = x, ry = y, rw2 = w, rh = h;
+  if (l.side === 3) { ry = y + AR; rh = h - AR; } else if (l.side === 1) { rh = h - AR; } else if (l.side === 2) { rx = x + AR; rw2 = w - AR; } else { rw2 = w - AR; }
+  // 騎樓上方屋簷的影子
+  g.fillStyle = 'rgba(40,30,20,0.18)';
+  if (l.side === 3) g.fillRect(x, y + AR - 4, w, 4); else if (l.side === 1) g.fillRect(x, y + h - AR, w, 4); else if (l.side === 2) g.fillRect(x + AR - 4, y, 4, h); else g.fillRect(x + w - AR, y, 4, h);
+  const col = l.col;
+  g.fillStyle = shade(col, -38); g.fillRect(rx + 1, ry + 1, rw2 - 2, rh - 2);
+  g.fillStyle = col; g.fillRect(rx + 3, ry + 3, rw2 - 6, rh - 6);
+  // 鐵皮加蓋
+  if (l.tin && l.kind !== 'shop') {
+    g.fillStyle = l.tinCol; const tx = rx + 6, ty = ry + 6, tw = rw2 * 0.55, th = rh * 0.5;
+    g.fillRect(tx, ty, tw, th);
+    g.strokeStyle = 'rgba(0,0,0,0.15)'; g.lineWidth = 1; g.beginPath();
+    for (let i = 3; i < tw; i += 4) { g.moveTo(tx + i, ty); g.lineTo(tx + i, ty + th); }
+    g.stroke();
+  }
+  // 水塔
+  if (l.tank) {
+    const tx = rx + rw2 * (0.3 + l.r1 * 0.4), ty = ry + rh * (0.35 + l.r2 * 0.3);
+    g.fillStyle = 'rgba(0,0,0,0.18)'; g.beginPath(); g.arc(tx + 2, ty + 2, 7, 0, TAU); g.fill();
+    g.fillStyle = '#e4e9ee'; g.beginPath(); g.arc(tx, ty, 7, 0, TAU); g.fill();
+    g.strokeStyle = '#a9b3bd'; g.lineWidth = 1.2; g.stroke();
+    g.beginPath(); g.arc(tx, ty, 3.5, 0, TAU); g.stroke();
+  }
+  if (l.ac) {
+    const ex = rx + rw2 - 16, ey = ry + rh - 14;
+    g.fillStyle = '#f2f2f2'; g.fillRect(ex, ey, 10, 8); g.strokeStyle = '#9aa'; g.lineWidth = 1; g.strokeRect(ex, ey, 10, 8);
+    g.beginPath(); g.arc(ex + 5, ey + 4, 2.4, 0, TAU); g.stroke();
+  }
+  if (l.plant) {
+    g.fillStyle = '#6dbb55'; for (let i = 0; i < 3; i++) { g.beginPath(); g.arc(rx + 9 + i * 7, ry + rh - 9, 3, 0, TAU); g.fill(); }
+  }
+  // 騎樓柱子
+  g.fillStyle = '#8f877a';
+  if (l.side === 3 || l.side === 1) { const py = l.side === 3 ? y + 1 : y + h - 5; g.fillRect(x + 1, py, 4, 4); g.fillRect(x + w - 5, py, 4, 4); }
+  else { const px = l.side === 2 ? x + 1 : x + w - 5; g.fillRect(px, y + 1, 4, 4); g.fillRect(px, y + h - 5, 4, 4); }
+  if (l.kind === 'shop') drawShopRoof(g, l, rx, ry, rw2, rh);
+}
+function drawShopRoof(g, l, rx, ry, rw2, rh) {
+  const s = l.shop;
+  // 雨遮（條紋）蓋在騎樓外側
+  const st = 7;
+  g.save();
+  let ax, ay, aw, ah;
+  if (l.side === 3) { ax = l.x; ay = l.y - 6; aw = l.w; ah = st; }
+  else if (l.side === 1) { ax = l.x; ay = l.y + l.h - 1; aw = l.w; ah = st; }
+  else if (l.side === 2) { ax = l.x - 6; ay = l.y; aw = st; ah = l.h; }
+  else { ax = l.x + l.w - 1; ay = l.y; aw = st; ah = l.h; }
+  g.fillStyle = '#fff'; g.fillRect(ax, ay, aw, ah);
+  g.fillStyle = s.col;
+  if (aw > ah) for (let i = 0; i < aw; i += 8) g.fillRect(ax + i, ay, 4, ah);
+  else for (let i = 0; i < ah; i += 8) g.fillRect(ax, ay + i, aw, 4);
+  g.restore();
+  // 招牌
+  const cx = rx + rw2 / 2, cy = ry + rh / 2;
+  g.fillStyle = '#fffdf5'; rrp(g, rx + 5, ry + 5, rw2 - 10, rh - 10, 6); g.fill();
+  g.strokeStyle = shade(s.col, -40); g.lineWidth = 2.5; g.stroke();
+  drawFood(g, s.ic, cx, cy - 9, 18);
+  const name = s.name;
+  let fs = 10;
+  gFont(g, fs);
+  const maxW = rw2 - 12;
+  while (fs > 6 && g.measureText(name).width > maxW) { fs -= 0.5; gFont(g, fs); }
+  g.fillStyle = '#4a2e1e'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(name, cx, cy + 10);
+}
+
+/* ---------- 各種街區 ---------- */
+function drawSidewalk(g, b) {
+  g.fillStyle = '#ddd5c6'; g.fillRect(b.x, b.y, BLK, BLK);
+  g.strokeStyle = 'rgba(150,140,120,0.35)'; g.lineWidth = 1; g.beginPath();
+  for (let i = 7; i < BLK; i += 14) {
+    g.moveTo(b.x + i, b.y); g.lineTo(b.x + i, b.y + SWK); g.moveTo(b.x + i, b.y + BLK - SWK); g.lineTo(b.x + i, b.y + BLK);
+    g.moveTo(b.x, b.y + i); g.lineTo(b.x + SWK, b.y + i); g.moveTo(b.x + BLK - SWK, b.y + i); g.lineTo(b.x + BLK, b.y + i);
+  }
+  g.stroke();
+  g.strokeStyle = '#9c9484'; g.lineWidth = 2.5; g.strokeRect(b.x + 1, b.y + 1, BLK - 2, BLK - 2);
+}
+function drawStreetTrees(g, b, r) {
+  for (let i = 40; i < BLK - 20; i += 92) {
+    tree(g, b.x + i + r() * 10, b.y + 6, 7, '#5bb050');
+    tree(g, b.x + i + r() * 10, b.y + BLK - 6, 7, '#5bb050');
+  }
+}
+function drawHouseBlock(g, b) {
+  const r = rng(b.seed);
+  drawSidewalk(g, b);
+  const ix = b.x + SWK + LD, iy = b.y + SWK + LD, iw = BLK - SWK * 2 - LD * 2;
+  if (b.court === 'garden') {
+    g.fillStyle = '#9fd18a'; g.fillRect(ix, iy, iw, iw);
+    g.fillStyle = '#e8dcc4'; g.fillRect(ix + iw / 2 - 6, iy, 12, iw);
+    for (let i = 0; i < 6; i++) tree(g, ix + 18 + r() * (iw - 36), iy + 18 + r() * (iw - 36), 10 + r() * 6, r() < 0.5 ? '#58aa4f' : '#6fbf55');
+  } else {
+    g.fillStyle = '#c8bfae'; g.fillRect(ix, iy, iw, iw);
+    for (let i = 0; i < 4; i++) {
+      const qx = ix + (i % 2) * iw / 2 + 4, qy = iy + Math.floor(i / 2) * iw / 2 + 4, qs = iw / 2 - 8;
+      const c = ROOF[Math.floor(r() * ROOF.length)];
+      g.fillStyle = shade(c, -30); g.fillRect(qx, qy, qs, qs); g.fillStyle = c; g.fillRect(qx + 3, qy + 3, qs - 6, qs - 6);
+      if (r() < 0.6) { g.fillStyle = '#e4e9ee'; g.beginPath(); g.arc(qx + qs / 2, qy + qs / 2, 6, 0, TAU); g.fill(); g.strokeStyle = '#a9b3bd'; g.stroke(); }
+    }
+  }
+  b.lots.forEach(l => drawLot(g, b, l));
+}
+function drawPark(g, b) {
+  const r = rng(b.seed);
+  g.fillStyle = '#8fcf6e'; g.fillRect(b.x, b.y, BLK, BLK);
+  g.strokeStyle = '#7a6a4a'; g.lineWidth = 3; g.strokeRect(b.x + 3, b.y + 3, BLK - 6, BLK - 6);
+  g.strokeStyle = '#f2e4c0'; g.lineWidth = 14; g.lineCap = 'round';
+  g.beginPath(); g.moveTo(b.x + 20, b.y + BLK * 0.7); g.bezierCurveTo(b.x + BLK * 0.3, b.y + BLK * 0.2, b.x + BLK * 0.7, b.y + BLK * 0.9, b.x + BLK - 20, b.y + BLK * 0.35); g.stroke();
+  g.beginPath(); g.moveTo(b.x + BLK * 0.5, b.y + 20); g.quadraticCurveTo(b.x + BLK * 0.45, b.y + BLK * 0.5, b.x + BLK * 0.55, b.y + BLK - 20); g.stroke();
+  // 池塘
+  g.fillStyle = '#6cc4ef'; g.beginPath(); g.ellipse(b.x + BLK * 0.27, b.y + BLK * 0.3, 44, 30, 0.3, 0, TAU); g.fill();
+  g.strokeStyle = '#4aa3d4'; g.lineWidth = 3; g.stroke();
+  g.fillStyle = '#7fd36a'; g.beginPath(); g.arc(b.x + BLK * 0.22, b.y + BLK * 0.28, 5, 0, TAU); g.arc(b.x + BLK * 0.32, b.y + BLK * 0.34, 4, 0, TAU); g.fill();
+  // 溜滑梯
+  const sx = b.x + BLK * 0.72, sy = b.y + BLK * 0.68;
+  g.fillStyle = '#f2d29a'; rrp(g, sx - 30, sy - 22, 60, 44, 8); g.fill();
+  g.fillStyle = '#ff6f61'; g.fillRect(sx - 18, sy - 10, 14, 14); g.fillStyle = '#ffd54a'; g.fillRect(sx - 4, sy - 6, 26, 6);
+  g.fillStyle = '#5fb3f0'; g.beginPath(); g.arc(sx + 14, sy + 12, 5, 0, TAU); g.fill();
+  // 涼亭
+  const px = b.x + BLK * 0.7, py = b.y + BLK * 0.25;
+  g.fillStyle = 'rgba(0,0,0,0.18)'; g.beginPath(); polygon(g, px + 3, py + 3, 22, 6); g.fill();
+  g.fillStyle = '#d9573b'; g.beginPath(); polygon(g, px, py, 22, 6); g.fill();
+  g.strokeStyle = '#a63a22'; g.lineWidth = 1.5; g.beginPath(); for (let i = 0; i < 6; i++) { g.moveTo(px, py); g.lineTo(px + Math.cos(i * TAU / 6) * 22, py + Math.sin(i * TAU / 6) * 22); } g.stroke();
+  g.fillStyle = '#ffd54a'; g.beginPath(); g.arc(px, py, 4, 0, TAU); g.fill();
+  for (let i = 0; i < 14; i++) {
+    const tx = b.x + 18 + r() * (BLK - 36), ty = b.y + 18 + r() * (BLK - 36);
+    if (dist(tx, ty, b.x + BLK * 0.27, b.y + BLK * 0.3) < 60 || dist(tx, ty, sx, sy) < 46 || dist(tx, ty, px, py) < 40) continue;
+    tree(g, tx, ty, 11 + r() * 8, r() < 0.5 ? '#3f9a44' : '#57b04c');
+  }
+}
+function polygon(g, x, y, r, n) { for (let i = 0; i < n; i++) { const a = i * TAU / n; if (i) g.lineTo(x + Math.cos(a) * r, y + Math.sin(a) * r); else g.moveTo(x + Math.cos(a) * r, y + Math.sin(a) * r); } g.closePath(); }
+function drawOffice(g, b) {
+  const r = rng(b.seed);
+  drawSidewalk(g, b);
+  g.fillStyle = '#d6dccf'; g.fillRect(b.x + SWK, b.y + SWK, BLK - SWK * 2, BLK - SWK * 2);
+  for (let i = 0; i < 8; i++) tree(g, b.x + 30 + (i % 4) * 82, b.y + (i < 4 ? 30 : BLK - 30), 10, '#4fa64a');
+  const x = b.x + 50, y = b.y + 50, w = BLK - 100;
+  g.fillStyle = 'rgba(20,30,50,0.25)'; g.fillRect(x + 8, y + 8, w, w);
+  g.fillStyle = '#7f95b5'; g.fillRect(x, y, w, w);
+  g.fillStyle = '#9fb3d0'; g.fillRect(x + 6, y + 6, w - 12, w - 12);
+  // 太陽能板
+  g.fillStyle = '#2f4f86';
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 2; j++) g.fillRect(x + 16 + i * 46, y + 16 + j * 30, 40, 24);
+  g.strokeStyle = 'rgba(255,255,255,0.35)'; g.lineWidth = 1;
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 2; j++) { g.strokeRect(x + 16 + i * 46, y + 16 + j * 30, 40, 24); g.beginPath(); g.moveTo(x + 36 + i * 46, y + 16 + j * 30); g.lineTo(x + 36 + i * 46, y + 40 + j * 30); g.stroke(); }
+  // 屋頂花園
+  g.fillStyle = '#8fd17a'; rrp(g, x + 16, y + 84, w - 32, w - 100, 10); g.fill();
+  for (let i = 0; i < 5; i++) tree(g, x + 30 + r() * (w - 60), y + 100 + r() * (w - 130), 8, '#4fa64a');
+  const d = dests.find(q => q.block === b && q.kind === 'office');
+  if (d) {
+    g.fillStyle = '#fff'; rrp(g, x + w / 2 - 50, y + w - 34, 100, 24, 8); g.fill(); g.strokeStyle = '#4d6a96'; g.lineWidth = 2.5; g.stroke();
+    gFont(g, 13); g.fillStyle = '#2d4a76'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(d.name, x + w / 2, y + w - 22);
+  }
+}
+function drawSchool(g, b) {
+  drawSidewalk(g, b);
+  const x = b.x + SWK, y = b.y + SWK, w = BLK - SWK * 2;
+  g.fillStyle = '#8fd17a'; g.fillRect(x, y, w, w);
+  // 跑道
+  g.fillStyle = '#d9694f'; rrp(g, x + 14, y + 14, w - 28, 150, 75); g.fill();
+  g.fillStyle = '#7cc664'; rrp(g, x + 34, y + 34, w - 68, 110, 55); g.fill();
+  g.strokeStyle = 'rgba(255,255,255,0.7)'; g.lineWidth = 1.2; rrp(g, x + 24, y + 24, w - 48, 130, 65); g.stroke();
+  g.strokeStyle = '#fff'; g.beginPath(); g.arc(x + w / 2, y + 89, 18, 0, TAU); g.moveTo(x + w / 2, y + 34); g.lineTo(x + w / 2, y + 144); g.stroke();
+  // 校舍（L 形）
+  g.fillStyle = '#c98f5a'; g.fillRect(x + 10, y + 178, w - 20, 60); g.fillStyle = '#f3d9a6'; g.fillRect(x + 13, y + 181, w - 26, 54);
+  g.fillStyle = '#e9c788'; for (let i = 0; i < 8; i++) g.fillRect(x + 20 + i * 30, y + 188, 20, 40);
+  // 旗桿
+  g.fillStyle = '#ddd'; g.beginPath(); g.arc(x + w / 2, y + 260, 5, 0, TAU); g.fill();
+  // 校名
+  g.fillStyle = '#fff'; rrp(g, x + w / 2 - 54, y + w - 26, 108, 22, 7); g.fill(); g.strokeStyle = '#e0a020'; g.lineWidth = 2.5; g.stroke();
+  gFont(g, 12); g.fillStyle = '#7a4a10'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('向日葵國小', x + w / 2, y + w - 15);
+  // 向日葵
+  for (let i = 0; i < 6; i++) { const fx = x + 20 + i * 12, fy = y + w - 14; g.fillStyle = '#ffd23f'; g.beginPath(); g.arc(fx, fy, 4, 0, TAU); g.fill(); g.fillStyle = '#8a5a20'; g.beginPath(); g.arc(fx, fy, 1.6, 0, TAU); g.fill(); }
+}
+function drawTemple(g, b) {
+  // 廟埕：石板地
+  g.fillStyle = '#e9dcc3'; g.fillRect(b.x, b.y, BLK, BLK);
+  g.strokeStyle = 'rgba(160,140,110,0.35)'; g.lineWidth = 1; g.beginPath();
+  for (let i = 0; i <= BLK; i += 22) { g.moveTo(b.x + 50, b.y + 150 + i * 0.5); g.lineTo(b.x + BLK - 50, b.y + 150 + i * 0.5); g.moveTo(b.x + 50 + i * 0.67, b.y + 150); g.lineTo(b.x + 50 + i * 0.67, b.y + BLK); }
+  g.stroke();
+  // 兩旁廂房
+  [[b.x, b.y + 30, 50, BLK - 30], [b.x + BLK - 50, b.y + 30, 50, BLK - 30], [b.x, b.y, BLK, 30]].forEach(q => {
+    g.fillStyle = '#b84a2e'; g.fillRect(q[0], q[1], q[2], q[3]); g.fillStyle = '#e0783f'; g.fillRect(q[0] + 3, q[1] + 3, q[2] - 6, q[3] - 6);
+    g.strokeStyle = 'rgba(120,40,20,0.35)'; g.lineWidth = 1; g.beginPath();
+    if (q[2] < q[3]) for (let i = 6; i < q[3]; i += 6) { g.moveTo(q[0] + 3, q[1] + i); g.lineTo(q[0] + q[2] - 3, q[1] + i); }
+    else for (let i = 6; i < q[2]; i += 6) { g.moveTo(q[0] + i, q[1] + 3); g.lineTo(q[0] + i, q[1] + q[3] - 3); }
+    g.stroke();
+  });
+  // 正殿屋頂（燕尾）
+  const x = b.x + 50, y = b.y + 30, w = BLK - 100, h = 120;
+  g.fillStyle = 'rgba(80,20,10,0.25)'; g.fillRect(x + 6, y + 8, w, h);
+  g.fillStyle = '#c8402a'; g.fillRect(x, y, w, h);
+  g.fillStyle = '#e8603a'; g.fillRect(x + 6, y + 6, w - 12, h / 2 - 8); g.fillStyle = '#d9502f'; g.fillRect(x + 6, y + h / 2 + 2, w - 12, h / 2 - 8);
+  g.strokeStyle = 'rgba(120,30,10,0.4)'; g.lineWidth = 1; g.beginPath();
+  for (let i = 12; i < w - 6; i += 7) { g.moveTo(x + i, y + 6); g.lineTo(x + i, y + h - 6); }
+  g.stroke();
+  // 屋脊
+  g.fillStyle = '#ffd34d'; g.fillRect(x + 4, y + h / 2 - 3, w - 8, 6);
+  g.strokeStyle = '#ffd34d'; g.lineWidth = 5; g.lineCap = 'round';
+  g.beginPath(); g.moveTo(x + 6, y + h / 2); g.quadraticCurveTo(x - 10, y + h / 2 - 4, x - 12, y + h / 2 - 22); g.stroke();
+  g.beginPath(); g.moveTo(x + w - 6, y + h / 2); g.quadraticCurveTo(x + w + 10, y + h / 2 - 4, x + w + 12, y + h / 2 - 22); g.stroke();
+  // 龍（簡單的彎曲）＋寶珠
+  g.strokeStyle = '#3fae7a'; g.lineWidth = 4;
+  g.beginPath(); g.moveTo(x + 40, y + h / 2 - 2); g.bezierCurveTo(x + 55, y + h / 2 - 14, x + 70, y + h / 2 + 10, x + 88, y + h / 2 - 4); g.stroke();
+  g.beginPath(); g.moveTo(x + w - 40, y + h / 2 - 2); g.bezierCurveTo(x + w - 55, y + h / 2 - 14, x + w - 70, y + h / 2 + 10, x + w - 88, y + h / 2 - 4); g.stroke();
+  g.fillStyle = '#ffe680'; g.beginPath(); g.arc(x + w / 2, y + h / 2, 8, 0, TAU); g.fill(); g.strokeStyle = '#e09a20'; g.lineWidth = 2; g.stroke();
+  // 匾額
+  g.fillStyle = '#1f3a6e'; rrp(g, x + w / 2 - 38, y + h - 20, 76, 18, 3); g.fill(); g.strokeStyle = '#ffd34d'; g.lineWidth = 2; g.stroke();
+  gFont(g, 12); g.fillStyle = '#ffd34d'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('平安宮', x + w / 2, y + h - 11);
+  // 香爐
+  const lx = b.x + 152, ly = b.y + 210;
+  g.fillStyle = 'rgba(0,0,0,0.2)'; g.beginPath(); g.arc(lx + 3, ly + 3, 15, 0, TAU); g.fill();
+  g.fillStyle = '#a8742a'; g.beginPath(); g.arc(lx, ly, 15, 0, TAU); g.fill(); g.fillStyle = '#d9a441'; g.beginPath(); g.arc(lx, ly, 10, 0, TAU); g.fill();
+  g.fillStyle = '#6b4a1a'; g.beginPath(); g.arc(lx, ly, 5, 0, TAU); g.fill();
+  // 石獅
+  [[x + 20, y + h + 14], [x + w - 20, y + h + 14]].forEach(p => { g.fillStyle = '#b9b3a6'; g.beginPath(); g.arc(p[0], p[1], 8, 0, TAU); g.fill(); g.fillStyle = '#8e887b'; g.beginPath(); g.arc(p[0], p[1] - 2, 4, 0, TAU); g.fill(); });
+  // 榕樹
+  tree(g, b.x + 76, b.y + 260, 24, '#3f8f3a'); tree(g, b.x + BLK - 76, b.y + 262, 24, '#3f8f3a');
+}
+function drawNightMarket(g, b) {
+  const ay = b.alleyY, ah = b.alleyH;
+  // 上下兩排建築
+  [[b.x, b.y, BLK, 120], [b.x, ay + ah, BLK, 120]].forEach((q, qi) => {
+    g.fillStyle = '#ddd5c6'; g.fillRect(q[0], q[1], q[2], q[3]);
+    g.strokeStyle = '#9c9484'; g.lineWidth = 2.5; g.strokeRect(q[0] + 1, q[1] + 1, q[2] - 2, q[3] - 2);
+    const r = rng(b.seed + qi);
+    for (let i = 0; i < 5; i++) {
+      const lx = q[0] + SWK + i * 55, ly = q[1] + (qi ? 18 : SWK), lw = 52, lh = 120 - SWK - 18;
+      const c = ROOF[Math.floor(r() * ROOF.length)];
+      g.fillStyle = shade(c, -36); g.fillRect(lx, ly, lw, lh); g.fillStyle = c; g.fillRect(lx + 3, ly + 3, lw - 6, lh - 6);
+      if (r() < 0.6) { g.fillStyle = '#e4e9ee'; g.beginPath(); g.arc(lx + 26, ly + 40, 6, 0, TAU); g.fill(); g.strokeStyle = '#a9b3bd'; g.lineWidth = 1; g.stroke(); }
+    }
+  });
+  // 巷子：紅磚
+  g.fillStyle = '#c9765a'; g.fillRect(b.x, ay, BLK, ah);
+  g.strokeStyle = 'rgba(255,230,210,0.35)'; g.lineWidth = 1; g.beginPath();
+  for (let i = 0; i < ah; i += 8) { g.moveTo(b.x, ay + i); g.lineTo(b.x + BLK, ay + i); }
+  for (let i = 0; i < BLK; i += 16) for (let j = 0; j < ah; j += 16) { g.moveTo(b.x + i + (j % 32 ? 8 : 0), ay + j); g.lineTo(b.x + i + (j % 32 ? 8 : 0), ay + j + 8); }
+  g.stroke();
+  // 攤販棚子
+  const cols = ['#ff5a5a', '#ffb020', '#3fa9f5', '#2fbf71', '#b06bff', '#ff7fb0'];
+  for (let i = 0; i < 7; i++) {
+    const sx = b.x + 8 + i * 42;
+    [[ay - 16, 0], [ay + ah - 2, 1]].forEach((q, k) => {
+      const c = cols[(i + k * 3) % cols.length];
+      g.fillStyle = 'rgba(0,0,0,0.2)'; g.fillRect(sx + 2, q[0] + 2, 36, 18);
+      g.fillStyle = '#fff'; g.fillRect(sx, q[0], 36, 18);
+      g.fillStyle = c; for (let s = 0; s < 36; s += 9) g.fillRect(sx + s, q[0], 4.5, 18);
+    });
+  }
+  // 入口牌坊（左右）
+  [b.x - 4, b.x + BLK - 10].forEach(px => {
+    g.fillStyle = '#b5302a'; g.fillRect(px, ay - 6, 14, ah + 12);
+    g.fillStyle = '#ffd34d'; g.fillRect(px + 3, ay + 4, 8, ah - 8);
+    g.save(); g.translate(px + 7, ay + ah / 2); gFont(g, 7.5); g.fillStyle = '#9a1f1a'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    ['月', '光', '夜', '市'].forEach((c, i) => g.fillText(c, 0, (i - 1.5) * 12)); g.restore();
+  });
+}
+function drawRoadsRegion(g, x0, y0, x1, y1) {
+  g.fillStyle = '#5c6270';
+  for (let i = 0; i <= N; i++) {
+    const r = i * BS;
+    if (r + RW >= x0 && r <= x1) g.fillRect(r, Math.max(0, y0), RW, Math.min(WORLD, y1) - Math.max(0, y0));
+    if (r + RW >= y0 && r <= y1) g.fillRect(Math.max(0, x0), r, Math.min(WORLD, x1) - Math.max(0, x0), RW);
+  }
+  // 路面標線（每一段路）
+  for (let i = 0; i <= N; i++) for (let j = 0; j < N; j++) {
+    // 直的路段：x = i*BS，y 從 j*BS+RW 到 (j+1)*BS
+    segMarks(g, i * BS, j * BS + RW, BLK, true, x0, y0, x1, y1);
+    segMarks(g, j * BS + RW, i * BS, BLK, false, x0, y0, x1, y1);
+  }
+  // 路口：停止線、斑馬線、機車停等區（有紅綠燈）或「慢」字
+  for (let i = 0; i <= N; i++) for (let j = 0; j <= N; j++) {
+    const ix = i * BS, iy = j * BS;
+    if (ix + RW + 60 < x0 || ix - 60 > x1 || iy + RW + 60 < y0 || iy - 60 > y1) continue;
+    const L = lightMap[i + ',' + j];
+    if (L) drawCrossing(g, ix, iy, i, j);
+    else drawSlow(g, ix, iy, i, j);
+  }
+}
+function segMarks(g, x, y, len, vert, x0, y0, x1, y1) {
+  if (vert) { if (x + RW < x0 || x > x1 || y + len < y0 || y > y1) return; }
+  else if (x + len < x0 || x > x1 || y + RW < y0 || y > y1) return;
+  g.fillStyle = 'rgba(255,255,255,0.75)';
+  if (vert) { g.fillRect(x + 4, y, 2, len); g.fillRect(x + RW - 6, y, 2, len); }
+  else { g.fillRect(x, y + 4, len, 2); g.fillRect(x, y + RW - 6, len, 2); }
+  g.fillStyle = '#ffcf3a';
+  if (vert) { g.fillRect(x + RW / 2 - 3, y, 2, len); g.fillRect(x + RW / 2 + 1, y, 2, len); }
+  else { g.fillRect(x, y + RW / 2 - 3, len, 2); g.fillRect(x, y + RW / 2 + 1, len, 2); }
+}
+function scooterGlyph(g, x, y, ang) {
+  g.save(); g.translate(x, y); g.rotate(ang); g.strokeStyle = 'rgba(255,255,255,0.8)'; g.lineWidth = 1.5;
+  g.beginPath(); g.arc(-6, 0, 2.5, 0, TAU); g.moveTo(8.5, 0); g.arc(6, 0, 2.5, 0, TAU); g.moveTo(-4, -1); g.lineTo(3, -1); g.lineTo(5, -4); g.stroke(); g.restore();
+}
+function drawCrossing(g, ix, iy, i, j) {
+  g.fillStyle = 'rgba(255,255,255,0.85)';
+  // 斑馬線（四邊各一條，寬 16）
+  for (let k = 6; k < RW - 4; k += 9) {
+    g.fillRect(ix + k, iy - 16, 5, 14); g.fillRect(ix + k, iy + RW + 2, 5, 14);
+    g.fillRect(ix - 16, iy + k, 14, 5); g.fillRect(ix + RW + 2, iy + k, 14, 5);
+  }
+  // 停止線＋機車停等區（只畫在進路口的那一半）
+  g.fillStyle = 'rgba(255,255,255,0.9)';
+  // 往南（從北邊來）：西半邊 x ix..ix+48
+  g.fillRect(ix + 4, iy - 38, 44, 3); g.strokeStyle = 'rgba(255,255,255,0.85)'; g.lineWidth = 1.5; g.strokeRect(ix + 7, iy - 34, 38, 15); scooterGlyph(g, ix + 26, iy - 26.5, Math.PI / 2);
+  // 往北（從南邊來）：東半邊
+  g.fillRect(ix + 48, iy + RW + 35, 44, 3); g.strokeRect(ix + 51, iy + RW + 19, 38, 15); scooterGlyph(g, ix + 70, iy + RW + 26.5, -Math.PI / 2);
+  // 往東（從西邊來）：南半邊
+  g.fillRect(ix - 38, iy + 48, 3, 44); g.strokeRect(ix - 34, iy + 51, 15, 38); scooterGlyph(g, ix - 26.5, iy + 70, 0);
+  // 往西（從東邊來）：北半邊
+  g.fillRect(ix + RW + 35, iy + 4, 3, 44); g.strokeRect(ix + RW + 19, iy + 7, 15, 38); scooterGlyph(g, ix + RW + 26.5, iy + 26, Math.PI);
+}
+function drawSlow(g, ix, iy, i, j) {
+  gFont(g, 15); g.fillStyle = 'rgba(255,255,255,0.75)'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  if (j > 0) g.fillText('慢', ix + 24, iy - 24);
+  if (j < N) g.fillText('慢', ix + 72, iy + RW + 24);
+  if (i > 0) g.fillText('慢', ix - 24, iy + 72);
+  if (i < N) g.fillText('慢', ix + RW + 24, iy + 24);
+}
+function drawStreetSigns(g, x0, y0, x1, y1) {
+  gFont(g, 9.5); g.textAlign = 'center'; g.textBaseline = 'middle';
+  for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+    const b = blocks[j * N + i];
+    if (b.x + BLK + 40 < x0 || b.x - 40 > x1 || b.y + BLK + 40 < y0 || b.y - 40 > y1) continue;
+    if (b.type === 'N' || b.type === 'T' || b.type === 'P') continue;
+    // 左上角：上面那條路的名字＋左邊那條路的名字
+    const sx = b.x + 2, sy = b.y + 2;
+    g.fillStyle = '#7a8088'; g.fillRect(sx + 1, sy + 1, 3, 3);
+    g.fillStyle = '#1f7a4a'; rrp(g, sx + 5, sy - 1, 38, 12, 2); g.fill();
+    g.fillStyle = '#fff'; g.fillText(ROAD_H[j], sx + 24, sy + 5.2);
+  }
+}
+const BLOCK_DRAW = { H: drawHouseBlock, M: drawHouseBlock, P: drawPark, O: drawOffice, K: drawSchool, T: drawTemple, N: drawNightMarket };
+function drawStatic(g, x0, y0, x1, y1) {
+  // 世界外：河岸草地
+  g.fillStyle = '#8fcf7e'; g.fillRect(x0, y0, x1 - x0, y1 - y0);
+  if (x1 > WORLD || y1 > WORLD || x0 < 0 || y0 < 0) {
+    g.fillStyle = '#6fc2e8';
+    if (x0 < 0) g.fillRect(x0, y0, -60 - x0, y1 - y0);
+    if (y0 < 0) g.fillRect(x0, y0, x1 - x0, -60 - y0);
+    if (x1 > WORLD) g.fillRect(WORLD + 60, y0, x1 - WORLD - 60, y1 - y0);
+    if (y1 > WORLD) g.fillRect(x0, WORLD + 60, x1 - x0, y1 - WORLD - 60);
+  }
+  drawRoadsRegion(g, x0, y0, x1, y1);
+  blocks.forEach(b => {
+    if (b.x + BLK < x0 - 30 || b.x > x1 + 30 || b.y + BLK < y0 - 30 || b.y > y1 + 30) return;
+    BLOCK_DRAW[b.type](g, b);
+    if (b.type === 'H' || b.type === 'M' || b.type === 'O') drawStreetTrees(g, b, rng(b.seed + 5));
+  });
+  drawStreetSigns(g, x0, y0, x1, y1);
+}
+
+/* ---------- 分塊快取 ---------- */
+const CN = Math.ceil((WORLD + 200) / BS) + 1; // 包含世界外一點點
+let sc = 1, chunkP = 400;
+const chunks = new Map();
+let chunkBuilds = 0, chunkMax = 16;
+function chunkKey(cx, cy) { return cx + ',' + cy; }
+function getChunk(cx, cy, force) {
+  const k = chunkKey(cx, cy);
+  let c = chunks.get(k);
+  if (c && c.p === chunkP) { c.used = time; return c.cv; }
+  if (!force && chunkBuilds >= 2) return null;
+  chunkBuilds++;
+  const cvs = (c && c.cv) || document.createElement('canvas');
+  cvs.width = chunkP; cvs.height = chunkP;
+  const g = cvs.getContext('2d');
+  const k2 = chunkP / BS;
+  g.setTransform(k2, 0, 0, k2, -cx * BS * k2, -cy * BS * k2);
+  drawStatic(g, cx * BS, cy * BS, (cx + 1) * BS, (cy + 1) * BS);
+  chunks.set(k, { cv: cvs, p: chunkP, used: time });
+  if (chunks.size > chunkMax) {
+    let oldK = null, oldT = Infinity;
+    chunks.forEach((v, kk) => { if (v.used < oldT && kk !== k) { oldT = v.used; oldK = kk; } });
+    if (oldK) chunks.delete(oldK);
+  }
+  return cvs;
+}
+
+/* ---------- 小地圖底圖 ---------- */
+const MM_RES = 220;
+const mmBase = document.createElement('canvas');
+(function buildMini() {
+  mmBase.width = mmBase.height = MM_RES;
+  const g = mmBase.getContext('2d'), k = MM_RES / WORLD;
+  g.fillStyle = '#9fd08c'; g.fillRect(0, 0, MM_RES, MM_RES);
+  g.fillStyle = '#ffffff';
+  for (let i = 0; i <= N; i++) { g.fillRect(i * BS * k, 0, RW * k, MM_RES); g.fillRect(0, i * BS * k, MM_RES, RW * k); }
+  const C = { H: '#f3dcc0', M: '#f8c98f', P: '#8fd17a', O: '#b8c8de', T: '#f08a6a', N: '#d39ae8', K: '#f2e06e' };
+  blocks.forEach(b => {
+    g.fillStyle = C[b.type]; g.fillRect(b.x * k, b.y * k, BLK * k, BLK * k);
+    if (b.type === 'N') { g.fillStyle = '#ffe6f6'; g.fillRect(b.x * k, b.alleyY * k, BLK * k, b.alleyH * k); }
+    if (b.type === 'T') { g.fillStyle = '#f4e8d0'; g.fillRect((b.x + 50) * k, (b.y + 150) * k, (BLK - 100) * k, (BLK - 150) * k); }
+  });
+})();
+
+/* =====================================================================
+ * 遊戲狀態
+ * ===================================================================== */
+const DAYS = 10;
+const TARGET = [150, 200, 250, 300, 350, 400, 450, 500, 550, 600];
+const DAY_LEN = 180;
+const DAY_TIPS = [
+  '先到店家取餐（袋子圖釘），再送到客人家（房子圖釘）。',
+  '飲料容易灑出來！小心不要撞到東西。',
+  '熱食有時間限制，冷掉前送到，小費會比較多。',
+  '月光夜市開張了！巷子裡人很多，要慢慢騎。',
+  '阿嬤豆花很軟很容易灑，騎穩一點喔。',
+  '牛肉麵又燙又會灑，是最難送的一碗！',
+  '水果行也來了，訂單越來越多囉！',
+  '尖峰時間，路上的車變多了。',
+  '大家都餓了！訂單一張接一張。',
+  '最後一天！當個最厲害的小小外送員吧！'
+];
+const ORDER_COLS = ['#ff7a45', '#3d8bfd', '#a35cff'];
+let scene = 'title', sceneT = 0, paused = false;
+const G = {
+  day: 1, endless: false, sub: 'count', clock: DAY_LEN, t: 0, countT: 0,
+  money: 0, orders: [], nextOrderT: 1.2, orderSeq: 0, focusId: -1,
+  stats: null, rush: false, sprint: false, endT: 0, result: null, carHits: 0
+};
+function newStats() { return { delivered: 0, stars: 0, red: 0, bumps: 0, spills: 0, good: 0, ped: 0, bonus: 0, tips: 0 }; }
+function dayCfg(d) {
+  if (G.endless) return { cars: 18, scoot: 6, gap: [1, 2.5], hot: true, fr: true };
+  return { cars: 6 + Math.round(d * 1.2), scoot: 3 + Math.floor(d / 2), gap: [Math.max(1, 3.4 - d * 0.22), Math.max(2, 5 - d * 0.3)], hot: d >= 3, fr: d >= 2 };
+}
+function capacity() { return 2 + (prog.up.box ? 1 : 0); }
+function maxSpd() { return 160 + prog.up.speed * 24; }
+
+/* ---------- 玩家機車 ---------- */
+const P = { x: 0, y: 0, ang: -Math.PI / 2, spd: 0, kx: 0, ky: 0, wob: 0, r: 9, px: 0, py: 0, inL: null, brake: false, bumpCD: 0, dustT: 0, lean: 0, horn: 0, waitRed: 0, lastBrake: 0, slow: 1 };
+const input = { x: 0, y: 0, brake: false };
+
+/* ---------- 物件池：粒子 ---------- */
+const MAXP = KG.lowEnd ? 110 : 180;
+const parts = [];
+for (let i = 0; i < MAXP; i++) parts.push({ on: false });
+function spawnPart(o) {
+  let p = null;
+  for (let i = 0; i < parts.length; i++) if (!parts[i].on) { p = parts[i]; break; }
+  if (!p) return null;
+  p.on = true; p.x = o.x; p.y = o.y; p.vx = o.vx || 0; p.vy = o.vy || 0; p.life = 0; p.max = o.max || 0.6;
+  p.size = o.size || 4; p.col = o.col || '#fff'; p.kind = o.kind || 'dot'; p.g = o.g || 0; p.screen = !!o.screen;
+  p.rot = o.rot || 0; p.vr = o.vr || 0; p.drag = o.drag == null ? 2 : o.drag; p.tx = o.tx; p.ty = o.ty;
+  return p;
+}
+function updateParts(dt) {
+  for (const p of parts) {
+    if (!p.on) continue;
+    p.life += dt;
+    if (p.life >= p.max) { p.on = false; continue; }
+    if (p.kind === 'coin' && p.tx != null) {
+      const k = p.life / p.max, e = k * k;
+      p.x = lerp(p.x, p.tx, e * 0.5); p.y = lerp(p.y, p.ty, e * 0.5);
+      p.x += p.vx * dt * (1 - k); p.y += p.vy * dt * (1 - k);
+      continue;
+    }
+    p.vy += p.g * dt;
+    const f = Math.exp(-p.drag * dt); p.vx *= f; p.vy *= f;
+    p.x += p.vx * dt; p.y += p.vy * dt; p.rot += p.vr * dt;
+  }
+}
+function burst(x, y, n, o) {
+  for (let i = 0; i < n; i++) {
+    const a = rand(0, TAU), sp = rand(o.min || 30, o.max || 120);
+    spawnPart({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, max: rand(0.4, o.life || 0.8), size: rand(o.s0 || 2, o.s1 || 5), col: Array.isArray(o.col) ? pick(o.col) : o.col, kind: o.kind || 'dot', g: o.g || 0, drag: o.drag, vr: rand(-6, 6), screen: o.screen });
+  }
+}
+
+/* ---------- 回饋文字：在機車上方一行一行往上排，不會疊在一起 ---------- */
+const labels = [];
+function label(text, col, o) {
+  o = o || {};
+  for (const l of labels) l.slot++;
+  labels.push({ text, col: col || '#fff', t: 0, life: o.life || 1.5, slot: 0, y: 0, stars: o.stars, size: o.size || 1 });
+  while (labels.length > 3) labels.shift();
+  for (let i = labels.length - 1; i >= 0; i--) if (labels[i].slot > 2) labels.splice(i, 1);
+}
+function updateLabels(dt) {
+  for (let i = labels.length - 1; i >= 0; i--) {
+    const l = labels[i];
+    l.t += dt;
+    l.y = lerp(l.y, l.slot, Math.min(1, dt * 12));
+    if (l.t > l.life) labels.splice(i, 1);
+  }
+}
+let banner = null;
+function showBanner(text, col, dur) { banner = { text, col: col || '#ff5a5a', t: 0, dur: dur || 2.2 }; }
+
+/* ---------- AI 車輛 ---------- */
+const VT = {
+  car: { len: 40, wid: 21, spd: [100, 122] },
+  taxi: { len: 40, wid: 21, spd: [112, 128] },
+  van: { len: 50, wid: 23, spd: [90, 108] },
+  bus: { len: 64, wid: 25, spd: [82, 92] },
+  scooter: { len: 22, wid: 10, spd: [118, 136] }
+};
+const CAR_COLS = ['#ff6b6b', '#4dabf7', '#ffffff', '#69db7c', '#b197fc', '#ffa94d', '#868e96', '#f783ac'];
+const vehicles = [];
+function placeVehicle(v, nearPlayer) {
+  for (let tries = 0; tries < 40; tries++) {
+    const horiz = Math.random() < 0.5;
+    const ri = randi(0, N);
+    const seg = randi(0, N - 1);
+    const dir = horiz ? (Math.random() < 0.5 ? 0 : 2) : (Math.random() < 0.5 ? 1 : 3);
+    const along = seg * BS + RW + 30 + Math.random() * (BLK - 60);
+    const lane = laneCoord(dir, ri * BS);
+    const x = horiz ? along : lane, y = horiz ? lane : along;
+    const dp = dist(x, y, P.x, P.y);
+    if (nearPlayer) { if (dp < 520 || dp > 1000) continue; }
+    else if (dp < 300) continue;
+    if (vehicles.some(o => o !== v && o.on && dist(o.x, o.y, x, y) < 70)) continue;
+    v.x = x; v.y = y; v.dir = dir; v.ang = DIRANG[dir]; v.spd = v.cruise * 0.6;
+    v.turnDir = null; v.turnFor = ''; v.block = 0; v.ghost = 0; v.far = 0;
+    return true;
+  }
+  return false;
+}
+function makeVehicle(type) {
+  const t = VT[type];
+  const v = { on: true, type, len: t.len, wid: t.wid, cruise: rand(t.spd[0], t.spd[1]), col: type === 'taxi' ? '#ffd43b' : type === 'bus' ? '#3fa66b' : pick(CAR_COLS), helmet: pick(['#ff6b6b', '#ffd43b', '#4dabf7', '#ffffff', '#69db7c']), honkT: 0, wob: 0 };
+  if (!placeVehicle(v, false)) v.on = false;
+  return v;
+}
+function spawnTraffic() {
+  vehicles.length = 0;
+  const c = dayCfg(G.day);
+  for (let i = 0; i < c.cars; i++) vehicles.push(makeVehicle(i % 7 === 3 ? 'taxi' : i % 9 === 5 ? 'van' : i % 11 === 8 ? 'bus' : 'car'));
+  for (let i = 0; i < c.scoot; i++) vehicles.push(makeVehicle('scooter'));
+}
+function extentAlong(o, d) { const same = (o.dir % 2) === (d.x !== 0 ? 0 : 1); return same ? [o.len / 2, o.wid / 2] : [o.wid / 2, o.len / 2]; }
+function probeGap(v, d, ox, oy, ea, el, reach) {
+  const rx = ox - v.x, ry = oy - v.y;
+  const al = rx * d.x + ry * d.y;
+  if (al <= 0 || al > v.len / 2 + ea + reach) return 999;
+  const lat = Math.abs(rx * d.y - ry * d.x);
+  if (lat > v.wid / 2 + el + 1) return 999;
+  return al - v.len / 2 - ea;
+}
+function updateVehicle(v, dt) {
+  const d = DIRS[v.dir], ax = d.x !== 0 ? 'x' : 'y', sg = d.x + d.y;
+  const along = v[ax], front = along + sg * v.len / 2;
+  const perp = ax === 'x' ? v.y : v.x;
+  const roadIdx = Math.round((perp - RW / 2) / BS);
+  let target = v.cruise, byLight = false;
+  // 紅綠燈
+  const k = sg > 0 ? Math.ceil((front - 1) / BS) : Math.floor((front + 1 - RW) / BS);
+  if (k >= 0 && k <= N) {
+    const off = v.type === 'scooter' ? 19 : 40;
+    const stopAt = sg > 0 ? k * BS - off : k * BS + RW + off;
+    const dd = (stopAt - front) * sg;
+    const L = ax === 'x' ? lightMap[k + ',' + roadIdx] : lightMap[roadIdx + ',' + k];
+    if (L && dd > -3 && dd < 110) {
+      const st = lightState(L, ax === 'x' ? 0 : 1);
+      if (st === 'r' || (st === 'y' && dd > 16)) { target = Math.min(target, Math.sqrt(2 * 220 * Math.max(0, dd - 1))); byLight = true; }
+    }
+  }
+  // 已經在路口裡：不理會橫向的車（避免互卡）；還沒進去：路口有橫向的車就先等
+  const lo = along - v.len / 2, hi = along + v.len / 2;
+  const inBox = lo < Math.floor(hi / BS) * BS + RW;
+  v.inBox = inBox;
+  if (!inBox && k >= 0 && k <= N) {
+    const edge = sg > 0 ? k * BS : k * BS + RW, dE = (edge - front) * sg;
+    if (dE > -2 && dE < 12) {
+      const ix = ax === 'x' ? k * BS : roadIdx * BS, iy = ax === 'x' ? roadIdx * BS : k * BS;
+      for (const o of vehicles) {
+        if (o === v || !o.on || (o.dir % 2) === (v.dir % 2)) continue;
+        if (o.x > ix - 6 && o.x < ix + RW + 6 && o.y > iy - 6 && o.y < iy + RW + 6) { target = Math.min(target, Math.max(0, dE - 1) * 3); break; }
+      }
+    }
+  }
+  // 前方障礙
+  let gap = 999, byPlayer = false, blk = null;
+  const reach = 46;
+  if (v.ghost <= 0) {
+    for (const o of vehicles) {
+      if (o === v || !o.on) continue;
+      if (Math.abs(o.x - v.x) > 130 || Math.abs(o.y - v.y) > 130) continue;
+      if (inBox && (o.dir % 2) !== (v.dir % 2)) continue;
+      const e = extentAlong(o, d);
+      const g2 = probeGap(v, d, o.x, o.y, e[0], e[1], reach);
+      if (g2 < gap) { gap = g2; blk = o; }
+    }
+  }
+  for (const p of peds) {
+    if (!p.on || p.kind === 'walk') continue;
+    if (Math.abs(p.x - v.x) > 100 || Math.abs(p.y - v.y) > 100) continue;
+    const g2 = probeGap(v, d, p.x, p.y, 6, 6, reach);
+    if (g2 < gap) { gap = g2; blk = p; }
+  }
+  if (scene === 'play') {
+    const g2 = probeGap(v, d, P.x, P.y, P.r, P.r, reach);
+    if (g2 < gap) { gap = g2; byPlayer = g2 < 30; blk = P; }
+  }
+  if (gap < 999) target = Math.min(target, Math.max(0, (gap - 5) * 2.4));
+  if (target < 4 && !byLight && v.spd < 8) {
+    v.block += dt;
+    if (byPlayer && v.block > 1.4 && v.honkT <= 0) {
+      v.honkT = 3.5;
+      const s = worldToScreen(v.x, v.y);
+      if (s.x > -40 && s.x < W + 40 && s.y > -40 && s.y < H + 40) sfx('dr_carhorn', { pan: panX(s.x), vol: 0.7, pitch: v.type === 'scooter' ? 1.5 : 1 });
+      v.wob = 0.5;
+    }
+    // 互相卡住（橫向）才穿過去；同一條車道排隊就乖乖等
+    if (v.block > 4.5 && blk && blk !== P && blk.dir != null && blk.dir !== v.dir && !blk.kind) { v.ghost = 1.6; v.block = 0; }
+  } else v.block = Math.max(0, v.block - dt * 2);
+  if (v.ghost > 0) v.ghost -= dt;
+  if (v.honkT > 0) v.honkT -= dt;
+  if (v.wob > 0) v.wob = Math.max(0, v.wob - dt);
+  v.spd += clamp(target - v.spd, -300 * dt, 90 * dt);
+  if (v.spd < 0) v.spd = 0;
+  v.x += d.x * v.spd * dt; v.y += d.y * v.spd * dt;
+  // 路口：決定轉彎
+  const c = v[ax], kc = Math.floor(c / BS);
+  if (c - kc * BS >= 0 && c - kc * BS < RW) {
+    const id = kc + ':' + roadIdx + ':' + ax;
+    if (v.turnFor !== id) {
+      v.turnFor = id;
+      const i = ax === 'x' ? kc : roadIdx, j = ax === 'x' ? roadIdx : kc;
+      const ok = dd2 => (dd2 === 0 && i < N) || (dd2 === 2 && i > 0) || (dd2 === 1 && j < N) || (dd2 === 3 && j > 0);
+      const opts = [];
+      if (ok(v.dir)) opts.push(v.dir, v.dir);
+      if (ok((v.dir + 1) % 4)) opts.push((v.dir + 1) % 4);
+      if (ok((v.dir + 3) % 4)) opts.push((v.dir + 3) % 4);
+      const nd = opts.length ? pick(opts) : (v.dir + 2) % 4;
+      if (nd !== v.dir) { v.turnDir = nd; v.turnAt = laneCoord(nd, kc * BS); }
+      else v.turnDir = null;
+    }
+  }
+  if (v.turnDir != null) {
+    if ((sg > 0 && v[ax] >= v.turnAt) || (sg < 0 && v[ax] <= v.turnAt)) {
+      v[ax] = v.turnAt; v.dir = v.turnDir; v.turnDir = null;
+      if (v.dir % 2 === (ax === 'x' ? 0 : 1)) { /* 迴轉（不會發生） */ }
+    }
+  }
+  v.ang += angDiff(v.ang, DIRANG[v.dir]) * Math.min(1, dt * 9);
+  // 離玩家太遠就搬到附近（讓路上一直有車）
+  const dp = Math.abs(v.x - P.x) + Math.abs(v.y - P.y);
+  if (dp > 1150) { v.far += dt; if (v.far > 3) placeVehicle(v, true); } else v.far = 0;
+}
+function vehicleCircles(v, out) {
+  const d = DIRS[v.dir];
+  out.length = 0;
+  if (v.type === 'scooter') { out.push([v.x, v.y, 7]); return out; }
+  const r = v.wid / 2, n = v.len > 55 ? 3 : 2, span = v.len / 2 - r;
+  for (let i = 0; i < n; i++) { const t = n === 1 ? 0 : -span + (2 * span) * i / (n - 1); out.push([v.x + d.x * t, v.y + d.y * t, r]); }
+  return out;
+}
+
+/* ---------- 行人 ---------- */
+const peds = [];
+const MAXPED = 40;
+for (let i = 0; i < MAXPED; i++) peds.push({ on: false });
+const SKIN = ['#ffd9b8', '#f2c29b', '#e0a87e', '#c98d64'];
+const CLOTH = ['#ff6b6b', '#4dabf7', '#ffd43b', '#69db7c', '#b197fc', '#ff922b', '#20c997', '#f783ac'];
+function getPed() { for (const p of peds) if (!p.on) return p; return null; }
+function initPed(p, kind) {
+  p.on = true; p.kind = kind; p.cloth = pick(CLOTH); p.hair = pick(['#3b2a20', '#1d1d1d', '#6b4a2a', '#c9c9c9']); p.skin = pick(SKIN);
+  p.t = rand(0, 10); p.scare = 0; p.hitCD = 0; p.spd = rand(20, 30); p.kid = Math.random() < 0.25; p.ang = 0;
+  return p;
+}
+function spawnWalkers() {
+  peds.forEach(p => { p.on = false; });
+  const good = blocks.filter(b => b.type === 'H' || b.type === 'M' || b.type === 'O');
+  for (let i = 0; i < 16; i++) {
+    const p = getPed(); if (!p) break;
+    initPed(p, 'walk'); p.b = pick(good); p.s = rand(0, 4 * (BLK - 14)); p.dirS = Math.random() < 0.5 ? 1 : -1; p.spd = rand(14, 22);
+  }
+  const nb = blocks.find(b => b.type === 'N');
+  const nAlley = G.day >= 4 || G.endless ? 7 : 3;
+  for (let i = 0; i < nAlley; i++) {
+    const p = getPed(); if (!p) break;
+    initPed(p, 'alley'); p.b = nb;
+    p.x = nb.x + 20 + Math.random() * (BLK - 40); p.y = nb.alleyY + 14 + Math.random() * (nb.alleyH - 28);
+    p.vx = (Math.random() < 0.5 ? -1 : 1) * rand(12, 20); p.ty = p.y; p.pause = 0;
+  }
+}
+function walkPos(p) {
+  const b = p.b, L2 = BLK - 14, per = L2 * 4;
+  let s = ((p.s % per) + per) % per;
+  const o = 7;
+  if (s < L2) return [b.x + o + s, b.y + o, 0];
+  s -= L2; if (s < L2) return [b.x + BLK - o, b.y + o + s, 1];
+  s -= L2; if (s < L2) return [b.x + BLK - o - s, b.y + BLK - o, 2];
+  s -= L2; return [b.x + o, b.y + BLK - o - s, 3];
+}
+function spawnCrossers(L, axisRed) {
+  // axisRed = 1：南北向的車紅燈 → 行人走南北兩邊的斑馬線（橫過直的路）
+  if (Math.abs(L.x - P.x) > 700 || Math.abs(L.y - P.y) > 700) return;
+  const arms = axisRed === 1 ? ['N', 'S'] : ['W', 'E'];
+  arms.forEach(arm => {
+    const n = Math.random() < 0.55 ? 1 : (Math.random() < 0.5 ? 2 : 0);
+    for (let k = 0; k < n; k++) {
+      const p = getPed(); if (!p) return;
+      initPed(p, 'cross');
+      const back = Math.random() < 0.5;
+      const jit = rand(-3, 3);
+      if (arm === 'N' || arm === 'S') {
+        const y = arm === 'N' ? L.y - 8 + jit : L.y + RW + 8 + jit;
+        p.x = back ? L.x + RW + 10 : L.x - 10; p.y = y; p.tx = back ? L.x - 10 : L.x + RW + 10; p.ty = y;
+      } else {
+        const x = arm === 'W' ? L.x - 8 + jit : L.x + RW + 8 + jit;
+        p.y = back ? L.y + RW + 10 : L.y - 10; p.x = x; p.ty = back ? L.y - 10 : L.y + RW + 10; p.tx = x;
+      }
+      p.delay = rand(0.4, 1.8) + k * 0.7;
+      p.spd = rand(24, 30);
+    }
+  });
+}
+function updatePeds(dt) {
+  for (const p of peds) {
+    if (!p.on) continue;
+    p.t += dt;
+    if (p.scare > 0) p.scare -= dt;
+    if (p.hitCD > 0) p.hitCD -= dt;
+    if (p.kind === 'walk') {
+      p.s += p.dirS * p.spd * dt;
+      const w = walkPos(p); p.x = w[0]; p.y = w[1]; p.ang = DIRANG[(w[2] + (p.dirS < 0 ? 2 : 0)) % 4];
+    } else if (p.kind === 'cross') {
+      if (p.delay > 0) { p.delay -= dt; p.t = 0; continue; }
+      const dx = p.tx - p.x, dy = p.ty - p.y, dd = Math.hypot(dx, dy);
+      if (dd < 2) { p.on = false; continue; }
+      const sp = p.scare > 0 ? 0 : p.spd;
+      p.x += dx / dd * sp * dt; p.y += dy / dd * sp * dt; p.ang = Math.atan2(dy, dx);
+    } else if (p.kind === 'alley') {
+      const b = p.b;
+      if (p.pause > 0) { p.pause -= dt; continue; }
+      if (p.scare <= 0) p.x += p.vx * dt;
+      if (Math.random() < dt * 0.15) p.pause = rand(0.8, 2.5);
+      if (p.x < b.x + 10) { p.x = b.x + 10; p.vx = Math.abs(p.vx); }
+      if (p.x > b.x + BLK - 10) { p.x = b.x + BLK - 10; p.vx = -Math.abs(p.vx); }
+      p.y = lerp(p.y, p.ty, dt);
+      if (Math.random() < dt * 0.2) p.ty = b.alleyY + 12 + Math.random() * (b.alleyH - 24);
+      p.ang = p.vx > 0 ? 0 : Math.PI;
+    }
+  }
+}
+
+/* =====================================================================
+ * 訂單
+ * ===================================================================== */
+function shopsToday() { return SHOPS.filter(s => G.endless || s.day <= G.day); }
+function manhattan(a, b) { return Math.abs(a.x - b.x) + Math.abs(a.y - b.y); }
+function makeOrder() {
+  const cfg = dayCfg(G.day);
+  const shops = shopsToday();
+  const busy = new Set(G.orders.map(o => o.dest));
+  let best = null;
+  for (let tries = 0; tries < 30; tries++) {
+    const s = pick(shops);
+    const d0 = manhattan(P, s.zone);
+    if (d0 < 160 && tries < 20) continue;
+    if (d0 > 1700 && tries < 25) continue;
+    const pool = dests.filter(d => !busy.has(d) && manhattan(d.zone, s.zone) > 380 && manhattan(d.zone, s.zone) < 1500);
+    if (!pool.length) continue;
+    // 特別地點出現機率高一點
+    const sp = pool.filter(d => d.kind !== 'house');
+    const d = sp.length && Math.random() < 0.3 ? pick(sp) : pick(pool);
+    best = { s, d };
+    break;
+  }
+  if (!best) return null;
+  const items = best.s.items;
+  const it = pick(items);
+  const hot = !!(it.hot && cfg.hot), fr = !!(it.fr && cfg.fr);
+  const est = manhattan(P, best.s.zone) + manhattan(best.s.zone, best.d.zone);
+  const ms = maxSpd();
+  const o = {
+    id: ++G.orderSeq, shop: best.s, dest: best.d, item: it, hot, fr, state: 'pick',
+    est, par: est / (ms * 0.62) + 8, born: G.t, hits: 0, cold: false, warned: false, prog: 0, appear: 0,
+    tMax: 0, tLeft: 0, col: '#888', slot: 0
+  };
+  if (hot) { o.tMax = clamp(est / (ms * 0.5) + 22, 32, 85) * (prog.up.bag ? 1.35 : 1); o.tLeft = o.tMax; }
+  const used = G.orders.map(q => q.slot);
+  for (let i = 0; i < 3; i++) if (used.indexOf(i) < 0) { o.slot = i; break; }
+  o.col = ORDER_COLS[o.slot];
+  return o;
+}
+function focusOrder() {
+  let o = G.orders.find(q => q.id === G.focusId);
+  if (o) return o;
+  // 自動：快冷掉的熱食優先，再來是已經取餐的，最後是最早的
+  let best = null, bs = Infinity;
+  for (const q of G.orders) {
+    let s = q.born;
+    if (q.hot && !q.cold) s -= 200 - q.tLeft;
+    if (q.state === 'carry') s -= 60;
+    s += manhattan(P, q.state === 'pick' ? q.shop.zone : q.dest.zone) / 40;
+    if (s < bs) { bs = s; best = q; }
+  }
+  return best;
+}
+function targetOf(o) { return o.state === 'pick' ? o.shop.zone : o.dest.zone; }
+function updateOrders(dt) {
+  // 新訂單
+  if (G.sub === 'run') {
+    G.nextOrderT -= dt;
+    if (G.nextOrderT <= 0 && G.orders.length < capacity()) {
+      const o = makeOrder();
+      if (o) {
+        G.orders.push(o);
+        sfx('dr_order', { exact: true });
+        after(0.12, () => sfx('dr_slide'));
+        KG.vibrate(20);
+        label('新訂單！' + o.shop.name, '#ffe066');
+      }
+      const c = dayCfg(G.day);
+      G.nextOrderT = rand(c.gap[0], c.gap[1]);
+    }
+  }
+  const ms = maxSpd();
+  for (let i = G.orders.length - 1; i >= 0; i--) {
+    const o = G.orders[i];
+    o.appear = Math.min(1, o.appear + dt * 3);
+    if (o.hot && !o.cold && G.sub === 'run') {
+      o.tLeft -= dt;
+      if (o.tLeft < 9 && !o.warned) { o.warned = true; sfx('dr_hurry'); label(o.item.n + '快冷掉了！', '#ffb3a7'); }
+      if (o.tLeft <= 0) { o.tLeft = 0; o.cold = true; sfx('dr_cold'); label(o.item.n + '冷掉了…', '#a5d8ff'); }
+    }
+    // 到點：慢下來就會完成
+    const z = targetOf(o);
+    const near = dist(P.x, P.y, z.x, z.y) < 44;
+    if (near && G.sub === 'run' && P.spd < ms * 0.55) {
+      o.prog += dt / 0.4;
+      if (o.prog >= 1) { o.prog = 0; if (o.state === 'pick') pickup(o); else { deliver(o); G.orders.splice(i, 1); } }
+    } else o.prog = Math.max(0, o.prog - dt * 2);
+    o.near = near;
+  }
+}
+function pickup(o) {
+  o.state = 'carry';
+  sfx('dr_bag', { exact: true });
+  const s = worldToScreen(o.shop.zone.x, o.shop.zone.y);
+  burst(o.shop.zone.x, o.shop.zone.y, 10, { col: ['#ffe066', '#fff', o.col], min: 40, max: 120, s0: 2, s1: 4 });
+  label('取餐：' + o.item.n, '#fff');
+  if (o.hot && !o.cold) after(0.5, () => label('熱騰騰，快送去！', '#ffc078'));
+  KG.vibrate(15);
+}
+function deliver(o) {
+  const el = G.t - o.born;
+  const base = 20 + Math.round(o.est / 50);
+  let tip = 12;
+  if (o.fr) tip = Math.round(tip * Math.max(0, 1 - 0.34 * o.hits));
+  if (o.hot) tip += o.cold ? 0 : 8;
+  const quick = el <= o.par;
+  if (quick) tip += 8;
+  let stars = 5 - (o.hits >= 1 ? 1 : 0) - (o.hits >= 3 ? 1 : 0) - (o.cold ? 1 : 0) - (el > o.par * 1.7 ? 1 : 0);
+  stars = clamp(stars, 1, 5);
+  const total = base + tip;
+  G.money += total;
+  G.stats.delivered++; G.stats.stars += stars; G.stats.tips += tip;
+  if (G.endless) G.clock = Math.min(G.clock + 14, 240);
+  sfx('dr_doorbell', { exact: true });
+  after(0.55, () => sfx('dr_thanks'));
+  for (let i = 0; i < 5; i++) after(0.75 + i * 0.07, () => sfx('dr_coin', { pitch: 1 + i * 0.06, exact: true }));
+  for (let i = 0; i < stars; i++) after(0.35 + i * 0.09, () => sfx('dr_star', { pitch: 1 + i * 0.07, exact: true }));
+  const s = worldToScreen(o.dest.zone.x, o.dest.zone.y);
+  for (let i = 0; i < 8; i++) {
+    spawnPart({ x: s.x, y: s.y, vx: rand(-160, 160), vy: rand(-220, -60), max: 0.9 + i * 0.04, size: 7, col: '#ffd43b', kind: 'coin', screen: true, tx: LAY.hud.mx, ty: LAY.hud.my });
+  }
+  burst(o.dest.zone.x, o.dest.zone.y, 14, { col: ['#ffe066', '#ff8fb1', '#8ce99a', '#74c0fc'], min: 60, max: 160, s0: 2, s1: 5, kind: 'star' });
+  label('謝謝！+$' + total, '#ffe066', { stars, life: 1.8 });
+  if (quick) after(0.25, () => label('超快送達！', '#8ce99a'));
+  if (G.focusId === o.id) G.focusId = -1;
+  G.nextOrderT = Math.min(G.nextOrderT, rand(1.2, 2.4));
+  KG.vibrate([20, 40, 20]);
+}
+
+/* ---------- 延遲呼叫 ---------- */
+const timers = [];
+function after(sec, fn) { timers.push({ t: sec, fn }); }
+function updateTimers(dt) {
+  for (let i = timers.length - 1; i >= 0; i--) { const tm = timers[i]; tm.t -= dt; if (tm.t <= 0) { timers.splice(i, 1); tm.fn(); } }
+}
+let shakeT = 0, shakeAmt = 0;
+function shake(a, d) { shakeAmt = Math.max(shakeT > 0 ? shakeAmt : 0, a); shakeT = Math.max(shakeT, d || 0.25); }
+
+/* =====================================================================
+ * 玩家移動與碰撞
+ * ===================================================================== */
+function bump(nx, ny, impact, what) {
+  if (P.bumpCD > 0) return;
+  P.bumpCD = 0.45;
+  P.wob = 1;
+  G.stats.bumps++;
+  const s = worldToScreen(P.x, P.y);
+  sfx('dr_bump', { pan: panX(s.x), vol: clamp(impact / 120, 0.4, 1) });
+  shake(clamp(impact / 30, 2, 6), 0.25);
+  KG.vibrate(35);
+  burst(P.x - nx * 8, P.y - ny * 8, 6, { col: ['#e9ecef', '#ced4da'], min: 20, max: 70, s0: 3, s1: 6, life: 0.5 });
+  // 易灑的東西
+  let spilled = false;
+  G.orders.forEach(o => {
+    if (o.state !== 'carry' || !o.fr || o.hits >= 3) return;
+    o.hits++; spilled = true;
+    const it = ITEMS[o.item.k] || ITEMS.cup;
+    burst(P.x, P.y, 9, { col: [it.sp, shade(it.sp, 30)], min: 50, max: 140, s0: 2, s1: 4, life: 0.6, kind: 'drop' });
+  });
+  if (spilled) {
+    G.stats.spills++;
+    after(0.06, () => sfx('dr_spill', { pan: panX(s.x) }));
+    label('哎呀，灑出來了！', '#a5d8ff');
+  } else if (what === 'car') label('小心車子！', '#ffc9c9');
+  else if (what !== 'ped') label('咚！', '#e9ecef', { life: 0.8 });
+}
+function collideRect(r) {
+  const cx = clamp(P.x, r.x, r.x + r.w), cy = clamp(P.y, r.y, r.y + r.h);
+  let dx = P.x - cx, dy = P.y - cy, d2 = dx * dx + dy * dy;
+  if (d2 >= P.r * P.r) return;
+  let nx, ny, pen;
+  if (d2 > 1e-6) { const d = Math.sqrt(d2); nx = dx / d; ny = dy / d; pen = P.r - d; }
+  else {
+    const l = P.x - r.x, rt = r.x + r.w - P.x, t = P.y - r.y, bt = r.y + r.h - P.y, m = Math.min(l, rt, t, bt);
+    if (m === l) { nx = -1; ny = 0; pen = l + P.r; } else if (m === rt) { nx = 1; ny = 0; pen = rt + P.r; } else if (m === t) { nx = 0; ny = -1; pen = t + P.r; } else { nx = 0; ny = 1; pen = bt + P.r; }
+  }
+  hitNormal(nx, ny, pen, 'wall');
+}
+function hitNormal(nx, ny, pen, what) {
+  P.x += nx * pen; P.y += ny * pen;
+  const vx = Math.cos(P.ang) * P.spd + P.kx, vy = Math.sin(P.ang) * P.spd + P.ky;
+  const vn = vx * nx + vy * ny;
+  if (vn < 0) {
+    const impact = -vn;
+    // 沿牆滑：保留切線速度
+    const tx = vx - vn * nx, ty = vy - vn * ny;
+    const tl = Math.hypot(tx, ty);
+    P.spd = Math.min(P.spd, tl * 0.75 + 4);
+    P.kx += nx * impact * 0.45; P.ky += ny * impact * 0.45;
+    if (impact > 45) bump(nx, ny, impact, what);
+  }
+}
+const _circ = [];
+function updatePlayer(dt) {
+  const ms = maxSpd();
+  P.px = P.x; P.py = P.y;
+  const run = G.sub === 'run';
+  let ix = run ? input.x : 0, iy = run ? input.y : 0;
+  const mag = Math.min(1, Math.hypot(ix, iy));
+  let target = 0;
+  const brake = run && input.brake;
+  if (mag > 0.12) {
+    const ta = Math.atan2(iy, ix);
+    const df = angDiff(P.ang, ta);
+    const tr = (3.4 + 2.6 * (1 - P.spd / ms)) * dt;
+    P.ang += clamp(df, -tr, tr);
+    P.lean = lerp(P.lean, clamp(df, -0.6, 0.6), Math.min(1, dt * 8));
+    target = ms * mag * (Math.abs(df) > 1.7 ? 0.25 : 1 - Math.abs(df) * 0.25);
+  } else P.lean = lerp(P.lean, 0, Math.min(1, dt * 6));
+  // 慢行區（夜市、廟埕）
+  P.slow = 1;
+  for (const z of slowZones) if (P.x > z.x && P.x < z.x + z.w && P.y > z.y && P.y < z.y + z.h) P.slow = Math.min(P.slow, z.cap);
+  target = Math.min(target, ms * P.slow);
+  const acc = 150 + prog.up.speed * 20;
+  if (brake) {
+    if (!P.brake && P.spd > ms * 0.45) { const s = worldToScreen(P.x, P.y); sfx('dr_brake', { pan: panX(s.x) }); for (let i = 0; i < 4; i++) spawnPart({ x: P.x - Math.cos(P.ang) * 10, y: P.y - Math.sin(P.ang) * 10, vx: rand(-20, 20), vy: rand(-20, 20), max: 0.5, size: rand(3, 6), col: '#dee2e6', kind: 'puff' }); }
+    P.spd = Math.max(0, P.spd - 460 * dt);
+  } else if (P.spd < target) P.spd = Math.min(target, P.spd + acc * dt);
+  else P.spd = Math.max(target, P.spd - (mag > 0.12 ? 260 : 170) * dt);
+  P.brake = brake;
+  const kf = Math.exp(-6 * dt); P.kx *= kf; P.ky *= kf;
+  const steps = 2;
+  for (let s = 0; s < steps; s++) {
+    P.x += (Math.cos(P.ang) * P.spd + P.kx) * dt / steps;
+    P.y += (Math.sin(P.ang) * P.spd + P.ky) * dt / steps;
+    for (const r of solids) {
+      if (P.x + P.r < r.x || P.x - P.r > r.x + r.w || P.y + P.r < r.y || P.y - P.r > r.y + r.h) continue;
+      collideRect(r);
+    }
+    // 世界邊界
+    if (P.x < P.r) hitNormal(1, 0, P.r - P.x, 'wall');
+    if (P.y < P.r) hitNormal(0, 1, P.r - P.y, 'wall');
+    if (P.x > WORLD - P.r) hitNormal(-1, 0, P.x - (WORLD - P.r), 'wall');
+    if (P.y > WORLD - P.r) hitNormal(0, -1, P.y - (WORLD - P.r), 'wall');
+    // 車子
+    for (const v of vehicles) {
+      if (!v.on || Math.abs(v.x - P.x) > 50 || Math.abs(v.y - P.y) > 50) continue;
+      for (const c of vehicleCircles(v, _circ)) {
+        const dx = P.x - c[0], dy = P.y - c[1], d = Math.hypot(dx, dy), rr2 = P.r + c[2];
+        if (d < rr2 && d > 0.01) { hitNormal(dx / d, dy / d, rr2 - d, 'car'); v.wob = 0.6; }
+      }
+    }
+  }
+  // 行人（斑馬線、夜市）
+  for (const p of peds) {
+    if (!p.on || p.kind === 'walk' || (p.kind === 'cross' && p.delay > 0)) continue;
+    const dx = P.x - p.x, dy = P.y - p.y, d = Math.hypot(dx, dy);
+    if (d < P.r + 6 && d > 0.01) {
+      const spd0 = P.spd;
+      hitNormal(dx / d, dy / d, P.r + 6 - d, 'ped');
+      P.spd = Math.min(P.spd, 20);
+      if (p.hitCD <= 0 && spd0 > 25) {
+        p.hitCD = 2; p.scare = 1.2;
+        sfx('dr_ped', { pan: panX(worldToScreen(p.x, p.y).x) });
+        G.stats.ped++;
+        G.money = Math.max(0, G.money - 5);
+        label('要禮讓行人喔 −$5', '#ffc9c9');
+      }
+    }
+  }
+  if (P.bumpCD > 0) P.bumpCD -= dt;
+  if (P.wob > 0) P.wob = Math.max(0, P.wob - dt * 1.6);
+  // 灰塵
+  P.dustT -= dt;
+  if (P.spd > ms * 0.6 && P.dustT <= 0) {
+    P.dustT = 0.09;
+    spawnPart({ x: P.x - Math.cos(P.ang) * 13, y: P.y - Math.sin(P.ang) * 13, vx: -Math.cos(P.ang) * 20 + rand(-10, 10), vy: -Math.sin(P.ang) * 20 + rand(-10, 10), max: 0.45, size: rand(2.5, 4.5), col: 'rgba(230,230,230,0.8)', kind: 'puff' });
+  }
+  if (P.horn > 0) P.horn -= dt;
+  checkLights(dt);
+}
+function checkLights(dt) {
+  if (G.sub !== 'run') return;
+  let inL = null;
+  for (const L of lights) if (P.x > L.x && P.x < L.x + RW && P.y > L.y && P.y < L.y + RW) { inL = L; break; }
+  if (inL && inL !== P.inL) {
+    let axis = -1;
+    if (P.px <= inL.x || P.px >= inL.x + RW) axis = 0;
+    else if (P.py <= inL.y || P.py >= inL.y + RW) axis = 1;
+    if (axis >= 0 && lightState(inL, axis) === 'r') {
+      G.stats.red++;
+      G.money = Math.max(0, G.money - 10);
+      sfx('dr_red', { exact: true });
+      showBanner('闖紅燈了！紅燈要停下來喔', '#ff6b6b');
+      label('闖紅燈 −$10', '#ff8787');
+      KG.vibrate([60, 40, 60]);
+      shake(3, 0.3);
+    }
+  }
+  P.inL = inL;
+  // 乖乖等紅燈
+  let waitL = null, wAxis = -1;
+  for (const L of lights) {
+    if (P.y > L.y && P.y < L.y + RW && ((P.x > L.x - 80 && P.x < L.x) || (P.x > L.x + RW && P.x < L.x + RW + 80))) { waitL = L; wAxis = 0; break; }
+    if (P.x > L.x && P.x < L.x + RW && ((P.y > L.y - 80 && P.y < L.y) || (P.y > L.y + RW && P.y < L.y + RW + 80))) { waitL = L; wAxis = 1; break; }
+  }
+  if (waitL && lightState(waitL, wAxis) === 'r' && P.spd < 12) {
+    P.waitRed += dt;
+    const cyc = Math.floor((lightClock + waitL.off) / LC);
+    if (P.waitRed > 0.9 && waitL.reward !== cyc) {
+      waitL.reward = cyc;
+      G.stats.good++;
+      G.money += 2;
+      sfx('dr_good', { exact: true });
+      label('乖乖等紅燈 +$2', '#8ce99a');
+    }
+  } else P.waitRed = 0;
+}
+
+/* =====================================================================
+ * 一天的開始與結束
+ * ===================================================================== */
+function startDay(day, endless) {
+  sfx('select');
+  scene = 'play'; sceneT = 0; paused = false;
+  G.day = day; G.endless = !!endless;
+  G.sub = 'count'; G.countT = 0; G.clock = endless ? 100 : DAY_LEN; G.t = 0;
+  G.money = 0; G.orders = []; G.nextOrderT = 0.8; G.orderSeq = 0; G.focusId = -1;
+  G.stats = newStats(); G.rush = false; G.sprint = false; G.endT = 0; G.result = null; G.countStep = -1;
+  timers.length = 0; labels.length = 0; banner = null;
+  parts.forEach(p => { p.on = false; });
+  lightClock = rand(0, LC);
+  lights.forEach(L => { L.prev = [lightState(L, 0), lightState(L, 1)]; L.reward = -1; });
+  // 從外送站（月亮路、芒果街口附近）出發
+  P.x = 3 * BS + 72; P.y = 3 * BS + RW + 190; P.ang = -Math.PI / 2; P.spd = 0; P.kx = P.ky = 0; P.wob = 0; P.inL = null; P.waitRed = 0; P.brake = false;
+  input.x = input.y = 0; input.brake = false;
+  spawnWalkers();
+  spawnTraffic();
+  G.sub = 'intro';
+  playSong(SONG_TITLE);
+  if (M) { M.setLayer('rush', false); M.setTempo(1); }
+  rushOn = false;
+  updateCam(0, true);
+  if (!G.endless) { prog.next = day; saveProg(); }
+}
+function endDay() {
+  G.sub = 'end'; G.endT = 0;
+  sfx('dr_horn', { exact: true });
+  J.end();
+  showBanner(G.endless ? '時間到！' : '下班囉！', '#ffd43b', 1.6);
+  engineOff();
+}
+function finishDay() {
+  const st = G.stats;
+  if (!G.endless && st.red === 0) { st.bonus = 20; G.money += 20; }
+  const money = G.money;
+  let stars = 0, pass = true, target = 0;
+  if (G.endless) {
+    stars = money >= 700 ? 3 : money >= 450 ? 2 : money >= 200 ? 1 : 0;
+  } else {
+    target = TARGET[G.day - 1];
+    pass = money >= target;
+    stars = !pass ? 0 : (money >= target * 1.5 && st.red === 0) ? 3 : money >= target * 1.25 ? 2 : 1;
+  }
+  const key = G.endless ? 'endless' : 'day';
+  const prevBest = KG.best(SLUG + ':' + key);
+  const best = KG.best(SLUG + ':' + key, money);
+  const isNew = money > 0 && (prevBest == null || money > prevBest);
+  prog.wallet += money;
+  if (!G.endless && pass) {
+    prog.stars[G.day - 1] = Math.max(prog.stars[G.day - 1] || 0, stars);
+    if (G.day >= prog.unlocked && G.day < DAYS) prog.unlocked = G.day + 1;
+    if (G.day === DAYS) prog.unlocked = DAYS + 1;
+    prog.next = Math.min(DAYS, G.day + 1);
+  }
+  saveProg();
+  G.result = { money, target, pass, stars, best, isNew, avg: st.delivered ? st.stars / st.delivered : 0, t: 0, shown: 0 };
+  G.sub = 'result';
+  if (M) { M.stop(0.3); }
+  if (pass) { J.win(); after(0.5, () => KG.confetti(W / 2, H * 0.3, KG.lowEnd ? 60 : 110)); }
+  else J.fail();
+  after(3.2, () => { if (scene === 'play' && G.sub === 'result') playSong(SONG_GARAGE); });
+}
+
+/* =====================================================================
+ * 鏡頭與座標
+ * ===================================================================== */
+const cam = { x: 3 * BS, y: 3 * BS };
+let zoom = 1, ox = 0, oy = 0, shx = 0, shy = 0;
+function worldToScreen(x, y) { return { x: (ox + x * sc) / dpr, y: (oy + y * sc) / dpr }; }
+function updateCam(dt, snap) {
+  const vw = W / zoom, vh = H / zoom;
+  const lk = 0.32;
+  let tx = P.x + Math.cos(P.ang) * P.spd * lk, ty = P.y + Math.sin(P.ang) * P.spd * lk - vh * 0.05;
+  const k = snap ? 1 : 1 - Math.exp(-4 * dt);
+  cam.x = lerp(cam.x, tx, k); cam.y = lerp(cam.y, ty, k);
+  const m = 90;
+  if (WORLD + m * 2 > vw) cam.x = clamp(cam.x, vw / 2 - m, WORLD + m - vw / 2); else cam.x = WORLD / 2;
+  if (WORLD + m * 2 > vh) cam.y = clamp(cam.y, vh / 2 - m, WORLD + m - vh / 2); else cam.y = WORLD / 2;
+}
+function setWorldXform() {
+  ox = Math.round((W / 2 + shx) * dpr - cam.x * sc);
+  oy = Math.round((H / 2 + shy) * dpr - cam.y * sc);
+  ctx.setTransform(sc, 0, 0, sc, ox, oy);
+}
+
+/* ---------- 光暈小圖（不用 shadowBlur）---------- */
+const GLOW = {};
+function glowSprite(col) {
+  if (GLOW[col]) return GLOW[col];
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d'), gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  gr.addColorStop(0, rgba(col, 0.75)); gr.addColorStop(0.4, rgba(col, 0.3)); gr.addColorStop(1, rgba(col, 0));
+  g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+  GLOW[col] = c; return c;
+}
+const LCOL = { r: '#ff4d4d', y: '#ffc933', g: '#3ee07a' };
+
+/* ---------- 畫世界上的東西 ---------- */
+function drawCar(v) {
+  const g = ctx, l = v.len, w = v.wid;
+  g.save(); g.translate(v.x, v.y); g.rotate(v.ang + (v.wob > 0 ? Math.sin(time * 40) * v.wob * 0.06 : 0));
+  g.fillStyle = 'rgba(20,20,30,0.25)'; rrp(g, -l / 2 + 3, -w / 2 + 3, l, w, 6); g.fill();
+  if (v.type === 'scooter') {
+    g.fillStyle = '#333'; g.fillRect(-11, -1.5, 22, 3);
+    g.fillStyle = v.col; rrp(g, -8, -4.5, 16, 9, 4); g.fill();
+    g.fillStyle = '#2b2b2b'; g.fillRect(5, -5.5, 2, 11);
+    g.fillStyle = shade(v.col, -40); g.beginPath(); g.ellipse(-1, 0, 4, 6, 0, 0, TAU); g.fill();
+    g.fillStyle = v.helmet; g.beginPath(); g.arc(0, 0, 4.2, 0, TAU); g.fill();
+    g.fillStyle = 'rgba(40,60,90,0.8)'; g.fillRect(2, -2.5, 2, 5);
+    g.restore(); return;
+  }
+  const c = v.col;
+  g.fillStyle = shade(c, -45); rrp(g, -l / 2, -w / 2, l, w, 6); g.fill();
+  g.fillStyle = c; rrp(g, -l / 2 + 1.5, -w / 2 + 1.5, l - 3, w - 3, 5); g.fill();
+  if (v.type === 'bus') {
+    g.fillStyle = '#e9f7ff'; g.fillRect(-l / 2 + 6, -w / 2 + 3, l - 14, w - 6);
+    g.fillStyle = c; g.fillRect(-l / 2 + 8, -w / 2 + 5, l - 18, w - 10);
+    g.fillStyle = '#d0d7de'; g.fillRect(-6, -5, 14, 10);
+    g.fillStyle = '#26323f'; g.fillRect(l / 2 - 8, -w / 2 + 3, 5, w - 6);
+  } else if (v.type === 'van') {
+    g.fillStyle = '#26323f'; g.fillRect(l / 2 - 15, -w / 2 + 3, 7, w - 6);
+    g.fillStyle = shade(c, 25); g.fillRect(-l / 2 + 4, -w / 2 + 3, l - 22, w - 6);
+    g.strokeStyle = shade(c, -20); g.lineWidth = 1; for (let i = -l / 2 + 9; i < l / 2 - 20; i += 6) { g.beginPath(); g.moveTo(i, -w / 2 + 3); g.lineTo(i, w / 2 - 3); g.stroke(); }
+  } else {
+    // 擋風玻璃、車頂、後窗
+    g.fillStyle = '#2c3a4a';
+    g.beginPath(); g.moveTo(l * 0.28, -w / 2 + 3); g.lineTo(l * 0.12, -w / 2 + 4); g.lineTo(l * 0.12, w / 2 - 4); g.lineTo(l * 0.28, w / 2 - 3); g.closePath(); g.fill();
+    g.fillRect(-l * 0.36, -w / 2 + 4, l * 0.1, w - 8);
+    g.fillStyle = shade(c, 22); rrp(g, -l * 0.25, -w / 2 + 3.5, l * 0.36, w - 7, 3); g.fill();
+    g.fillStyle = 'rgba(255,255,255,0.35)'; g.fillRect(l * 0.15, -w / 2 + 5, 2, w * 0.25);
+    if (v.type === 'taxi') { g.fillStyle = '#fff'; rrp(g, -6, -3.5, 10, 7, 2); g.fill(); g.fillStyle = '#e03131'; g.fillRect(-4, -1, 6, 2); }
+  }
+  // 車燈
+  g.fillStyle = '#fff6c2'; g.fillRect(l / 2 - 2.5, -w / 2 + 2, 2, 4); g.fillRect(l / 2 - 2.5, w / 2 - 6, 2, 4);
+  g.fillStyle = '#ff4d4d'; g.fillRect(-l / 2 + 0.5, -w / 2 + 2, 2, 4); g.fillRect(-l / 2 + 0.5, w / 2 - 6, 2, 4);
+  if (v.spd < 15) { g.globalAlpha = 0.5; g.drawImage(glowSprite('#ff4d4d'), -l / 2 - 8, -w / 2 - 6, 16, 16); g.drawImage(glowSprite('#ff4d4d'), -l / 2 - 8, w / 2 - 10, 16, 16); g.globalAlpha = 1; }
+  g.restore();
+}
+function drawPlayer() {
+  const g = ctx;
+  const big = prog.up.box ? 1.18 : 1;
+  g.save(); g.translate(P.x, P.y);
+  g.rotate(P.ang + (P.wob > 0 ? Math.sin(time * 34) * P.wob * 0.28 : 0));
+  // 車頭燈
+  g.globalAlpha = 0.18; g.fillStyle = '#fff7c7';
+  g.beginPath(); g.moveTo(12, -3); g.lineTo(56, -18); g.lineTo(56, 18); g.lineTo(12, 3); g.closePath(); g.fill(); g.globalAlpha = 1;
+  g.fillStyle = 'rgba(20,20,30,0.28)'; rrp(g, -14, -6, 30, 14, 6); g.fill();
+  const ls = 1 - Math.abs(P.lean) * 0.12;
+  g.scale(1, ls);
+  // 輪胎、車身
+  g.fillStyle = '#2b2b2b'; rrp(g, -15, -2, 7, 4, 2); g.fill(); rrp(g, 10, -2, 7, 4, 2); g.fill();
+  g.fillStyle = '#4dc4b0'; rrp(g, -12, -5.5, 25, 11, 5); g.fill();
+  g.fillStyle = '#7fe0cf'; rrp(g, 3, -4, 9, 8, 3); g.fill();
+  // 把手
+  g.fillStyle = '#333'; rrp(g, 8, -8.5, 2.5, 17, 1.2); g.fill();
+  g.fillStyle = '#555'; g.fillRect(8, -9.5, 3, 3); g.fillRect(8, 6.5, 3, 3);
+  // 外送箱
+  const bs = 12 * big;
+  g.fillStyle = shade('#ff7a45', -40); rrp(g, -15 - bs / 2 - 1, -bs / 2 - 1, bs + 2, bs + 2, 3); g.fill();
+  g.fillStyle = '#ff7a45'; rrp(g, -15 - bs / 2, -bs / 2, bs, bs, 2.5); g.fill();
+  g.fillStyle = '#fff'; g.fillRect(-15 - bs / 2 + 2, -1.2, bs - 4, 2.4);
+  if (prog.up.bag) { g.strokeStyle = '#d0d7de'; g.lineWidth = 1.2; rrp(g, -15 - bs / 2 + 1.5, -bs / 2 + 1.5, bs - 3, bs - 3, 2); g.stroke(); }
+  // 騎士：肩膀、手、安全帽
+  g.fillStyle = '#3d8bfd'; g.beginPath(); g.ellipse(-2, 0, 5, 7.5, 0, 0, TAU); g.fill();
+  g.strokeStyle = '#ffd9b8'; g.lineWidth = 2.4; g.lineCap = 'round';
+  g.beginPath(); g.moveTo(0, -5); g.lineTo(8, -7); g.moveTo(0, 5); g.lineTo(8, 7); g.stroke();
+  g.fillStyle = '#ffd43b'; g.beginPath(); g.arc(-1, 0, 5.4, 0, TAU); g.fill();
+  g.strokeStyle = '#e8a400'; g.lineWidth = 1; g.stroke();
+  g.fillStyle = '#ff7a45'; g.fillRect(-5.5, -1, 8, 2);
+  g.fillStyle = 'rgba(40,60,100,0.85)'; g.beginPath(); g.arc(-1, 0, 5.4, -0.9, 0.9); g.lineTo(-1, 0); g.closePath(); g.fill();
+  g.fillStyle = 'rgba(255,255,255,0.6)'; g.beginPath(); g.arc(-3, -2, 1.6, 0, TAU); g.fill();
+  g.restore();
+  // 喇叭聲紋
+  if (P.horn > 0) {
+    const a = P.horn / 0.4;
+    g.strokeStyle = 'rgba(255,255,255,' + (a * 0.8) + ')'; g.lineWidth = 2;
+    for (let i = 0; i < 2; i++) { g.beginPath(); g.arc(P.x, P.y, 16 + i * 7 + (1 - a) * 10, P.ang - 0.5, P.ang + 0.5); g.stroke(); }
+  }
+}
+function drawPed(p) {
+  const g = ctx;
+  if (p.kind === 'cross' && p.delay > 0) {
+    // 在路邊等
+  }
+  const s = p.kid ? 0.78 : 1;
+  const sw = Math.sin(p.t * 9) * 2.4 * (p.kind === 'alley' && p.pause > 0 ? 0 : 1);
+  g.save(); g.translate(p.x, p.y); g.rotate(p.ang); g.scale(s, s);
+  g.fillStyle = 'rgba(20,20,30,0.22)'; g.beginPath(); g.ellipse(1.5, 1.5, 4, 6, 0, 0, TAU); g.fill();
+  g.fillStyle = p.skin; g.beginPath(); g.arc(sw, -5, 1.6, 0, TAU); g.arc(-sw, 5, 1.6, 0, TAU); g.fill();
+  g.fillStyle = p.cloth; g.beginPath(); g.ellipse(0, 0, 3.2, 5.2, 0, 0, TAU); g.fill();
+  g.fillStyle = p.hair; g.beginPath(); g.arc(0.3, 0, 3.1, 0, TAU); g.fill();
+  g.restore();
+  if (p.scare > 0) {
+    g.fillStyle = '#ff6b6b'; gFont(g, 12); g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText('!', p.x, p.y - 12 - Math.sin(p.scare * 10) * 2);
+  }
+}
+const LIGHT_HEADS = [[-7, RW + 7, 0], [RW + 7, -7, 0], [-7, -7, 1], [RW + 7, RW + 7, 1]];
+function drawLights(x0, y0, x1, y1) {
+  const g = ctx;
+  for (const L of lights) {
+    if (L.x + RW + 30 < x0 || L.x - 30 > x1 || L.y + RW + 30 < y0 || L.y - 30 > y1) continue;
+    const near = Math.abs(L.x + RW / 2 - P.x) < 260 && Math.abs(L.y + RW / 2 - P.y) < 260;
+    for (const h of LIGHT_HEADS) {
+      const hx = L.x + h[0], hy = L.y + h[1], st = lightState(L, h[2]);
+      g.fillStyle = '#6c737c'; g.beginPath(); g.arc(hx, hy, 2.6, 0, TAU); g.fill();
+      const vert = h[2] === 0;
+      const bw = vert ? 8 : 20, bh = vert ? 20 : 8;
+      g.fillStyle = '#222831'; rrp(g, hx - bw / 2, hy - bh / 2, bw, bh, 3); g.fill();
+      const order = ['r', 'y', 'g'];
+      for (let i = 0; i < 3; i++) {
+        const lx = vert ? hx : hx - 6 + i * 6, ly = vert ? hy - 6 + i * 6 : hy;
+        const on = order[i] === st;
+        g.fillStyle = on ? LCOL[st] : '#3a414b';
+        g.beginPath(); g.arc(lx, ly, 2.3, 0, TAU); g.fill();
+        if (on) g.drawImage(glowSprite(LCOL[st]), lx - 9, ly - 9, 18, 18);
+      }
+      if (near) {
+        const left = Math.ceil(lightLeft(L, h[2]));
+        g.fillStyle = 'rgba(20,24,30,0.85)'; rrp(g, hx - 8, hy + (vert ? 12 : 6), 16, 11, 3); g.fill();
+        gFont(g, 9); g.fillStyle = LCOL[st]; g.textAlign = 'center'; g.textBaseline = 'middle';
+        g.fillText(String(left), hx, hy + (vert ? 17.5 : 11.5));
+      }
+    }
+  }
+}
+function drawZone(o, z) {
+  const g = ctx;
+  const pulse = 0.5 + 0.5 * Math.sin(time * 5);
+  g.fillStyle = rgba(o.col, 0.16 + pulse * 0.08); g.beginPath(); g.arc(z.x, z.y, 40, 0, TAU); g.fill();
+  g.strokeStyle = rgba(o.col, 0.9); g.lineWidth = 2.5; g.setLineDash([7, 6]); g.lineDashOffset = -time * 20;
+  g.beginPath(); g.arc(z.x, z.y, 40, 0, TAU); g.stroke(); g.setLineDash([]);
+  if (o.prog > 0) { g.strokeStyle = '#fff'; g.lineWidth = 5; g.beginPath(); g.arc(z.x, z.y, 40, -Math.PI / 2, -Math.PI / 2 + TAU * o.prog); g.stroke(); }
+}
+function routePoints(sx, sy, tx, ty) {
+  // 沿著道路走的路線（路口網格上的 L 形）
+  const near = (v) => { const a = Math.floor((v - RW / 2) / BS), b = a + 1; return [clamp(a, 0, N), clamp(b, 0, N)]; };
+  const onH = (y) => { const j = Math.round((y - RW / 2) / BS); return Math.abs(y - (j * BS + RW / 2)) <= RW / 2 + 22 ? j : -1; };
+  const onV = (x) => { const i = Math.round((x - RW / 2) / BS); return Math.abs(x - (i * BS + RW / 2)) <= RW / 2 + 22 ? i : -1; };
+  const nodesFor = (x, y) => {
+    const out = [];
+    const j = onH(y), i = onV(x);
+    if (j >= 0) near(x).forEach(ii => out.push([ii, j]));
+    if (i >= 0) near(y).forEach(jj => out.push([i, jj]));
+    if (!out.length) out.push([clamp(Math.round((x - RW / 2) / BS), 0, N), clamp(Math.round((y - RW / 2) / BS), 0, N)]);
+    return out;
+  };
+  const c = (i, j) => [i * BS + RW / 2, j * BS + RW / 2];
+  // 同一段路：直接過去
+  const seg = v => Math.floor((v - RW / 2) / BS);
+  if (onV(sx) >= 0 && onV(sx) === onV(tx) && seg(sy) === seg(ty)) return [[sx, sy], [tx, ty]];
+  if (onH(sy) >= 0 && onH(sy) === onH(ty) && seg(sx) === seg(tx)) return [[sx, sy], [tx, ty]];
+  let best = null, bd = Infinity;
+  for (const a of nodesFor(sx, sy)) for (const b of nodesFor(tx, ty)) {
+    const pa = c(a[0], a[1]), pb = c(b[0], b[1]);
+    const d = Math.abs(sx - pa[0]) + Math.abs(sy - pa[1]) + Math.abs(pa[0] - pb[0]) + Math.abs(pa[1] - pb[1]) + Math.abs(pb[0] - tx) + Math.abs(pb[1] - ty);
+    if (d < bd) { bd = d; best = [a, b]; }
+  }
+  const a = best[0], b = best[1], pa = c(a[0], a[1]), pb = c(b[0], b[1]);
+  // 走法：先走目前這條路方向
+  const mid = (onH(sy) >= 0 && onH(sy) === a[1]) ? [pb[0], pa[1]] : [pa[0], pb[1]];
+  return [[sx, sy], pa, mid, pb, [tx, ty]];
+}
+/** 夜市巷子、廟埕裡面：先走到出口再上路 */
+function offRoadExit(x, y) {
+  for (const z of slowZones) {
+    if (x < z.x || x > z.x + z.w || y < z.y || y > z.y + z.h) continue;
+    if (z.night) { const left = x - z.x < z.w / 2; return [[left ? z.x + 6 : z.x + z.w - 6, z.y + z.h / 2], [left ? z.x - 20 : z.x + z.w + 20, z.y + z.h / 2]]; }
+    return [[x, z.y + z.h + 22]];
+  }
+  return null;
+}
+function fullRoute(sx, sy, tx, ty) {
+  const e1 = offRoadExit(sx, sy), e2 = offRoadExit(tx, ty);
+  const s0 = e1 ? e1[e1.length - 1] : [sx, sy], t0 = e2 ? e2[e2.length - 1] : [tx, ty];
+  let pts = routePoints(s0[0], s0[1], t0[0], t0[1]);
+  if (e1) pts = [[sx, sy]].concat(e1, pts.slice(1));
+  if (e2) pts = pts.slice(0, -1).concat(e2.slice().reverse(), [[tx, ty]]);
+  return pts;
+}
+function drawRoute(o) {
+  const z = targetOf(o), pts = fullRoute(P.x, P.y, z.x, z.y), g = ctx;
+  g.strokeStyle = rgba(o.col, 0.85); g.lineWidth = 7; g.lineCap = 'round'; g.lineJoin = 'round';
+  g.setLineDash([2, 14]); g.lineDashOffset = -time * 40;
+  g.beginPath(); pts.forEach((p, i) => (i ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1]))); g.stroke();
+  g.setLineDash([]);
+}
+function drawNightLights(b) {
+  const g = ctx;
+  for (let i = 0; i < 12; i++) {
+    const x = b.x + 12 + i * 25;
+    const on = Math.sin(time * 3 + i * 1.7) > -0.6;
+    const col = ['#ffd43b', '#ff8787', '#74c0fc', '#8ce99a'][i % 4];
+    [b.alleyY + 4, b.alleyY + b.alleyH - 4].forEach(y => {
+      g.fillStyle = on ? col : '#888'; g.beginPath(); g.arc(x, y, 2.3, 0, TAU); g.fill();
+      if (on) g.drawImage(glowSprite(col), x - 8, y - 8, 16, 16);
+    });
+  }
+  // 吊燈籠
+  for (let i = 0; i < 4; i++) {
+    const x = b.x + 40 + i * 75, y = b.alleyY + b.alleyH / 2 + Math.sin(time * 1.5 + i) * 1.5;
+    g.strokeStyle = 'rgba(80,40,20,0.6)'; g.lineWidth = 1; g.beginPath(); g.moveTo(x - 30, b.alleyY + 4); g.quadraticCurveTo(x, y + 6, x + 30, b.alleyY + b.alleyH - 4); g.stroke();
+    g.fillStyle = '#e8412e'; g.beginPath(); g.ellipse(x, y, 5, 6.5, 0, 0, TAU); g.fill();
+    g.fillStyle = '#ffd43b'; g.fillRect(x - 3, y - 7.5, 6, 2); g.fillRect(x - 3, y + 5.5, 6, 2);
+    g.drawImage(glowSprite('#ff8a5c'), x - 14, y - 14, 28, 28);
+  }
+}
+
+/* ---------- 畫面：遊戲中 ---------- */
+let viewRect = [0, 0, 0, 0];
+function drawWorld() {
+  // 可見範圍（世界座標）
+  const x0 = -ox / sc, y0 = -oy / sc, x1 = (W * dpr - ox) / sc, y1 = (H * dpr - oy) / sc;
+  viewRect = [x0, y0, x1, y1];
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#8fcf7e'; ctx.fillRect(0, 0, W * dpr, H * dpr);
+  const cx0 = Math.max(-1, Math.floor(x0 / BS)), cx1 = Math.min(CN, Math.floor(x1 / BS));
+  const cy0 = Math.max(-1, Math.floor(y0 / BS)), cy1 = Math.min(CN, Math.floor(y1 / BS));
+  for (let cy = cy0; cy <= cy1; cy++) for (let cx = cx0; cx <= cx1; cx++) {
+    const c = getChunk(cx, cy, true);
+    if (c) ctx.drawImage(c, ox + cx * chunkP, oy + cy * chunkP);
+  }
+  // 預先畫好前進方向的下一塊
+  const lx = x0 + Math.cos(P.ang) * P.spd * 1.2, ly = y0 + Math.sin(P.ang) * P.spd * 1.2;
+  const pcx0 = Math.floor(lx / BS), pcx1 = Math.floor((lx + x1 - x0) / BS), pcy0 = Math.floor(ly / BS), pcy1 = Math.floor((ly + y1 - y0) / BS);
+  outer: for (let cy = pcy0; cy <= pcy1; cy++) for (let cx = pcx0; cx <= pcx1; cx++) {
+    if (cx < -1 || cy < -1 || cx > CN || cy > CN) continue;
+    const k = chunkKey(cx, cy), c = chunks.get(k);
+    if (!c || c.p !== chunkP) { if (chunkBuilds < 1) getChunk(cx, cy, false); break outer; }
+  }
+  ctx.setTransform(sc, 0, 0, sc, ox, oy);
+  const inView = (x, y, m) => x > x0 - m && x < x1 + m && y > y0 - m && y < y1 + m;
+  // 路線、送餐點
+  const fo = focusOrder();
+  if (fo && prog.up.phone) drawRoute(fo);
+  for (const o of G.orders) { const z = targetOf(o); if (inView(z.x, z.y, 60)) drawZone(o, z); }
+  for (const p of peds) if (p.on && inView(p.x, p.y, 20)) drawPed(p);
+  for (const v of vehicles) if (v.on && inView(v.x, v.y, 50)) drawCar(v);
+  drawPlayer();
+  const nb = blocks.find(b => b.type === 'N');
+  if (inView(nb.x + BLK / 2, nb.alleyY, BLK)) drawNightLights(nb);
+  drawLights(x0, y0, x1, y1);
+  // 粒子（世界座標）
+  for (const p of parts) {
+    if (!p.on || p.screen) continue;
+    const k = p.life / p.max;
+    ctx.globalAlpha = 1 - k;
+    if (p.kind === 'puff') { ctx.fillStyle = p.col; ctx.beginPath(); ctx.arc(p.x, p.y, p.size * (1 + k * 1.5), 0, TAU); ctx.fill(); }
+    else if (p.kind === 'star') { ctx.fillStyle = p.col; starPath(ctx, p.x, p.y, p.size * 1.4, p.size * 0.6, p.rot); ctx.fill(); }
+    else if (p.kind === 'drop') { ctx.fillStyle = p.col; ctx.beginPath(); ctx.ellipse(p.x, p.y, p.size, p.size * 0.7, p.rot, 0, TAU); ctx.fill(); }
+    else { ctx.fillStyle = p.col; ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, TAU); ctx.fill(); }
+  }
+  ctx.globalAlpha = 1;
+}
+function starPath(g, x, y, R, r, rot) {
+  g.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const a = (rot || 0) + i * Math.PI / 5 - Math.PI / 2, rad = i % 2 ? r : R;
+    g.lineTo(x + Math.cos(a) * rad, y + Math.sin(a) * rad);
+  }
+  g.closePath();
+}
+
+/* =====================================================================
+ * 螢幕上的介面
+ * ===================================================================== */
+function rr(x, y, w, h, r) { rrp(ctx, x, y, w, h, r); }
+function setFont(size, weight) { ctx.font = (weight || '900') + ' ' + Math.round(size) + 'px ' + FONT; }
+function txt(s, x, y, size, fill, o) {
+  o = o || {};
+  setFont(size, o.weight);
+  ctx.textAlign = o.align || 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+  if (o.stroke) { ctx.strokeStyle = o.stroke; ctx.lineWidth = o.sw || size * 0.24; ctx.strokeText(s, x, y); }
+  ctx.fillStyle = fill; ctx.fillText(s, x, y);
+}
+function fitSize(s, maxW, size, weight) {
+  setFont(size, weight);
+  const w = ctx.measureText(s).width;
+  return w > maxW ? Math.max(8, Math.floor(size * maxW / w)) : size;
+}
+function ellip(s, maxW, size) {
+  setFont(size);
+  if (ctx.measureText(s).width <= maxW) return s;
+  let t = s;
+  while (t.length > 1 && ctx.measureText(t + '…').width > maxW) t = t.slice(0, -1);
+  return t + '…';
+}
+function panel(x, y, w, h, r, fill, stroke) {
+  rr(x, y + 4, w, h, r); ctx.fillStyle = 'rgba(30,40,60,0.22)'; ctx.fill();
+  rr(x, y, w, h, r); ctx.fillStyle = fill || '#fffdf6'; ctx.fill();
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 3; ctx.stroke(); }
+}
+
+/* ---------- 按鈕 ---------- */
+let btns = [], pressed = null;
+const BTN = {
+  green: ['#9be86b', '#4cc24a', '#2c8a34'], orange: ['#ffd08a', '#ff9a3d', '#c8641a'], blue: ['#9fd3ff', '#3d9bfd', '#1f63b5'],
+  pink: ['#ffc2dc', '#ff6fa8', '#c23a72'], white: ['#ffffff', '#f1efe7', '#a9a294'], red: ['#ffb0a8', '#ff5d4f', '#b8322a'], gray: ['#e9ecef', '#adb5bd', '#6c757d'], yellow: ['#fff3a0', '#ffd43b', '#c79a00']
+};
+function button(id, x, y, w, h, o) {
+  o = o || {};
+  btns.push({ id, x, y, w, h, on: o.onClick, hold: o.hold, disabled: o.disabled, primary: o.primary });
+  const pal = BTN[o.color || 'green'];
+  const down = pressed === id || (o.held);
+  ctx.save();
+  ctx.translate(x + w / 2, y + h / 2);
+  const s = down ? 0.94 : (o.pulse ? 1 + Math.sin(time * 5) * 0.03 : 1);
+  ctx.scale(s, s);
+  if (o.disabled) ctx.globalAlpha = 0.55;
+  const r = o.radius == null ? Math.min(h / 2, 18) : o.radius, lip = Math.max(3, h * 0.08);
+  rr(-w / 2, -h / 2 + lip + 2, w, h, r); ctx.fillStyle = 'rgba(30,40,60,0.2)'; ctx.fill();
+  rr(-w / 2, -h / 2 + lip, w, h, r); ctx.fillStyle = pal[2]; ctx.fill();
+  const yo = down ? lip * 0.6 : 0;
+  rr(-w / 2, -h / 2 + yo, w, h, r);
+  const gr = ctx.createLinearGradient(0, -h / 2, 0, h / 2); gr.addColorStop(0, pal[0]); gr.addColorStop(0.6, pal[1]); gr.addColorStop(1, shade(pal[1], -12));
+  ctx.fillStyle = gr; ctx.fill(); ctx.strokeStyle = pal[2]; ctx.lineWidth = 2; ctx.stroke();
+  rr(-w / 2 + Math.min(w, h) * 0.2, -h / 2 + yo + h * 0.1, w - Math.min(w, h) * 0.4, h * 0.25, h * 0.12); ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.fill();
+  const tc = o.color === 'white' || o.color === 'yellow' ? '#4a3b2a' : '#fff', stc = o.color === 'white' || o.color === 'yellow' ? 'rgba(255,255,255,0.8)' : pal[2];
+  if (o.icon) o.icon(0, yo + (o.label ? -h * 0.14 : 0), Math.min(w, h) * 0.42);
+  if (o.label) {
+    const fs = fitSize(o.label, w - 16, o.size || Math.min(28, h * 0.4));
+    txt(o.label, 0, yo + (o.icon ? h * 0.26 : 1), fs, tc, { stroke: stc, sw: fs * 0.2 });
+  }
+  if (o.sub) { const fs = fitSize(o.sub, w - 14, h * 0.2, '700'); txt(o.sub, 0, yo + h * 0.3, fs, tc, { weight: '700' }); }
+  ctx.restore();
+}
+function hitBtn(x, y) {
+  let best = null, bd = 16;
+  for (let i = btns.length - 1; i >= 0; i--) {
+    const b = btns[i];
+    if (b.disabled) continue;
+    if (x >= b.x - 3 && x <= b.x + b.w + 3 && y >= b.y - 3 && y <= b.y + b.h + 6) return b;
+    const dx = Math.max(b.x - x, 0, x - (b.x + b.w)), dy = Math.max(b.y - y, 0, y - (b.y + b.h));
+    const d = Math.hypot(dx, dy);
+    if (d < bd) { bd = d; best = b; }
+  }
+  return best;
+}
+
+/* ---------- 小圖示 ---------- */
+function iconPause(x, y, s, col) { ctx.fillStyle = col || '#fff'; rr(x - s * 0.42, y - s * 0.5, s * 0.3, s, s * 0.1); ctx.fill(); rr(x + s * 0.12, y - s * 0.5, s * 0.3, s, s * 0.1); ctx.fill(); }
+function iconClock(x, y, r) {
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill(); ctx.strokeStyle = '#3d8bfd'; ctx.lineWidth = 2.5; ctx.stroke();
+  ctx.strokeStyle = '#3b2f4a'; ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y - r * 0.6); ctx.moveTo(x, y); ctx.lineTo(x + r * 0.45, y + r * 0.2); ctx.stroke();
+}
+function iconCoin(x, y, r) {
+  ctx.fillStyle = '#e8a400'; ctx.beginPath(); ctx.arc(x, y + 1.5, r, 0, TAU); ctx.fill();
+  ctx.fillStyle = '#ffd43b'; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill();
+  ctx.strokeStyle = '#c78a00'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y, r * 0.68, 0, TAU); ctx.stroke();
+  txt('$', x, y + 0.5, r * 1.1, '#a86f00');
+}
+function iconStar(x, y, r, on) {
+  starPath(ctx, x, y, r, r * 0.48, 0);
+  ctx.fillStyle = on ? '#ffd43b' : 'rgba(80,80,100,0.25)'; ctx.fill();
+  ctx.strokeStyle = on ? '#d99a00' : 'rgba(80,80,100,0.3)'; ctx.lineWidth = Math.max(1.2, r * 0.14); ctx.lineJoin = 'round'; ctx.stroke();
+}
+function iconHouse(x, y, s, col) {
+  ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(x, y - s * 0.55); ctx.lineTo(x + s * 0.55, y - s * 0.05); ctx.lineTo(x + s * 0.4, y - s * 0.05); ctx.lineTo(x + s * 0.4, y + s * 0.45); ctx.lineTo(x - s * 0.4, y + s * 0.45); ctx.lineTo(x - s * 0.4, y - s * 0.05); ctx.lineTo(x - s * 0.55, y - s * 0.05); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.fillRect(x - s * 0.12, y + s * 0.1, s * 0.24, s * 0.35);
+}
+function iconBag(x, y, s, col) {
+  ctx.strokeStyle = col; ctx.lineWidth = s * 0.12; ctx.beginPath(); ctx.arc(x, y - s * 0.2, s * 0.2, Math.PI, 0); ctx.stroke();
+  ctx.fillStyle = col; rr(x - s * 0.4, y - s * 0.2, s * 0.8, s * 0.65, s * 0.12); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.fillRect(x - s * 0.25, y + s * 0.02, s * 0.5, s * 0.1);
+}
+function iconHelmet(x, y, s, col) {
+  ctx.fillStyle = col || '#ffd43b'; ctx.beginPath(); ctx.arc(x, y + s * 0.1, s * 0.5, Math.PI, 0); ctx.lineTo(x + s * 0.5, y + s * 0.25); ctx.lineTo(x - s * 0.5, y + s * 0.25); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = 'rgba(40,60,100,0.85)'; ctx.fillRect(x + s * 0.05, y - s * 0.05, s * 0.42, s * 0.2);
+  ctx.strokeStyle = '#e8a400'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y + s * 0.1, s * 0.5, Math.PI, 0); ctx.stroke();
+}
+function iconTrafficLight(x, y, s, st) {
+  ctx.fillStyle = '#222831'; rr(x - s * 0.22, y - s * 0.5, s * 0.44, s, s * 0.12); ctx.fill();
+  ['r', 'y', 'g'].forEach((c, i) => { ctx.fillStyle = c === st ? LCOL[c] : '#3a414b'; ctx.beginPath(); ctx.arc(x, y - s * 0.3 + i * s * 0.3, s * 0.12, 0, TAU); ctx.fill(); });
+}
+function iconPhone(x, y, s) {
+  ctx.fillStyle = '#2b2f38'; rr(x - s * 0.3, y - s * 0.5, s * 0.6, s, s * 0.1); ctx.fill();
+  ctx.fillStyle = '#8fd3ff'; rr(x - s * 0.24, y - s * 0.4, s * 0.48, s * 0.74, s * 0.05); ctx.fill();
+  ctx.fillStyle = '#ff7a45'; ctx.beginPath(); ctx.arc(x, y - s * 0.05, s * 0.1, 0, TAU); ctx.fill();
+}
+function iconBox(x, y, s, big) {
+  const k = big ? 1.15 : 1;
+  ctx.fillStyle = '#c8541f'; rr(x - s * 0.42 * k, y - s * 0.36 * k, s * 0.84 * k, s * 0.76 * k, s * 0.1); ctx.fill();
+  ctx.fillStyle = '#ff7a45'; rr(x - s * 0.38 * k, y - s * 0.4 * k, s * 0.76 * k, s * 0.72 * k, s * 0.1); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.fillRect(x - s * 0.3 * k, y - s * 0.06, s * 0.6 * k, s * 0.1);
+}
+function iconBolt(x, y, s) {
+  ctx.fillStyle = '#ffd43b'; ctx.strokeStyle = '#c79a00'; ctx.lineWidth = 2; ctx.lineJoin = 'round';
+  ctx.beginPath(); ctx.moveTo(x + s * 0.1, y - s * 0.5); ctx.lineTo(x - s * 0.3, y + s * 0.08); ctx.lineTo(x, y + s * 0.08); ctx.lineTo(x - s * 0.12, y + s * 0.5); ctx.lineTo(x + s * 0.32, y - s * 0.1); ctx.lineTo(x + s * 0.02, y - s * 0.1); ctx.closePath(); ctx.fill(); ctx.stroke();
+}
+function iconThermo(x, y, s) {
+  ctx.fillStyle = '#e9ecef'; rr(x - s * 0.38, y - s * 0.36, s * 0.76, s * 0.76, s * 0.14); ctx.fill();
+  ctx.strokeStyle = '#adb5bd'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.strokeStyle = '#ff8a5c'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+  for (let i = -1; i <= 1; i++) { ctx.beginPath(); ctx.moveTo(x + i * s * 0.18, y - s * 0.2); ctx.quadraticCurveTo(x + i * s * 0.18 + s * 0.08, y - s * 0.4, x + i * s * 0.18, y - s * 0.6); ctx.stroke(); }
+}
+
+/* ---------- 版面 ---------- */
+const LAY = { hud: {}, phone: {}, mm: {}, brake: {}, horn: {}, joy: {}, pause: {} };
+function layout() {
+  const land = W > H;
+  const hudW = Math.min(W - 132, 460);
+  LAY.hud = { x: (W - hudW) / 2, y: 10, w: hudW, h: 44 };
+  LAY.pause = { x: W - 56, y: 64, w: 46, h: 46 };
+  const pw = land ? clamp(W * 0.26, 170, 236) : clamp(W * 0.5, 170, 226);
+  LAY.phone = { x: 8, y: 64, w: pw, ch: land && H < 430 ? 42 : 46 };
+  const ms = land ? clamp(H * 0.27, 92, 160) : clamp(W * 0.3, 100, 160);
+  LAY.mm = { x: W - 8 - ms, y: 118, s: ms };
+  const br = land ? 38 : 40;
+  LAY.brake = { x: W - 22 - br, y: H - 26 - br, r: br };
+  LAY.horn = { x: W - 22 - br * 2 - 44, y: H - 30 - 26, r: 27 };
+  LAY.joy = { x: 26 + 58, y: H - 34 - 58, R: land && H < 430 ? 50 : 58 };
+  LAY.hud.mx = LAY.hud.x + LAY.hud.w * 0.62; LAY.hud.my = LAY.hud.y + LAY.hud.h / 2;
+}
+
+function fmtTime(s) { s = Math.max(0, Math.ceil(s)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
+function drawHUD() {
+  const h = LAY.hud;
+  panel(h.x, h.y, h.w, h.h, 16, 'rgba(255,253,246,0.96)', '#3b2f4a');
+  // 第幾天
+  const dw = Math.min(70, h.w * 0.22);
+  rr(h.x + 5, h.y + 5, dw, h.h - 10, 12); ctx.fillStyle = G.endless ? '#a35cff' : '#ff7a45'; ctx.fill();
+  const dl = G.endless ? '無限' : '第' + G.day + '天';
+  txt(dl, h.x + 5 + dw / 2, h.y + h.h / 2 + 1, fitSize(dl, dw - 8, 17), '#fff');
+  // 時鐘
+  const cx = h.x + dw + 22;
+  iconClock(cx, h.y + h.h / 2, 10);
+  const low = G.clock <= 30 && G.sub === 'run';
+  const tc = low ? (Math.sin(time * 10) > 0 ? '#ff4d4d' : '#c92a2a') : '#3b2f4a';
+  txt(fmtTime(G.clock), cx + 14, h.y + h.h / 2 + 1, 19, tc, { align: 'left' });
+  // 錢
+  const mx = cx + 72, mw = h.x + h.w - 8 - mx;
+  iconCoin(mx + 10, h.y + h.h / 2, 10);
+  const target = G.endless ? 0 : TARGET[G.day - 1];
+  const ms = '$' + G.money + (target ? ' / ' + target : '');
+  txt(ms, mx + 24, h.y + h.h / 2 - (target ? 6 : 0), fitSize(ms, mw - 26, 16), '#3b2f4a', { align: 'left' });
+  if (target) {
+    const bx = mx + 24, bw = mw - 26, by = h.y + h.h / 2 + 8;
+    rr(bx, by, bw, 7, 3.5); ctx.fillStyle = '#e9e3d4'; ctx.fill();
+    const k = clamp(G.money / target, 0, 1);
+    if (k > 0) { rr(bx, by, Math.max(7, bw * k), 7, 3.5); ctx.fillStyle = k >= 1 ? '#40c057' : '#ffb020'; ctx.fill(); }
+  }
+  LAY.hud.mx = mx + 10; LAY.hud.my = h.y + h.h / 2;
+}
+function drawPhone() {
+  const p = LAY.phone, ch = p.ch, cap = capacity();
+  const hh = 24, ph = hh + cap * (ch + 4) + 6;
+  // 手機外框
+  rr(p.x, p.y + 4, p.w, ph, 14); ctx.fillStyle = 'rgba(20,24,40,0.25)'; ctx.fill();
+  rr(p.x, p.y, p.w, ph, 14); ctx.fillStyle = '#2b2f38'; ctx.fill();
+  rr(p.x + 4, p.y + 4, p.w - 8, ph - 8, 11); ctx.fillStyle = 'rgba(240,246,255,0.95)'; ctx.fill();
+  txt('外送單 ' + G.orders.length + '/' + cap, p.x + 12, p.y + 15, 12, '#3b4a6b', { align: 'left' });
+  // 訊號、電池
+  for (let i = 0; i < 3; i++) { ctx.fillStyle = '#3b4a6b'; ctx.fillRect(p.x + p.w - 40 + i * 4, p.y + 18 - i * 3, 3, 3 + i * 3); }
+  ctx.strokeStyle = '#3b4a6b'; ctx.lineWidth = 1.2; ctx.strokeRect(p.x + p.w - 25, p.y + 10, 13, 8); ctx.fillStyle = '#40c057'; ctx.fillRect(p.x + p.w - 23.5, p.y + 11.5, 8, 5);
+  const fo = focusOrder();
+  ctx.save(); rr(p.x + 4, p.y + 4, p.w - 8, ph - 8, 11); ctx.clip();
+  for (let i = 0; i < cap; i++) {
+    const y = p.y + hh + i * (ch + 4);
+    const o = G.orders.find(q => q.slot === i);
+    const x = p.x + 8, w = p.w - 16;
+    if (!o) {
+      rr(x, y, w, ch, 9); ctx.fillStyle = 'rgba(160,175,200,0.18)'; ctx.fill();
+      ctx.setLineDash([4, 4]); ctx.strokeStyle = 'rgba(120,135,160,0.5)'; ctx.lineWidth = 1.5; ctx.stroke(); ctx.setLineDash([]);
+      const dots = '.'.repeat(1 + Math.floor(time * 2) % 3);
+      txt('等新訂單' + dots, x + w / 2, y + ch / 2, 12, 'rgba(90,105,130,0.8)', { weight: '700' });
+      continue;
+    }
+    const sl = (1 - easeOutCubic(o.appear)) * (w + 20);
+    ctx.save(); ctx.translate(sl, 0);
+    btns.push({ id: 'card' + o.id, x, y, w, h: ch, on: () => { G.focusId = o.id; sfx('select'); } });
+    rr(x, y, w, ch, 9); ctx.fillStyle = '#fff'; ctx.fill();
+    ctx.strokeStyle = o === fo ? o.col : 'rgba(150,160,180,0.5)'; ctx.lineWidth = o === fo ? 3 : 1.5; ctx.stroke();
+    rr(x, y, 6, ch, 3); ctx.fillStyle = o.col; ctx.fill();
+    // 食物
+    ctx.fillStyle = rgba(o.col, 0.15); ctx.beginPath(); ctx.arc(x + 25, y + ch / 2, 15, 0, TAU); ctx.fill();
+    drawFood(ctx, o.item.k, x + 25, y + ch / 2, 22, o.cold);
+    if (o.hot && !o.cold) { ctx.strokeStyle = 'rgba(255,140,90,0.8)'; ctx.lineWidth = 1.5; for (let k = -1; k <= 1; k += 2) { ctx.beginPath(); const sx2 = x + 25 + k * 5, wv = Math.sin(time * 6 + k) * 2; ctx.moveTo(sx2, y + 9); ctx.quadraticCurveTo(sx2 + wv, y + 5, sx2, y + 1); ctx.stroke(); } }
+    // 步驟
+    const step = o.state === 'pick' ? '取' : '送';
+    rr(x + 44, y + 5, 19, 17, 6); ctx.fillStyle = o.state === 'pick' ? '#ff9a3d' : '#3d8bfd'; ctx.fill();
+    txt(step, x + 53.5, y + 14, 12, '#fff');
+    const nm = o.state === 'pick' ? o.shop.name : o.dest.name;
+    txt(ellip(nm, w - 72, 13), x + 67, y + 14, 13, '#2b2f38', { align: 'left' });
+    // 第二行：品名＋標籤
+    let tx = x + 44;
+    const nm2 = ellip(o.item.n, w - 100, 11);
+    txt(nm2, tx, y + ch - 13, 11, '#5a6375', { align: 'left', weight: '700' });
+    setFont(11, '700'); tx += ctx.measureText(nm2).width + 5;
+    if (o.fr) {
+      const lbl = o.hits ? '灑' + o.hits : '易灑';
+      rr(tx, y + ch - 20, 28, 14, 5); ctx.fillStyle = o.hits ? '#74c0fc' : '#d0ebff'; ctx.fill(); txt(lbl, tx + 14, y + ch - 13, 9.5, '#1864ab'); tx += 31;
+    }
+    if (o.hot) {
+      const tl = o.cold ? '冷了' : Math.ceil(o.tLeft) + '秒';
+      rr(tx, y + ch - 20, 32, 14, 5); ctx.fillStyle = o.cold ? '#d0ebff' : (o.tLeft < 9 ? (Math.sin(time * 12) > 0 ? '#ff6b6b' : '#ffa8a8') : '#ffe3d6'); ctx.fill();
+      txt(tl, tx + 16, y + ch - 13, 9.5, o.cold ? '#1864ab' : (o.tLeft < 9 ? '#fff' : '#d9480f'));
+      // 時間條
+      const k = o.cold ? 0 : o.tLeft / o.tMax;
+      ctx.fillStyle = '#f1f3f5'; ctx.fillRect(x + 8, y + ch - 4, w - 14, 2.5);
+      ctx.fillStyle = k < 0.25 ? '#ff6b6b' : '#ffa94d'; ctx.fillRect(x + 8, y + ch - 4, (w - 14) * k, 2.5);
+    }
+    ctx.restore();
+  }
+  ctx.restore();
+  p.h = ph;
+}
+function drawMinimap() {
+  const m = LAY.mm, s = m.s, k = s / WORLD;
+  panel(m.x - 4, m.y - 4, s + 8, s + 8, 12, '#fffdf6', '#3b2f4a');
+  ctx.save(); rr(m.x, m.y, s, s, 8); ctx.clip();
+  ctx.drawImage(mmBase, m.x, m.y, s, s);
+  if (prog.up.phone) {
+    for (const L of lights) {
+      const st = lightState(L, Math.abs(Math.cos(P.ang)) > 0.7 ? 0 : 1);
+      ctx.fillStyle = LCOL[st]; ctx.beginPath(); ctx.arc(m.x + (L.x + RW / 2) * k, m.y + (L.y + RW / 2) * k, 1.8, 0, TAU); ctx.fill();
+    }
+    const fo = focusOrder();
+    if (fo) {
+      const z = targetOf(fo), pts = fullRoute(P.x, P.y, z.x, z.y);
+      ctx.strokeStyle = fo.col; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.beginPath();
+      pts.forEach((p, i) => { const X = m.x + p[0] * k, Y = m.y + p[1] * k; if (i) ctx.lineTo(X, Y); else ctx.moveTo(X, Y); }); ctx.stroke();
+    }
+  }
+  // 視野框
+  ctx.strokeStyle = 'rgba(60,70,90,0.45)'; ctx.lineWidth = 1;
+  ctx.strokeRect(m.x + viewRect[0] * k, m.y + viewRect[1] * k, (viewRect[2] - viewRect[0]) * k, (viewRect[3] - viewRect[1]) * k);
+  for (const o of G.orders) {
+    const z = targetOf(o), X = m.x + z.x * k, Y = m.y + z.y * k;
+    const pr = 4.5 + (o === focusOrder() ? Math.sin(time * 6) * 1.2 + 1 : 0);
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(X, Y, pr + 1.5, 0, TAU); ctx.fill();
+    ctx.fillStyle = o.col; ctx.beginPath();
+    if (o.state === 'pick') { ctx.rect(X - pr, Y - pr, pr * 2, pr * 2); } else ctx.arc(X, Y, pr, 0, TAU);
+    ctx.fill();
+  }
+  // 玩家
+  const X = m.x + P.x * k, Y = m.y + P.y * k;
+  ctx.save(); ctx.translate(X, Y); ctx.rotate(P.ang);
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(8, 0); ctx.lineTo(-5, -5.5); ctx.lineTo(-2.5, 0); ctx.lineTo(-5, 5.5); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#ff3b6b'; ctx.beginPath(); ctx.moveTo(6, 0); ctx.lineTo(-3.5, -4); ctx.lineTo(-1.5, 0); ctx.lineTo(-3.5, 4); ctx.closePath(); ctx.fill();
+  ctx.restore();
+  ctx.restore();
+}
+function drawPins() {
+  const fo = focusOrder();
+  // 同一個地點的圖釘要錯開
+  const seen = {};
+  for (const o of G.orders) {
+    const z = targetOf(o);
+    const key = Math.round(z.x) + ',' + Math.round(z.y);
+    const n = seen[key] = (seen[key] || 0) + 1;
+    const s = worldToScreen(z.x, z.y);
+    if (s.x < -40 || s.x > W + 40 || s.y < -60 || s.y > H + 40) continue;
+    const bob = Math.sin(time * 4 + o.id) * 4;
+    const px = s.x + (n - 1) * 26, py = s.y - 30 + bob;
+    const sz = o === fo ? 1.12 : 0.95;
+    ctx.save(); ctx.translate(px, py); ctx.scale(sz, sz);
+    ctx.fillStyle = 'rgba(20,24,40,0.25)'; ctx.beginPath(); ctx.ellipse(0, 30 - bob, 8, 3, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = shade(o.col, -40);
+    ctx.beginPath(); ctx.arc(0, 0, 15, Math.PI * 0.8, Math.PI * 0.2); ctx.lineTo(0, 24); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = o.col; ctx.beginPath(); ctx.arc(0, -1, 14, Math.PI * 0.8, Math.PI * 0.2); ctx.lineTo(0, 21); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(0, -1, 10, 0, TAU); ctx.fill();
+    if (o.state === 'pick') iconBag(0, 0, 13, o.col); else iconHouse(0, -1, 13, o.col);
+    ctx.restore();
+    // 名字
+    const nm = o.state === 'pick' ? o.shop.name : o.dest.name;
+    const fs = 11;
+    setFont(fs); const tw = ctx.measureText(nm).width;
+    rr(px - tw / 2 - 6, py - 34, tw + 12, 16, 8); ctx.fillStyle = 'rgba(255,255,255,0.92)'; ctx.fill(); ctx.strokeStyle = o.col; ctx.lineWidth = 1.5; ctx.stroke();
+    txt(nm, px, py - 26, fs, '#2b2f38');
+    if (o === fo && o.state === 'carry' && o.dest.addr) {
+      setFont(10, '700'); const aw = ctx.measureText(o.dest.addr).width;
+      rr(px - aw / 2 - 5, py - 50, aw + 10, 14, 7); ctx.fillStyle = rgba(o.col, 0.9); ctx.fill();
+      txt(o.dest.addr, px, py - 43, 10, '#fff', { weight: '700' });
+    }
+    if (o.near && G.sub === 'run' && P.spd >= maxSpd() * 0.55) txt('慢一點！', px, py + 34, 13, '#fff', { stroke: o.col });
+  }
+}
+function drawArrow() {
+  const o = focusOrder();
+  if (!o || G.sub !== 'run') return;
+  const z = targetOf(o), s = worldToScreen(z.x, z.y), p = worldToScreen(P.x, P.y);
+  const a = Math.atan2(s.y - p.y, s.x - p.x);
+  const d = dist(P.x, P.y, z.x, z.y);
+  if (d > 70) {
+    const r = 34 + Math.sin(time * 6) * 2;
+    ctx.save(); ctx.translate(p.x + Math.cos(a) * r, p.y + Math.sin(a) * r); ctx.rotate(a);
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(11, 0); ctx.lineTo(-5, -9); ctx.lineTo(-2, 0); ctx.lineTo(-5, 9); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = o.col; ctx.beginPath(); ctx.moveTo(8, 0); ctx.lineTo(-3, -6); ctx.lineTo(-0.5, 0); ctx.lineTo(-3, 6); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+  // 畫面外：邊緣指示
+  const m = 30, topM = LAY.hud.y + LAY.hud.h + 16;
+  if (s.x < m || s.x > W - m || s.y < topM || s.y > H - m) {
+    const cx = W / 2, cy = H / 2;
+    const dx = s.x - cx, dy = s.y - cy;
+    const kx = dx > 0 ? (W - m - 26 - cx) / dx : (m + 26 - cx) / dx;
+    const ky = dy > 0 ? (H - 110 - cy) / dy : (topM + 30 - cy) / dy;
+    const k = Math.min(Math.abs(kx), Math.abs(ky));
+    const ex = cx + dx * k, ey = cy + dy * k;
+    ctx.save(); ctx.translate(ex, ey);
+    ctx.fillStyle = 'rgba(255,255,255,0.95)'; ctx.beginPath(); ctx.arc(0, 0, 19, 0, TAU); ctx.fill();
+    ctx.strokeStyle = o.col; ctx.lineWidth = 3; ctx.stroke();
+    ctx.rotate(a); ctx.fillStyle = o.col; ctx.beginPath(); ctx.moveTo(27, 0); ctx.lineTo(19, -7); ctx.lineTo(19, 7); ctx.closePath(); ctx.fill(); ctx.rotate(-a);
+    if (o.state === 'pick') iconBag(0, -2, 15, o.col); else iconHouse(0, -2, 15, o.col);
+    txt(Math.round(d / 4) + 'm', 0, 13, 9, '#2b2f38');
+    ctx.restore();
+  }
+}
+function drawLabels() {
+  const p = worldToScreen(P.x, P.y);
+  for (const l of labels) {
+    const a = l.t < 0.15 ? l.t / 0.15 : l.t > l.life - 0.3 ? (l.life - l.t) / 0.3 : 1;
+    const pop = l.t < 0.2 ? easeOutBack(l.t / 0.2) : 1;
+    const y = p.y - 46 - l.y * 30 - Math.min(l.t, 0.4) * 10;
+    ctx.globalAlpha = clamp(a, 0, 1);
+    ctx.save(); ctx.translate(p.x, y); ctx.scale(pop, pop);
+    const fs = 17;
+    txt(l.text, 0, 0, fs, l.col, { stroke: 'rgba(30,30,50,0.85)', sw: 5 });
+    if (l.stars) {
+      setFont(fs); const tw = ctx.measureText(l.text).width;
+      for (let i = 0; i < 5; i++) iconStar(tw / 2 + 12 + i * 13, 0, 6, i < l.stars);
+    }
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+}
+function drawBanner() {
+  if (!banner) return;
+  const b = banner, a = b.t < 0.2 ? b.t / 0.2 : b.t > b.dur - 0.3 ? (b.dur - b.t) / 0.3 : 1;
+  const land = W > H;
+  const y = land ? H - 40 : H * 0.3;
+  const fs = fitSize(b.text, Math.min(W - 40, land ? W - 360 : W - 40) - 36, 19);
+  setFont(fs); const tw = ctx.measureText(b.text).width;
+  ctx.globalAlpha = clamp(a, 0, 1);
+  const sc2 = b.t < 0.25 ? easeOutBack(b.t / 0.25) : 1;
+  ctx.save(); ctx.translate(W / 2, y); ctx.scale(sc2, sc2);
+  rr(-tw / 2 - 18, -20, tw + 36, 40, 20); ctx.fillStyle = 'rgba(255,255,255,0.96)'; ctx.fill(); ctx.strokeStyle = b.col; ctx.lineWidth = 4; ctx.stroke();
+  if (b.col === '#ff6b6b') iconTrafficLight(-tw / 2 - 2, 0, 22, 'r');
+  txt(b.text, b.col === '#ff6b6b' ? 8 : 0, 1, fs, '#3b2f4a');
+  ctx.restore(); ctx.globalAlpha = 1;
+}
+function drawControls() {
+  // 煞車
+  const b = LAY.brake, h = LAY.horn;
+  button('brake', b.x - b.r, b.y - b.r, b.r * 2, b.r * 2, { color: 'red', radius: b.r, label: '煞車', size: 17, held: input.brakeBtn > 0, hold: on => { input.brakeBtn = Math.max(0, (input.brakeBtn || 0) + (on ? 1 : -1)); } });
+  button('horn', h.x - h.r, h.y - h.r, h.r * 2, h.r * 2, { color: 'yellow', radius: h.r, label: '叭叭', size: 13, hold: on => { if (on) honk(); } });
+  // 搖桿
+  const joy = activeJoy();
+  if (joy && joy.kind === 'joy') {
+    const R = LAY.joy.R;
+    ctx.fillStyle = 'rgba(255,255,255,0.22)'; ctx.beginPath(); ctx.arc(joy.ox, joy.oy, R, 0, TAU); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = 3; ctx.stroke();
+    let dx = joy.x - joy.ox, dy = joy.y - joy.oy; const d = Math.hypot(dx, dy); if (d > R) { dx *= R / d; dy *= R / d; }
+    ctx.fillStyle = 'rgba(255,255,255,0.92)'; ctx.beginPath(); ctx.arc(joy.ox + dx, joy.oy + dy, R * 0.42, 0, TAU); ctx.fill();
+    ctx.strokeStyle = '#3d8bfd'; ctx.lineWidth = 3; ctx.stroke();
+  } else if (joy && joy.kind === 'steer') {
+    const p = worldToScreen(P.x, P.y);
+    ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 3; ctx.setLineDash([6, 8]);
+    ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(joy.x, joy.y); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(255,255,255,0.3)'; ctx.beginPath(); ctx.arc(joy.x, joy.y, 22, 0, TAU); ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke();
+  } else if (usedTouch && prog.ctrl === 'stick' && G.sub !== 'end') {
+    const j = LAY.joy;
+    ctx.globalAlpha = 0.5 + 0.15 * Math.sin(time * 3);
+    ctx.fillStyle = 'rgba(255,255,255,0.2)'; ctx.beginPath(); ctx.arc(j.x, j.y, j.R, 0, TAU); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.75)'; ctx.lineWidth = 3; ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.8)'; ctx.beginPath(); ctx.arc(j.x, j.y, j.R * 0.4, 0, TAU); ctx.fill();
+    ctx.globalAlpha = 1;
+    if (G.t < 12) txt('按住拖曳騎車', j.x, j.y - j.R - 14, 13, '#fff', { stroke: 'rgba(30,30,50,0.7)', sw: 4 });
+  } else if (usedTouch && prog.ctrl === 'finger' && G.t < 12 && G.sub === 'run') {
+    txt('按住畫面，機車會往手指騎過去', W / 2, H - 140, 14, '#fff', { stroke: 'rgba(30,30,50,0.7)', sw: 4 });
+  }
+}
+function honk() {
+  if (scene !== 'play' || G.sub !== 'run' || paused) return;
+  P.horn = 0.4;
+  const s = worldToScreen(P.x, P.y);
+  sfx('dr_horn', { pan: panX(s.x) });
+  // 附近的行人會看過來
+  for (const p of peds) if (p.on && p.kind !== 'walk' && dist(p.x, p.y, P.x, P.y) < 90) p.scare = Math.max(p.scare, 0.3);
+}
+
+/* =====================================================================
+ * 側面插畫：標題和車庫用的街景、機車
+ * ===================================================================== */
+const SIGNS = ['早餐', '茶', '麵', '水果', '便當', '書局', '冰', '豆花', '雞排', '包子'];
+const FACADE = ['#f6d7b0', '#f2b8a2', '#cfe0f0', '#f7e7b5', '#d8ead0', '#e8d6f0', '#f3c6c6', '#e6e0d4'];
+function drawSideStreet(off, gy, s) {
+  // 遠方樓房
+  const far = off * 0.3;
+  ctx.fillStyle = 'rgba(160,190,220,0.55)';
+  for (let i = -1; i < W / (70 * s) + 2; i++) {
+    const idx = Math.floor(far / (70 * s)) + i, r = rng(idx * 7 + 3);
+    const x = i * 70 * s - (far % (70 * s)), h = (90 + r() * 110) * s;
+    ctx.fillRect(x, gy - 40 * s - h, 66 * s, h);
+  }
+  // 近處的透天厝
+  const bw = 118 * s, fh = 44 * s;
+  const n0 = Math.floor(off / bw);
+  for (let i = -1; i < W / bw + 2; i++) {
+    const idx = n0 + i, r = rng(idx * 131 + 17);
+    const x = i * bw - (off % bw);
+    const floors = H > W ? 4 + Math.floor(r() * 2) : 3 + Math.floor(r() * 3);
+    const top = gy - 22 * s - floors * fh;
+    const col = FACADE[Math.floor(r() * FACADE.length)];
+    ctx.fillStyle = shade(col, -25); ctx.fillRect(x, top - 6 * s, bw, gy - 22 * s - top + 6 * s);
+    ctx.fillStyle = col; ctx.fillRect(x + 3 * s, top, bw - 6 * s, gy - 22 * s - top);
+    // 頂樓水塔
+    if (r() < 0.6) {
+      const tx = x + bw * (0.25 + r() * 0.4);
+      ctx.fillStyle = '#9aa4ae'; ctx.fillRect(tx - 1 * s, top - 14 * s, 2 * s, 10 * s); ctx.fillRect(tx + 18 * s, top - 14 * s, 2 * s, 10 * s);
+      ctx.fillStyle = '#e4e9ee'; rr(tx - 4 * s, top - 34 * s, 28 * s, 22 * s, 8 * s); ctx.fill(); ctx.strokeStyle = '#a9b3bd'; ctx.lineWidth = 1.5 * s; ctx.stroke();
+    } else if (r() < 0.5) {
+      ctx.fillStyle = r() < 0.5 ? '#7fb2d6' : '#d98b62';
+      ctx.beginPath(); ctx.moveTo(x + 8 * s, top); ctx.lineTo(x + bw * 0.5, top - 18 * s); ctx.lineTo(x + bw - 8 * s, top); ctx.closePath(); ctx.fill();
+    }
+    // 窗戶＋鐵窗＋冷氣
+    for (let f = 1; f < floors; f++) {
+      const wy = top + (floors - f - 1) * fh + 9 * s;
+      for (let k = 0; k < 2; k++) {
+        const wx = x + 14 * s + k * 50 * s;
+        ctx.fillStyle = '#7fa8c9'; ctx.fillRect(wx, wy, 38 * s, 26 * s);
+        ctx.strokeStyle = '#4a5560'; ctx.lineWidth = 1.5 * s; ctx.strokeRect(wx - 2 * s, wy - 2 * s, 42 * s, 30 * s);
+        ctx.beginPath(); for (let q = 1; q < 6; q++) { ctx.moveTo(wx - 2 * s + q * 7 * s, wy - 2 * s); ctx.lineTo(wx - 2 * s + q * 7 * s, wy + 28 * s); } ctx.stroke();
+        if ((f + k + idx) % 3 === 0) { ctx.fillStyle = '#f1f3f5'; ctx.fillRect(wx + 6 * s, wy + 28 * s, 22 * s, 10 * s); ctx.strokeStyle = '#adb5bd'; ctx.lineWidth = 1 * s; ctx.strokeRect(wx + 6 * s, wy + 28 * s, 22 * s, 10 * s); }
+      }
+    }
+    // 直立招牌
+    const sg = SIGNS[Math.abs(idx) % SIGNS.length];
+    const sc2 = ['#ff6b6b', '#3d8bfd', '#2fb8a6', '#ff9a3d', '#a35cff'][Math.abs(idx) % 5];
+    const sh = (sg.length * 20 + 10) * s;
+    ctx.fillStyle = '#fff'; rr(x + bw - 22 * s, top + 10 * s, 20 * s, sh, 3 * s); ctx.fill();
+    ctx.strokeStyle = sc2; ctx.lineWidth = 2.5 * s; ctx.stroke();
+    for (let q = 0; q < sg.length; q++) txt(sg[q], x + bw - 12 * s, top + 22 * s + q * 20 * s, 15 * s, sc2);
+    // 騎樓
+    const ay = gy - 22 * s - fh;
+    ctx.fillStyle = '#5b5148'; ctx.fillRect(x + 3 * s, ay, bw - 6 * s, fh);
+    ctx.fillStyle = '#857565'; ctx.fillRect(x + 3 * s, ay, bw - 6 * s, 6 * s);
+    ctx.fillStyle = shade(col, -10); ctx.fillRect(x, ay, 10 * s, fh); ctx.fillRect(x + bw - 10 * s, ay, 10 * s, fh);
+    // 店裡的燈
+    ctx.fillStyle = 'rgba(255,220,140,0.55)'; ctx.fillRect(x + 20 * s, ay + 14 * s, bw - 40 * s, fh - 14 * s);
+  }
+  // 人行道、馬路
+  ctx.fillStyle = '#d9d0c0'; ctx.fillRect(0, gy - 22 * s, W, 22 * s);
+  ctx.fillStyle = '#a69e90'; ctx.fillRect(0, gy - 3 * s, W, 3 * s);
+  ctx.fillStyle = '#5c6270'; ctx.fillRect(0, gy, W, H - gy);
+  ctx.fillStyle = '#fff';
+  const dl = 60 * s, doff = off % (dl * 2);
+  for (let x = -doff; x < W; x += dl * 2) ctx.fillRect(x, gy + 46 * s, dl, 5 * s);
+}
+function drawSideScooter(x, y, s, t, opt) {
+  opt = opt || {};
+  const bounce = Math.abs(Math.sin(t * 9)) * 2.2 * s;
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+  ctx.fillStyle = 'rgba(20,20,30,0.25)'; ctx.beginPath(); ctx.ellipse(0, 2, 62, 7, 0, 0, TAU); ctx.fill();
+  // 輪子
+  [[-38, -16], [40, -16]].forEach(w => {
+    ctx.fillStyle = '#2b2b2b'; ctx.beginPath(); ctx.arc(w[0], w[1], 16, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#adb5bd'; ctx.beginPath(); ctx.arc(w[0], w[1], 7, 0, TAU); ctx.fill();
+    ctx.strokeStyle = '#6c757d'; ctx.lineWidth = 2; ctx.beginPath();
+    for (let k = 0; k < 3; k++) { const a = t * 14 + k * TAU / 3; ctx.moveTo(w[0], w[1]); ctx.lineTo(w[0] + Math.cos(a) * 7, w[1] + Math.sin(a) * 7); } ctx.stroke();
+  });
+  ctx.translate(0, -bounce);
+  // 車身
+  ctx.fillStyle = '#2f9e8f';
+  ctx.beginPath(); ctx.moveTo(-58, -30); ctx.quadraticCurveTo(-60, -52, -36, -54); ctx.lineTo(-6, -50); ctx.lineTo(4, -34); ctx.lineTo(24, -34); ctx.lineTo(34, -70); ctx.lineTo(46, -70); ctx.quadraticCurveTo(60, -40, 52, -24); ctx.lineTo(-50, -22); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#4dc4b0';
+  ctx.beginPath(); ctx.moveTo(-56, -32); ctx.quadraticCurveTo(-56, -48, -36, -50); ctx.lineTo(-8, -47); ctx.lineTo(0, -34); ctx.lineTo(-52, -28); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.45)'; ctx.beginPath(); ctx.ellipse(-36, -46, 12, 3, -0.1, 0, TAU); ctx.fill();
+  // 座墊
+  ctx.fillStyle = '#3b2f2a'; rr(-44, -60, 42, 9, 5); ctx.fill();
+  // 車頭、燈、把手
+  ctx.fillStyle = '#4dc4b0'; ctx.beginPath(); ctx.moveTo(34, -70); ctx.lineTo(52, -72); ctx.lineTo(54, -56); ctx.lineTo(44, -50); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#fff6c2'; ctx.beginPath(); ctx.ellipse(54, -62, 4, 6, 0, 0, TAU); ctx.fill();
+  ctx.strokeStyle = '#333'; ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(38, -72); ctx.lineTo(30, -84); ctx.stroke();
+  // 外送箱
+  const big = opt.big ? 1.18 : 1;
+  const bw = 40 * big, bh = 36 * big;
+  ctx.fillStyle = '#c8541f'; rr(-66, -64 - bh, bw + 4, bh + 4, 6); ctx.fill();
+  ctx.fillStyle = '#ff7a45'; rr(-64, -66 - bh, bw, bh, 6); ctx.fill();
+  ctx.fillStyle = '#fff'; rr(-60, -60 - bh * 0.6, bw - 8, bh * 0.36, 4); ctx.fill();
+  txt('咻咻', -64 + bw / 2, -60 - bh * 0.6 + bh * 0.18, 11 * big, '#ff7a45');
+  if (opt.bag) { ctx.strokeStyle = '#dee2e6'; ctx.lineWidth = 2; rr(-62, -64 - bh, bw - 4, bh - 4, 5); ctx.stroke(); }
+  if (opt.fast) { ctx.fillStyle = '#ffd43b'; ctx.beginPath(); ctx.moveTo(-50, -38); ctx.lineTo(-20, -42); ctx.lineTo(-24, -36); ctx.lineTo(0, -38); ctx.lineTo(-30, -30); ctx.lineTo(-26, -35); ctx.closePath(); ctx.fill(); }
+  // 騎士
+  ctx.fillStyle = '#2f4f86'; rr(-26, -68, 14, 26, 6); ctx.fill(); // 腿
+  ctx.fillStyle = '#2f4f86'; ctx.beginPath(); ctx.moveTo(-14, -48); ctx.lineTo(8, -46); ctx.lineTo(10, -38); ctx.lineTo(-12, -40); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#3d8bfd'; rr(-30, -104, 26, 40, 10); ctx.fill(); // 身體
+  ctx.strokeStyle = '#3d8bfd'; ctx.lineWidth = 8; ctx.beginPath(); ctx.moveTo(-14, -94); ctx.lineTo(10, -84); ctx.lineTo(28, -84); ctx.stroke();
+  ctx.fillStyle = '#ffd9b8'; ctx.beginPath(); ctx.arc(30, -84, 4.5, 0, TAU); ctx.fill();
+  // 頭＋安全帽
+  ctx.fillStyle = '#ffd9b8'; ctx.beginPath(); ctx.arc(-14, -118, 14, 0, TAU); ctx.fill();
+  ctx.fillStyle = '#ffd43b'; ctx.beginPath(); ctx.arc(-15, -121, 16.5, Math.PI * 0.92, Math.PI * 2.08); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = '#e8a400'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = '#ff7a45'; ctx.fillRect(-31, -126, 32, 4);
+  ctx.fillStyle = 'rgba(60,90,140,0.75)'; ctx.beginPath(); ctx.moveTo(-2, -128); ctx.quadraticCurveTo(8, -124, 4, -112); ctx.lineTo(-4, -114); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = '#555'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(-22, -110); ctx.quadraticCurveTo(-14, -100, -6, -108); ctx.stroke();
+  ctx.fillStyle = '#3b2f4a'; ctx.beginPath(); ctx.arc(-7, -117, 1.8, 0, TAU); ctx.fill();
+  ctx.strokeStyle = '#c0504d'; ctx.lineWidth = 1.6; ctx.beginPath(); ctx.arc(-6, -110, 3, 0.2, Math.PI * 0.8); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,120,120,0.45)'; ctx.beginPath(); ctx.arc(-13, -110, 3, 0, TAU); ctx.fill();
+  if (opt.phone) { ctx.fillStyle = '#2b2f38'; rr(30, -98, 10, 15, 2); ctx.fill(); ctx.fillStyle = '#8fd3ff'; ctx.fillRect(31.5, -96, 7, 10); }
+  ctx.restore();
+}
+function logo(s, cx, cy, size) {
+  ctx.save();
+  setFont(size);
+  ctx.textBaseline = 'middle'; ctx.textAlign = 'center'; ctx.lineJoin = 'round';
+  const chars = [...s], cols = ['#ff7a45', '#ffb020', '#3fbf6f', '#3d8bfd', '#ff6fa8'];
+  let total = 0;
+  const ws = chars.map(c => { const w = ctx.measureText(c).width * 1.04; total += w; return w; });
+  let x = cx - total / 2;
+  chars.forEach((c, i) => {
+    const w = ws[i], bob = Math.sin(time * 3 + i * 0.8) * size * 0.06, rot = Math.sin(time * 2 + i) * 0.06;
+    ctx.save(); ctx.translate(x + w / 2, cy + bob); ctx.rotate(rot);
+    ctx.strokeStyle = 'rgba(40,30,60,0.3)'; ctx.lineWidth = size * 0.36; ctx.strokeText(c, 0, size * 0.1);
+    ctx.strokeStyle = '#3b2f4a'; ctx.lineWidth = size * 0.32; ctx.strokeText(c, 0, 0);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = size * 0.16; ctx.strokeText(c, 0, 0);
+    const col = cols[i % cols.length], gr = ctx.createLinearGradient(0, -size / 2, 0, size / 2);
+    gr.addColorStop(0, shade(col, 70)); gr.addColorStop(0.5, col); gr.addColorStop(1, shade(col, -30));
+    ctx.fillStyle = gr; ctx.fillText(c, 0, 0);
+    ctx.restore();
+    x += w;
+  });
+  ctx.restore();
+}
+function sky() {
+  const gr = ctx.createLinearGradient(0, 0, 0, H);
+  gr.addColorStop(0, '#8fd3ff'); gr.addColorStop(0.55, '#d8f0ff'); gr.addColorStop(1, '#ffe9c7');
+  ctx.fillStyle = gr; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  for (let i = 0; i < 4; i++) {
+    const x = ((i * 260 + time * (12 + i * 4)) % (W + 200)) - 100, y = 40 + i * 37 + (i % 2) * 20;
+    ctx.beginPath(); ctx.arc(x, y, 18, 0, TAU); ctx.arc(x + 20, y - 8, 22, 0, TAU); ctx.arc(x + 44, y, 17, 0, TAU); ctx.fill();
+  }
+}
+function wrapLines(s, maxW, size, weight) {
+  setFont(size, weight);
+  const out = []; let line = '';
+  for (const ch of s) {
+    if (ctx.measureText(line + ch).width > maxW && line) { out.push(line); line = ch; } else line += ch;
+  }
+  if (line) out.push(line);
+  return out;
+}
+
+/* =====================================================================
+ * 各個畫面
+ * ===================================================================== */
+function toggleRow(x, y, w, h) {
+  const gw = (w - 16) / 3;
+  const mOn = M ? M.isEnabled() : false;
+  button('tgM', x, y, gw, h, { color: mOn ? 'green' : 'white', label: '音樂 ' + (mOn ? '開' : '關'), size: Math.min(19, h * 0.42), onClick: () => { if (M) M.setEnabled(!M.isEnabled()); sfx('ui'); } });
+  button('tgS', x + gw + 8, y, gw, h, { color: sfxOn ? 'green' : 'white', label: '音效 ' + (sfxOn ? '開' : '關'), size: Math.min(19, h * 0.42), onClick: () => { sfxOn = !sfxOn; Save.set('sfx', sfxOn); if (sfxOn) sfx('ui'); else engineOff(); } });
+  button('tgC', x + (gw + 8) * 2, y, gw, h, { color: 'blue', label: prog.ctrl === 'stick' ? '操作：搖桿' : '操作：手指', size: Math.min(18, h * 0.4), onClick: () => { prog.ctrl = prog.ctrl === 'stick' ? 'finger' : 'stick'; saveProg(); sfx('select'); } });
+}
+function drawTitle() {
+  sky();
+  const land = W > H;
+  const gy = land ? H * 0.66 : H * 0.57;
+  const s = land ? clamp(H / 560, 0.6, 1.4) : clamp(W / 360, 0.7, 1.2);
+  drawSideStreet(time * 150, gy, s);
+  const scx = W * (land ? 0.27 : 0.52);
+  drawSideScooter(scx, gy + 36 * s, s * 0.95, time, { big: prog.up.box, bag: prog.up.bag, fast: prog.up.speed, phone: prog.up.phone });
+  // 排氣
+  if (Math.random() < 0.3) spawnPart({ x: scx - 66 * s, y: gy + 20 * s, vx: -rand(40, 80), vy: -rand(5, 20), max: 0.7, size: rand(3, 6), col: 'rgba(230,230,230,0.8)', kind: 'puff', screen: true });
+  drawScreenParts();
+  const ls = land ? clamp(Math.min(H * 0.14, W * 0.075), 38, 96) : clamp(W * 0.13, 40, 72);
+  const ly = land ? H * 0.15 : Math.min(H * 0.17, gy - 300 * s);
+  logo('小小外送員', W / 2, ly, ls);
+  txt('騎機車送美食，當小鎮最棒的外送員！', W / 2, ly + ls * 0.82, fitSize('騎機車送美食，當小鎮最棒的外送員！', W - 40, land ? clamp(ls * 0.26, 15, 22) : 16), '#3b2f4a', { stroke: 'rgba(255,255,255,0.9)', sw: 5 });
+  const bw = Math.min(W - 48, 360);
+  if (land) {
+    const k = clamp(H / 430, 1, 1.35);
+    const x0 = W * 0.52, cw = Math.min(W - x0 - 24, 420 * k), cx0 = x0 + (W - 24 - x0 - cw) / 2;
+    const top = ly + ls * 0.82 + 22, tot = (58 + 12 + 50 + 10 + 22 + 10 + 40) * k;
+    let y = top + Math.max(0, (H - 16 - top - tot) / 2);
+    button('start', cx0, y, cw, 58 * k, { color: 'green', label: '開始上班', pulse: true, primary: true, onClick: goDays }); y += 70 * k;
+    button('garage', cx0, y, cw, 50 * k, { color: 'orange', label: '車庫升級', onClick: goGarage }); y += 60 * k;
+    const best = KG.best(SLUG + ':day');
+    txt(best ? '最佳一天：$' + best + '　錢包：$' + prog.wallet : '錢包：$' + prog.wallet, cx0 + cw / 2, y + 11 * k, 15 * k, '#3b2f4a', { stroke: 'rgba(255,255,255,0.9)', sw: 5 }); y += 32 * k;
+    toggleRow(cx0, y, cw, 40 * k);
+  } else {
+    const by = Math.min(gy + 92 * s, H - 250);
+    button('start', W / 2 - bw / 2, by, bw, 62, { color: 'green', label: '開始上班', pulse: true, primary: true, onClick: goDays });
+    button('garage', W / 2 - bw / 2, by + 76, bw, 52, { color: 'orange', label: '車庫升級', onClick: goGarage });
+    toggleRow(W / 2 - bw / 2, by + 142, bw, 42);
+    const best = KG.best(SLUG + ':day');
+    txt(best ? '最佳一天：$' + best + '　錢包：$' + prog.wallet : '錢包：$' + prog.wallet, W / 2, Math.min(H - 20, by + 210), 15, '#3b2f4a', { stroke: 'rgba(255,255,255,0.9)', sw: 5 });
+  }
+}
+function drawScreenParts() {
+  for (const p of parts) {
+    if (!p.on || !p.screen) continue;
+    const k = p.life / p.max;
+    ctx.globalAlpha = p.kind === 'coin' ? 1 : 1 - k;
+    if (p.kind === 'coin') iconCoin(p.x, p.y, p.size);
+    else if (p.kind === 'puff') { ctx.fillStyle = p.col; ctx.beginPath(); ctx.arc(p.x, p.y, p.size * (1 + k * 1.5), 0, TAU); ctx.fill(); }
+    else { ctx.fillStyle = p.col; ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, TAU); ctx.fill(); }
+  }
+  ctx.globalAlpha = 1;
+}
+function drawDays() {
+  sky();
+  drawSideStreet(time * 30, H * 0.88, 0.6);
+  ctx.fillStyle = 'rgba(255,250,240,0.55)'; ctx.fillRect(0, 0, W, H);
+  const land = W > H;
+  txt('選擇上班日', W / 2, 34, 26, '#3b2f4a', { stroke: '#fff', sw: 6 });
+  txt('錢包 $' + prog.wallet, W / 2, 62, 15, '#7a4a10', { stroke: '#fff', sw: 4 });
+  const cols = land ? 6 : 3, rows = Math.ceil((DAYS + 1) / cols);
+  const top = 84, bottom = H - 76;
+  const gw = Math.min(W - 32, land ? 760 : 420);
+  const tw = (gw - (cols - 1) * 10) / cols, th = Math.min(96, (bottom - top - (rows - 1) * 10) / rows);
+  const x0 = (W - gw) / 2;
+  for (let i = 0; i <= DAYS; i++) {
+    const c = i % cols, r = Math.floor(i / cols);
+    const x = x0 + c * (tw + 10), y = top + r * (th + 10);
+    if (i === DAYS) {
+      const open = prog.unlocked > DAYS;
+      button('endless', x, y, tw, th, { color: open ? 'pink' : 'gray', label: '無限模式', sub: open ? '最佳 $' + (KG.best(SLUG + ':endless') || 0) : '第10天過關開放', size: Math.min(18, th * 0.24), disabled: !open, onClick: () => { startDay(10, true); } });
+      continue;
+    }
+    const d = i + 1, open = d <= prog.unlocked;
+    const st = prog.stars[i] || 0;
+    btns.push({ id: 'day' + d, x, y, w: tw, h: th, on: open ? () => { startDay(d, false); } : () => { sfx('error'); }, disabled: false, primary: open && d === Math.min(prog.next, prog.unlocked) });
+    panel(x, y, tw, th, 14, open ? (d === prog.next ? '#fff4d6' : '#fffdf6') : '#e9ecef', open ? (d === prog.next ? '#ff9a3d' : '#3b2f4a') : '#adb5bd');
+    txt('第 ' + d + ' 天', x + tw / 2, y + th * 0.26, Math.min(19, th * 0.22), open ? '#3b2f4a' : '#868e96');
+    if (open) {
+      for (let k = 0; k < 3; k++) iconStar(x + tw / 2 + (k - 1) * th * 0.2, y + th * 0.53, th * 0.085, k < st);
+      txt('目標 $' + TARGET[i], x + tw / 2, y + th * 0.8, Math.min(13, th * 0.15), '#7a6a5a', { weight: '700' });
+    } else {
+      ctx.fillStyle = '#adb5bd'; rr(x + tw / 2 - 9, y + th * 0.52, 18, 14, 3); ctx.fill();
+      ctx.strokeStyle = '#adb5bd'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x + tw / 2, y + th * 0.52, 6, Math.PI, 0); ctx.stroke();
+    }
+  }
+  const bw = Math.min(170, (W - 48) / 2);
+  button('back', W / 2 - bw - 8, H - 64, bw, 48, { color: 'white', label: '回標題', onClick: goTitle });
+  button('garage2', W / 2 + 8, H - 64, bw, 48, { color: 'orange', label: '車庫升級', onClick: goGarage });
+}
+const UPG = [
+  { id: 'box', name: '大外送箱', desc: '一次可以接 3 張訂單', max: 1, cost: [220], icon: (x, y, s) => iconBox(x, y, s, true) },
+  { id: 'speed', name: '快快引擎', desc: '機車騎得更快、起步更快', max: 2, cost: [150, 300], icon: iconBolt },
+  { id: 'bag', name: '保溫袋', desc: '熱食保溫時間變長 35%', max: 1, cost: [180], icon: iconThermo },
+  { id: 'phone', name: '新手機', desc: '畫出路線，地圖看得到紅綠燈', max: 1, cost: [160], icon: iconPhone }
+];
+let garageMsg = null;
+function buy(u) {
+  const lv = prog.up[u.id];
+  if (lv >= u.max) { sfx('error'); return; }
+  const c = u.cost[lv];
+  if (prog.wallet < c) { sfx('error'); garageMsg = { text: '錢還不夠，再去送幾單吧！', t: 0 }; return; }
+  prog.wallet -= c; prog.up[u.id] = lv + 1; saveProg();
+  sfx('powerup'); J.upgrade(); KG.vibrate(30);
+  garageMsg = { text: '買了「' + u.name + '」！', t: 0 };
+  KG.confetti(W / 2, H * 0.35, KG.lowEnd ? 40 : 70);
+}
+function drawGarage() {
+  // 車庫牆壁
+  ctx.fillStyle = '#e8eef3'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#d5dee6';
+  for (let y = 0; y < H; y += 28) for (let x = (y / 28) % 2 ? -20 : 0; x < W; x += 40) ctx.fillRect(x + 1, y + 1, 38, 26);
+  ctx.fillStyle = '#b9a38a'; ctx.fillRect(0, H * 0.82, W, H * 0.18);
+  ctx.fillStyle = 'rgba(0,0,0,0.08)'; for (let i = 0; i < 6; i++) ctx.fillRect(i * W / 6 + 10, H * 0.82, 3, H * 0.18);
+  const land = W > H;
+  txt('車庫', W / 2, 32, 26, '#3b2f4a', { stroke: '#fff', sw: 6 });
+  panel(W / 2 - 80, 50, 160, 32, 16, '#fff7d6', '#c79a00');
+  iconCoin(W / 2 - 58, 66, 10);
+  txt('錢包 $' + prog.wallet, W / 2 + 8, 67, 17, '#7a4a10');
+  let cardsTop, cw, ch, cols;
+  if (land) { cols = 4; cardsTop = 96; cw = Math.min(210, (W - 40 - 30) / 4); ch = Math.min(176, H - cardsTop - 84); }
+  else { cols = 2; cw = Math.min(200, (W - 36) / 2); ch = 168; cardsTop = Math.max(96, Math.min(H * 0.36, H - 84 - ch * 2 - 12)); }
+  const gwid = cols * cw + (cols - 1) * 10, gx = (W - gwid) / 2;
+  // 機車（空間夠才畫）
+  const showBike = land ? (H - (cardsTop + ch) > 260) : (cardsTop - 92 > 120);
+  if (showBike) {
+    const by = land ? cardsTop + ch + 160 : cardsTop - 14;
+    const bs = land ? 0.9 : clamp((cardsTop - 100) / 150, 0.5, 0.9);
+    drawSideScooter(W / 2, by, bs, time * 0.15, { big: prog.up.box, bag: prog.up.bag, fast: prog.up.speed, phone: prog.up.phone });
+  }
+  UPG.forEach((u, i) => {
+    const c = i % cols, r = Math.floor(i / cols);
+    const x = gx + c * (cw + 10), y = cardsTop + r * (ch + 12);
+    const lv = prog.up[u.id], maxed = lv >= u.max;
+    panel(x, y, cw, ch, 16, maxed ? '#eafbe7' : '#fffdf6', maxed ? '#40c057' : '#3b2f4a');
+    u.icon(x + cw / 2, y + 30, 34);
+    txt(u.name, x + cw / 2, y + 60, fitSize(u.name, cw - 16, 17), '#3b2f4a');
+    const lines = wrapLines(u.desc, cw - 18, 12, '700').slice(0, 2);
+    lines.forEach((l, k) => txt(l, x + cw / 2, y + 80 + k * 15, 12, '#6b5a4a', { weight: '700' }));
+    for (let k = 0; k < u.max; k++) { ctx.fillStyle = k < lv ? '#40c057' : '#dee2e6'; rr(x + cw / 2 - u.max * 9 + k * 18 + 2, y + ch - 62, 14, 7, 3); ctx.fill(); }
+    const price = maxed ? '已經有了' : '$' + u.cost[lv] + ' 買';
+    const can = !maxed && prog.wallet >= u.cost[lv];
+    button('buy_' + u.id, x + 10, y + ch - 48, cw - 20, 38, { color: maxed ? 'gray' : can ? 'green' : 'white', label: price, size: 16, onClick: () => buy(u) });
+  });
+  const bw = Math.min(190, (W - 48) / 2), byy = H - 64;
+  button('gBack', W / 2 - bw - 8, byy, bw, 48, { color: 'white', label: '回標題', onClick: goTitle });
+  const nd = Math.min(prog.unlocked, DAYS);
+  button('gGo', W / 2 + 8, byy, bw, 48, { color: 'green', label: prog.unlocked > DAYS ? '選擇上班日' : '出發：第' + nd + '天', primary: true, pulse: true, onClick: () => { if (prog.unlocked > DAYS) goDays(); else startDay(nd, false); } });
+  if (garageMsg) {
+    garageMsg.t += 1 / 60;
+    if (garageMsg.t > 2.2) garageMsg = null;
+    else {
+      const y = H - 100;
+      const fs = fitSize(garageMsg.text, W - 60, 16); setFont(fs);
+      const tw = ctx.measureText(garageMsg.text).width;
+      rr(W / 2 - tw / 2 - 14, y - 17, tw + 28, 34, 17); ctx.fillStyle = 'rgba(59,47,74,0.92)'; ctx.fill();
+      txt(garageMsg.text, W / 2, y, fs, '#fff');
+    }
+  }
+}
+function card(w, h) {
+  const x = (W - w) / 2, y = (H - h) / 2;
+  ctx.fillStyle = 'rgba(30,30,50,0.45)'; ctx.fillRect(0, 0, W, H);
+  panel(x, y, w, h, 22, '#fffdf6', '#3b2f4a');
+  return { x, y };
+}
+function drawIntro() {
+  const land = W > H;
+  const w = Math.min(W - 28, land ? 560 : 400), h = Math.min(H - 24, land ? 300 : 420);
+  const c = card(w, h);
+  const d = G.day;
+  let y = c.y + 34;
+  txt(G.endless ? '無限模式' : '第 ' + d + ' 天', W / 2, y, 28, '#ff7a45', { stroke: '#fff', sw: 6 });
+  y += 36;
+  const goal = G.endless ? '送越多單，時間越多！' : '今天目標：賺到 $' + TARGET[d - 1];
+  txt(goal, W / 2, y, fitSize(goal, w - 40, 19), '#3b2f4a');
+  y += 30;
+  const tip = G.endless ? '每送到一單加 14 秒，看你能撐多久！' : DAY_TIPS[d - 1];
+  const tl = wrapLines(tip, w - 60, 15, '700');
+  rr(c.x + 18, y - 4, w - 36, tl.length * 20 + 14, 12); ctx.fillStyle = '#fff4d6'; ctx.fill();
+  tl.forEach((l, i) => txt(l, W / 2, y + 12 + i * 20, 15, '#7a4a10', { weight: '700' }));
+  y += tl.length * 20 + 26;
+  // 安全守則
+  const rules = [['helmet', '安全帽一定戴好'], ['light', '紅燈停、綠燈行'], ['ped', '禮讓行人、騎慢一點']];
+  const rw = land ? (w - 40) / 3 : w - 40;
+  rules.forEach((r, i) => {
+    const rx = land ? c.x + 20 + i * rw : c.x + 20, ry = land ? y : y + i * 30;
+    const ix = rx + 18;
+    if (r[0] === 'helmet') iconHelmet(ix, ry, 22);
+    else if (r[0] === 'light') iconTrafficLight(ix, ry, 24, Math.floor(time) % 2 ? 'r' : 'g');
+    else { ctx.fillStyle = '#ff6fa8'; ctx.beginPath(); ctx.arc(ix, ry - 5, 5, 0, TAU); ctx.fill(); rr(ix - 5, ry, 10, 11, 4); ctx.fill(); }
+    txt(r[1], ix + 18, ry + 1, fitSize(r[1], rw - 44, 15), '#3b2f4a', { align: 'left', weight: '800' });
+  });
+  y += land ? 34 : 96;
+  const hint = usedTouch ? (prog.ctrl === 'stick' ? '左下角拖曳搖桿騎車，右下角煞車' : '按住畫面，機車往手指騎；右下角煞車') : '方向鍵或 WASD 騎車、空白鍵煞車、H 按喇叭';
+  txt(hint, W / 2, y, fitSize(hint, w - 30, 13), '#6b5a4a', { weight: '700' });
+  const bw = Math.min(260, w - 40), bh = 54;
+  button('go', W / 2 - bw / 2, c.y + h - bh - 22, bw, bh, { color: 'green', label: '戴好安全帽，出發！', size: 19, pulse: true, primary: true, onClick: () => {
+    sfx('dr_buckle', { exact: true });
+    G.sub = 'count'; G.countT = 0; G.countStep = -1;
+    playSong(SONG_PLAY);
+  } });
+}
+function drawCountdown() {
+  const k = G.countT;
+  const n = 3 - Math.floor(k);
+  const s = n > 0 ? String(n) : '出發！';
+  const f = k % 1;
+  const sz = (n > 0 ? 96 : 64) * (1 + (1 - easeOutCubic(Math.min(1, f * 2))) * 0.4);
+  ctx.globalAlpha = n > 0 ? 1 : Math.max(0, 1 - (k - 3) * 2.5);
+  txt(s, W / 2, H * 0.42, sz, n > 0 ? ['#ffe066', '#8ce99a', '#74c0fc'][n - 1] : '#ffe066', { stroke: '#3b2f4a', sw: sz * 0.16 });
+  ctx.globalAlpha = 1;
+}
+function drawPause() {
+  const land = W > H;
+  const bh0 = land ? 44 : 52, gp0 = land ? 10 : 12;
+  const w = Math.min(W - 28, 420), h = Math.min(H - 24, 64 + 3 * (bh0 + gp0) + 4 + 44 + 22);
+  const c = card(w, h);
+  txt('休息一下', W / 2, c.y + 36, 26, '#3b2f4a');
+  const bw = w - 48, bh = land ? 44 : 52, gap = land ? 10 : 12;
+  let y = c.y + 64;
+  button('resume', c.x + 24, y, bw, bh, { color: 'green', label: '繼續送餐', primary: true, onClick: () => setPaused(false) }); y += bh + gap;
+  button('restart', c.x + 24, y, bw, bh, { color: 'orange', label: '重新開始這一天', onClick: () => { setPaused(false); startDay(G.day, G.endless); } }); y += bh + gap;
+  button('quit', c.x + 24, y, bw, bh, { color: 'white', label: '回到選單', onClick: () => { setPaused(false); goDays(); } }); y += bh + gap + 4;
+  toggleRow(c.x + 20, y, w - 40, Math.min(44, c.y + h - y - 16));
+}
+function drawResult() {
+  const R = G.result, st = G.stats, land = W > H;
+  const w = Math.min(W - 24, land ? 620 : 410), h = Math.min(H - 20, land ? 316 : 424);
+  const c = card(w, h);
+  const title = G.endless ? '今天辛苦了！' : R.pass ? '下班囉！目標達成！' : '下班囉！差一點點～';
+  txt(title, W / 2, c.y + 30, fitSize(title, w - 40, 24), R.pass ? '#2f9e44' : '#e8590c');
+  // 星星
+  const sy = c.y + 70;
+  for (let i = 0; i < 3; i++) {
+    const at = 0.4 + i * 0.25, k = clamp((R.t - at) / 0.3, 0, 1);
+    const on = i < R.stars && k > 0;
+    if (on && R.shown <= i) { R.shown = i + 1; sfx('star', { pitch: 1 + i * 0.12, exact: true }); }
+    const sc2 = on ? easeOutBack(k) : 1;
+    iconStar(W / 2 + (i - 1) * 46, sy, 19 * sc2 + (on ? 0 : 0), on);
+  }
+  // 數據
+  const rows = [
+    ['送達訂單', st.delivered + ' 單'],
+    ['客人評價', st.delivered ? R.avg.toFixed(1) + ' 顆星' : '—'],
+    ['乖乖等紅燈', st.good + ' 次'],
+    ['闖紅燈', st.red + ' 次'],
+    ['撞到東西', st.bumps + ' 次'],
+    ['安全駕駛獎', st.bonus ? '+$' + st.bonus : (G.endless ? '—' : '沒有（闖紅燈）')]
+  ];
+  const colsN = land ? 2 : 1, rw = (w - 48 - (colsN - 1) * 16) / colsN, rh = land ? 26 : 28;
+  rows.forEach((r, i) => {
+    const cc = i % colsN, rI = Math.floor(i / colsN);
+    const x = c.x + 24 + cc * (rw + 16), y = sy + 36 + rI * rh;
+    rr(x, y, rw, rh - 4, 8); ctx.fillStyle = i % 2 ? '#f8f3e8' : '#fff4dc'; ctx.fill();
+    txt(r[0], x + 10, y + rh / 2 - 2, 14, '#6b5a4a', { align: 'left', weight: '800' });
+    txt(r[1], x + rw - 10, y + rh / 2 - 2, fitSize(r[1], rw * 0.5, 14), r[0] === '闖紅燈' && st.red ? '#e03131' : '#3b2f4a', { align: 'right' });
+  });
+  let y = sy + 36 + Math.ceil(rows.length / colsN) * rh + 20;
+  const shownMoney = Math.round(R.money * clamp(R.t / 1.2, 0, 1));
+  const mtxt = '今天賺了 $' + shownMoney + (R.target ? ' / 目標 $' + R.target : '');
+  txt(mtxt, W / 2, y, fitSize(mtxt, w - 40, 21), '#7a4a10');
+  y += 24;
+  if (R.isNew && R.t > 1.3) txt('新紀錄！', W / 2, y, 16, '#ff3b6b', { stroke: '#fff', sw: 4 });
+  else txt((G.endless ? '最佳紀錄 $' : '最佳一天 $') + (R.best || 0), W / 2, y, 13, '#8a7a6a', { weight: '700' });
+  const bh = land ? 46 : 50, bw = (w - 48 - 12) / 2, by = c.y + h - bh - 18;
+  button('rGarage', c.x + 24, by, bw, bh, { color: 'orange', label: '車庫升級', onClick: goGarage });
+  if (G.endless) button('rAgain', c.x + 36 + bw, by, bw, bh, { color: 'green', label: '再玩一次', primary: true, onClick: () => startDay(10, true) });
+  else if (R.pass && G.day < DAYS) button('rNext', c.x + 36 + bw, by, bw, bh, { color: 'green', label: '下一天', primary: true, pulse: true, onClick: () => startDay(G.day + 1, false) });
+  else if (R.pass) button('rDays', c.x + 36 + bw, by, bw, bh, { color: 'pink', label: '無限模式', primary: true, pulse: true, onClick: () => startDay(10, true) });
+  else button('rRetry', c.x + 36 + bw, by, bw, bh, { color: 'green', label: '再試一次', primary: true, onClick: () => startDay(G.day, false) });
+}
+function drawPlay() {
+  drawWorld();
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  // 傍晚的光
+  if (!G.endless && G.sub !== 'intro') {
+    const k = 1 - G.clock / DAY_LEN;
+    if (k > 0.65) { ctx.fillStyle = 'rgba(255,140,90,' + ((k - 0.65) / 0.35 * 0.16).toFixed(3) + ')'; ctx.fillRect(0, 0, W, H); }
+  }
+  if (G.sub === 'intro') { drawIntro(); return; }
+  drawPins();
+  drawArrow();
+  drawScreenParts();
+  drawLabels();
+  drawHUD();
+  drawPhone();
+  drawMinimap();
+  if (G.sub !== 'result') {
+    button('pause', LAY.pause.x, LAY.pause.y, LAY.pause.w, LAY.pause.h, { color: 'white', radius: 14, icon: (x, y, s) => iconPause(x, y, s * 1.1, '#3b2f4a'), onClick: () => setPaused(true) });
+    drawControls();
+  }
+  drawBanner();
+  if (G.sub === 'count') drawCountdown();
+  if (G.sub === 'end') txt(G.endless ? '時間到！' : '下班囉！', W / 2, H * 0.42, 54 * (1 + Math.max(0, 0.3 - G.endT)), '#ffe066', { stroke: '#3b2f4a', sw: 9 });
+  if (G.sub === 'result') { btns = []; drawResult(); }
+}
+
+/* =====================================================================
+ * 場景切換、暫停
+ * ===================================================================== */
+function goTitle() { scene = 'title'; sceneT = 0; paused = false; engineOff(); playSong(SONG_TITLE); sfx('back'); }
+function goDays() { scene = 'days'; sceneT = 0; paused = false; engineOff(); playSong(SONG_TITLE); sfx('select'); }
+function goGarage() { scene = 'garage'; sceneT = 0; paused = false; engineOff(); garageMsg = null; playSong(SONG_GARAGE); sfx('select'); }
+function setPaused(p) {
+  if (scene !== 'play' || G.sub === 'result' || G.sub === 'intro') return;
+  if (p === paused) return;
+  paused = p;
+  if (p) { if (M) M.pause(); if (engine) engine.set(0, 0); sfx('ui'); input.brakeBtn = 0; ptrs.clear(); }
+  else { if (M) M.resume(); sfx('select'); }
+}
+
+/* =====================================================================
+ * 輸入
+ * ===================================================================== */
+let usedTouch = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches);
+const keys = {};
+const ptrs = new Map();
+function local(e) { const r = cv.getBoundingClientRect(); return { x: (e.clientX - r.left) * (W / Math.max(1, r.width)), y: (e.clientY - r.top) * (H / Math.max(1, r.height)) }; }
+function activeJoy() { for (const p of ptrs.values()) if (p.kind === 'joy' || p.kind === 'steer') return p; return null; }
+function canDrive() { return scene === 'play' && !paused && (G.sub === 'run' || G.sub === 'count'); }
+cv.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  if (e.pointerType && e.pointerType !== 'mouse') usedTouch = true;
+  const p = local(e);
+  try { cv.setPointerCapture(e.pointerId); } catch (err) { /* 忽略 */ }
+  const b = hitBtn(p.x, p.y);
+  if (b) {
+    if (b.hold) { ptrs.set(e.pointerId, { kind: 'hold', b }); b.hold(true); }
+    else { ptrs.set(e.pointerId, { kind: 'btn', b, x: p.x, y: p.y }); pressed = b.id; }
+    return;
+  }
+  if (canDrive()) {
+    if (activeJoy()) return;
+    if (prog.ctrl === 'stick') ptrs.set(e.pointerId, { kind: 'joy', ox: p.x, oy: p.y, x: p.x, y: p.y });
+    else ptrs.set(e.pointerId, { kind: 'steer', x: p.x, y: p.y });
+  }
+});
+cv.addEventListener('pointermove', e => {
+  const q = ptrs.get(e.pointerId);
+  if (!q) return;
+  const p = local(e);
+  q.x = p.x; q.y = p.y;
+  if (q.kind === 'joy') {
+    // 拉太遠的話底座跟著走
+    const R = LAY.joy.R * 1.3, dx = q.x - q.ox, dy = q.y - q.oy, d = Math.hypot(dx, dy);
+    if (d > R) { q.ox = q.x - dx / d * R; q.oy = q.y - dy / d * R; }
+  }
+});
+function endPtr(e, cancel) {
+  const q = ptrs.get(e.pointerId);
+  if (!q) return;
+  ptrs.delete(e.pointerId);
+  if (q.kind === 'hold') q.b.hold(false);
+  else if (q.kind === 'btn') {
+    pressed = null;
+    if (cancel) return;
+    const p = local(e);
+    const b2 = hitBtn(p.x, p.y);
+    const still = (b2 && b2.id === q.b.id) || Math.hypot(p.x - q.x, p.y - q.y) < 12;
+    if (still && q.b.on && !q.b.disabled) q.b.on();
+  }
+}
+cv.addEventListener('pointerup', e => endPtr(e, false));
+cv.addEventListener('pointercancel', e => endPtr(e, true));
+cv.addEventListener('contextmenu', e => e.preventDefault());
+const KEYMAP = { ArrowLeft: 'l', KeyA: 'l', ArrowRight: 'r', KeyD: 'r', ArrowUp: 'u', KeyW: 'u', ArrowDown: 'd', KeyS: 'd' };
+window.addEventListener('keydown', e => {
+  if (e.code in KEYMAP) { keys[KEYMAP[e.code]] = true; e.preventDefault(); return; }
+  if (e.code === 'Space') { keys.brake = true; e.preventDefault(); return; }
+  if (e.code === 'KeyH') { if (!e.repeat) honk(); return; }
+  if (e.code === 'Escape' || e.code === 'KeyP') {
+    if (scene === 'play' && (G.sub === 'run' || G.sub === 'count')) setPaused(!paused);
+    else if (scene === 'days' || scene === 'garage') goTitle();
+    return;
+  }
+  if (e.code === 'Enter' || e.code === 'NumpadEnter') {
+    const b = btns.find(q => q.primary);
+    if (b && b.on && !e.repeat) { b.on(); e.preventDefault(); }
+  }
+});
+window.addEventListener('keyup', e => {
+  if (e.code in KEYMAP) keys[KEYMAP[e.code]] = false;
+  if (e.code === 'Space') keys.brake = false;
+});
+window.addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+function readInput() {
+  let x = (keys.r ? 1 : 0) - (keys.l ? 1 : 0), y = (keys.d ? 1 : 0) - (keys.u ? 1 : 0);
+  const kd = Math.hypot(x, y); if (kd > 0) { x /= kd; y /= kd; }
+  const j = activeJoy();
+  if (j && j.kind === 'joy') {
+    const R = LAY.joy.R, dx = (j.x - j.ox) / R, dy = (j.y - j.oy) / R, d = Math.hypot(dx, dy);
+    if (d > 0.12) { const m = Math.min(1, d); x = dx / d * m; y = dy / d * m; }
+  } else if (j && j.kind === 'steer') {
+    const p = worldToScreen(P.x, P.y), dx = j.x - p.x, dy = j.y - p.y, d = Math.hypot(dx, dy);
+    if (d > 26) { const m = clamp((d - 20) / 110, 0.25, 1); x = dx / d * m; y = dy / d * m; }
+  }
+  input.x = x; input.y = y;
+  input.brake = !!keys.brake || (input.brakeBtn || 0) > 0;
+}
+
+/* =====================================================================
+ * 主迴圈
+ * ===================================================================== */
+let rushOn = false, lastTick = -1, crowdT = 0;
+function updatePlay(dt) {
+  const sub = G.sub;
+  if (sub === 'count') {
+    G.countT += dt;
+    const step = Math.floor(G.countT);
+    if (step !== G.countStep) { G.countStep = step; if (step < 3) sfx('countdown', { exact: true }); else if (step === 3) { sfx('go', { exact: true }); G.sub = 'run'; } }
+  } else if (sub === 'run') {
+    G.t += dt; G.clock -= dt;
+    if (G.clock <= 10 && G.clock > 0) { const s = Math.ceil(G.clock); if (s !== lastTick) { lastTick = s; sfx('dr_tick', { pitch: 1 + (10 - s) * 0.03, exact: true }); } }
+    if (G.clock <= 0) { G.clock = 0; endDay(); }
+  } else if (sub === 'end') {
+    G.endT += dt;
+    if (G.endT > 1.9) finishDay();
+  } else if (sub === 'result') G.result.t += dt;
+  if (G.sub === 'count' && G.countT > 3.3) G.sub = 'run';
+  if (G.sub !== 'result') {
+    lightClock += dt;
+    for (const L of lights) {
+      const s0 = lightState(L, 0), s1 = lightState(L, 1);
+      if (L.prev[1] !== 'r' && s1 === 'r') spawnCrossers(L, 1);
+      if (L.prev[0] !== 'r' && s0 === 'r') spawnCrossers(L, 0);
+      L.prev[0] = s0; L.prev[1] = s1;
+    }
+    for (const v of vehicles) if (v.on) updateVehicle(v, dt);
+    updatePeds(dt);
+    if (G.sub !== 'intro') { readInput(); updatePlayer(dt); updateOrders(dt); }
+    else { input.x = input.y = 0; }
+  }
+  updateParts(dt); updateLabels(dt); updateTimers(dt);
+  if (banner) { banner.t += dt; if (banner.t > banner.dur) banner = null; }
+  updateCam(dt);
+  // 音樂：快來不及或最後 30 秒 → 加樂器、加快
+  const rush = G.sub === 'run' && ((!G.endless && G.clock < 30) || (G.endless && G.clock < 20) || G.orders.some(o => o.hot && !o.cold && o.tLeft < 10));
+  if (rush !== rushOn) { rushOn = rush; if (M) { M.setLayer('rush', rush); M.setTempo(rush ? 1.06 : 1); } }
+  // 夜市人聲
+  if (G.sub === 'run' && P.slow < 0.6 && slowZones.some(z => z.night && P.x > z.x && P.x < z.x + z.w && P.y > z.y && P.y < z.y + z.h)) {
+    crowdT -= dt;
+    if (crowdT <= 0) { crowdT = rand(0.8, 1.8); sfx('dr_crowd', { vol: 0.8 }); }
+  }
+}
+function audioUpdate() {
+  const want = scene === 'play' && !paused && !document.hidden && sfxOn && (G.sub === 'run' || G.sub === 'count');
+  if (want) {
+    engineOn();
+    if (engine) { const k = clamp(P.spd / maxSpd(), 0, 1); engine.set(0.06 + k * 0.42, 0.045 + k * 0.02); }
+  } else if (engine) {
+    if (scene !== 'play' || !sfxOn || G.sub === 'result') engineOff(); else engine.set(0, 0);
+  }
+}
+function step(dt) {
+  time += dt; sceneT += dt;
+  if (shakeT > 0) shakeT -= dt;
+  if (scene === 'play') { if (!paused) updatePlay(dt); }
+  else { updateParts(dt); updateTimers(dt); }
+  audioUpdate();
+}
+function render() {
+  btns = [];
+  chunkBuilds = 0;
+  if (shakeT > 0 && !paused) { const k = shakeAmt * Math.min(1, shakeT * 4); shx = (Math.random() * 2 - 1) * k; shy = (Math.random() * 2 - 1) * k; } else { shx = 0; shy = 0; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (scene === 'play') {
+    setWorldXform();
+    drawPlay();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (paused) { btns = []; drawPause(); }
+  } else {
+    if (scene === 'title') drawTitle();
+    else if (scene === 'days') drawDays();
+    else if (scene === 'garage') drawGarage();
+  }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    if (engine) engine.set(0, 0);
+    if (scene === 'play' && (G.sub === 'run' || G.sub === 'count') && !paused) setPaused(true);
+  }
+});
+function resize() {
+  const r = cv.getBoundingClientRect();
+  W = Math.max(1, r.width || innerWidth); H = Math.max(1, r.height || innerHeight);
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  U = clamp(Math.min(W, H) / 420, 0.75, 1.4);
+  const z0 = clamp(Math.min(W, H) / 500, 0.72, 1.5);
+  let s2 = z0 * dpr;
+  s2 = Math.min(s2, KG.lowEnd ? 1.7 : 2.4);
+  const P2 = Math.round(BS * s2);
+  if (P2 !== chunkP) { chunkP = P2; chunks.clear(); }
+  sc = chunkP / BS; zoom = sc / dpr;
+  chunkMax = Math.max(12, (Math.ceil(W / zoom / BS) + 1) * (Math.ceil(H / zoom / BS) + 1) + 4);
+  layout();
+}
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 120));
+if (window.visualViewport) window.visualViewport.addEventListener('resize', resize);
+
+let last = performance.now();
+const perf = { n: 0, sum: 0, max: 0 };
+function frame(now) {
+  const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
+  last = now;
+  const t0 = performance.now();
+  try { step(dt); render(); } catch (err) { console.error(err); }
+  const ft = performance.now() - t0;
+  perf.n++; perf.sum += ft; if (ft > perf.max) perf.max = ft;
+  requestAnimationFrame(frame);
+}
+resize();
+playSong(SONG_TITLE);
+requestAnimationFrame(t => { last = t; frame(t); });
+
+/* ---------- 測試用 ---------- */
+window.__dr = {
+  state: () => ({
+    scene, sub: G.sub, paused, day: G.day, endless: G.endless, clock: +G.clock.toFixed(2), money: G.money,
+    orders: G.orders.map(o => ({ id: o.id, state: o.state, shop: o.shop.name, dest: o.dest.name, hot: o.hot, fr: o.fr, tLeft: +o.tLeft.toFixed(1), hits: o.hits, tx: Math.round(targetOf(o).x), ty: Math.round(targetOf(o).y) })),
+    p: { x: Math.round(P.x), y: Math.round(P.y), spd: Math.round(P.spd), ang: +P.ang.toFixed(2) }, stats: G.stats,
+    music: M ? M.isPlaying() : null, rush: rushOn, labels: labels.map(l => ({ text: l.text, slot: l.slot })), vehicles: vehicles.filter(v => v.on).length,
+    peds: peds.filter(p => p.on).length, wallet: prog.wallet, up: prog.up, chunks: chunks.size, engine: !!engine, result: G.result ? { money: G.result.money, stars: G.result.stars, pass: G.result.pass } : null
+  }),
+  start: (d, endless, skip) => { startDay(d || 1, !!endless); if (skip !== false) { G.sub = 'run'; playSong(SONG_PLAY); } },
+  tick: (sec) => { const n = Math.round(sec * 60); for (let i = 0; i < n; i++) step(1 / 60); },
+  tp: (x, y, ang) => { P.x = x; P.y = y; if (ang != null) P.ang = ang; P.spd = 0; updateCam(0, true); },
+  goTarget: () => { const o = focusOrder(); if (!o) return false; const z = targetOf(o); P.x = z.x; P.y = z.y; P.spd = 0; P.kx = P.ky = 0; updateCam(0, true); return true; },
+  setClock: s => { G.clock = s; },
+  btns: () => btns.map(b => ({ id: b.id, x: Math.round(b.x + b.w / 2), y: Math.round(b.y + b.h / 2), w: Math.round(b.w), h: Math.round(b.h) })),
+  perf: reset => { const r = { avg: perf.n ? +(perf.sum / perf.n).toFixed(2) : 0, max: +perf.max.toFixed(1), n: perf.n }; if (reset) { perf.n = 0; perf.sum = 0; perf.max = 0; } return r; },
+  go: s => { if (s === 'title') goTitle(); else if (s === 'days') goDays(); else if (s === 'garage') goGarage(); },
+  give: m => { prog.wallet += m; saveProg(); },
+  unlock: () => { prog.unlocked = DAYS + 1; saveProg(); },
+  screen: (x, y) => worldToScreen(x, y),
+  lights: () => lights.map(L => ({ i: L.i, j: L.j, ew: lightState(L, 0), ns: lightState(L, 1) })),
+  layout: () => JSON.parse(JSON.stringify(LAY)),
+  pause: p => setPaused(p),
+  bumpTest: () => { P.spd = 0; bump(1, 0, 120, 'wall'); },
+  chunkTime: () => { const t0 = performance.now(); chunks.clear(); for (let i = 0; i < 6; i++) getChunk(i, 2, true); return (performance.now() - t0) / 6; },
+  route: () => { const o = focusOrder(); if (!o) return null; const z = targetOf(o); return fullRoute(P.x, P.y, z.x, z.y).map(q => [Math.round(q[0]), Math.round(q[1])]); },
+  setUp: u => { Object.assign(prog.up, u); saveProg(); },
+  veh: () => vehicles.filter(v => v.on).map(v => ({ x: Math.round(v.x), y: Math.round(v.y), dir: v.dir, spd: Math.round(v.spd), block: +v.block.toFixed(1), type: v.type }))
+};
+})();
+</script>
+</body>
+</html>

@@ -526,7 +526,7 @@
         var saved = sfxBus; sfxBus = A.createGain(); sfxBus.gain.value = o.vol == null ? 1 : o.vol;
         var tmp = sfxBus;
         if (o.pan && A.createStereoPanner) { var pn = A.createStereoPanner(); pn.pan.value = o.pan; tmp.connect(pn); pn.connect(saved); } else tmp.connect(saved);
-        try { LIB[name](p); } finally { sfxBus = saved; }
+        try { LIB[name](p); } catch (e) { /* 忽略 */ } finally { sfxBus = saved; }
       } else { try { LIB[name](p); } catch (e) { /* 忽略 */ } }
     },
     tone: function (f, d, o) { if (KG.isMuted() || !getCtx()) return; tone(f, d, o); },

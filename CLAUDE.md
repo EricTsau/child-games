@@ -13,6 +13,7 @@
   - 最後 `NEW_COUNT`（20）個顯示「NEW」。
   - `SUBS`：每個分類再分小分類，益智另有給大人的「策略經營」（`['名稱', '搜尋別名', 'slug slug …']`），**新遊戲要把 slug 加進對應的小分類**，不然會跑到「其他」。
   - 「我的最愛」存在 `KG.store` 的 `home:fav`（slug 陣列），「最近玩過」在 `home:recent`。
+  - 「圖卡／文字」顯示方式存在 `home:view`（`grid`/`list`）；文字清單用 `.lrow`（不要用 `.row`，安裝說明框已經用了）。
   - 首頁會在背景預先下載每個遊戲的 `games/<slug>/` 和縮圖；遊戲如果有**額外的檔案**（多個 .js 模組、第二個 html），要加進 `urls.push(...)` 那一行，才能離線玩。
 - `games/<slug>/index.html`：一個遊戲一個資料夾，通常是單一檔案（CSS/JS 內嵌）。全部圖案用程式畫（Canvas / SVG / three.js），**不用 emoji 當角色圖、不用外部圖片字型、不用 CDN**。
 - `assets/common.js` + `common.css`：共用的 `window.KG`（`KG.store`、`KG.best`、`KG.toast`、`KG.confetti`、`KG.say` 中文語音、`KG.vibrate`、`KG.lowEnd`、`KG.audio()` 共用 AudioContext）。

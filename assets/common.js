@@ -177,6 +177,19 @@
   };
 
   /** 彩帶慶祝。x、y 為起點（預設畫面中央） */
+  // 五角星（畫的，不用 emoji），依大小快取
+  var starCache = {};
+  function STAR(w) {
+    var k = Math.round(w);
+    if (starCache[k]) return starCache[k];
+    var p = new Path2D(), R = k * 1.1, r = R * 0.45;
+    for (var i = 0; i < 10; i++) {
+      var a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? r : R;
+      if (i) p.lineTo(Math.cos(a) * rr, Math.sin(a) * rr); else p.moveTo(Math.cos(a) * rr, Math.sin(a) * rr);
+    }
+    p.closePath();
+    return (starCache[k] = p);
+  }
   KG.confetti = function (x, y, count) {
     var cv = document.getElementById('kg-confetti');
     if (!cv) {
@@ -199,27 +212,29 @@
       parts.push({
         x: ox, y: oy, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp - 5,
         w: 6 + Math.random() * 8, h: 4 + Math.random() * 6, r: Math.random() * 6, vr: (Math.random() - 0.5) * 0.4,
-        c: colors[i % colors.length], star: Math.random() < 0.25, life: 1
+        c: colors[i % colors.length], star: Math.random() < 0.25
       });
     }
     var start = performance.now();
     (function frame(now) {
+      c.setTransform(dpr, 0, 0, dpr, 0, 0);
       c.clearRect(0, 0, innerWidth, innerHeight);
-      var alive = false;
-      parts.forEach(function (p) {
+      var alive = false, life = 1 - (now - start) / 2600;
+      for (var i = 0; i < parts.length; i++) {
+        var p = parts[i];
         p.vy += 0.25; p.vx *= 0.99; p.x += p.vx; p.y += p.vy; p.r += p.vr;
-        p.life = 1 - (now - start) / 2600;
-        if (p.life > 0 && p.y < innerHeight + 30) alive = true;
-        c.save();
-        c.globalAlpha = Math.max(0, p.life);
-        c.translate(p.x, p.y);
-        c.rotate(p.r);
+        if (life <= 0 || p.y > innerHeight + 30) continue;
+        alive = true;
+        var cs = Math.cos(p.r) * dpr, sn = Math.sin(p.r) * dpr;
+        c.setTransform(cs, sn, -sn, cs, p.x * dpr, p.y * dpr);
+        c.globalAlpha = life;
         c.fillStyle = p.c;
-        if (p.star) { c.font = (p.w * 2) + 'px sans-serif'; c.fillText('⭐', -p.w, p.w); }
+        if (p.star) c.fill(STAR(p.w));
         else c.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
-        c.restore();
-      });
-      if (alive) requestAnimationFrame(frame); else c.clearRect(0, 0, innerWidth, innerHeight);
+      }
+      c.globalAlpha = 1;
+      if (alive) requestAnimationFrame(frame);
+      else { c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, cv.width, cv.height); }
     })(start);
   };
 

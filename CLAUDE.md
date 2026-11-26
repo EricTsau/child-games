@@ -75,6 +75,7 @@
 ## 版面與操作（以前出過的 bug）
 
 - 版面用 canvas 的實際大小（`getBoundingClientRect()`）算，指標座標也要經過這個 rect 換算；聽 `visualViewport` 的 resize 和 `orientationchange`。手機網址列、安裝成 App 時 100dvh 不一定等於 innerHeight。
+- viewport 一律 `width=device-width, initial-scale=1`，**不要加 `viewport-fit=cover`**：Android 安裝成 App（Chrome 135+）會把畫面延伸到底下的返回／主畫面導覽列後面，底部按鈕被蓋住（common.js 也會在載入時自動拿掉）。
 - 所有選單和遮罩的 z-index 要**小於 9300**，🏠／🔊 才按得到；遊戲 UI 避開左上、右上 60px，暫停鍵放在右上 🔊 下面（y ≈ 84）。
 - 觸控要寬鬆：點擊吸附到附近最近的目標，不要求點得很準。手機觸控用 `touch-action:none`。
 - 按鈕在直式、橫式、電腦三種尺寸都不能跑出畫面外；主要按鈕固定在底部，只有中間內容捲動。

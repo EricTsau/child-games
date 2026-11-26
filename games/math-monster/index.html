@@ -260,6 +260,42 @@
     .cookie { --cs: clamp(72px, 22vh, 112px); }
     #eq { font-size: clamp(30px, 9vh, 58px); }
   }
+  /* 音樂／音效開關 */
+  .au-tg { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  .au-tg button {
+    font-family: var(--kg-font); font-size: 16px; font-weight: 900; min-height: 40px; padding: 4px 14px; border-radius: 999px; cursor: pointer;
+    border: 3px solid #fff; color: #6b5a74; background: linear-gradient(180deg, #ffffff, #e9e3ee); box-shadow: 0 3px 0 rgba(74,59,82,.22), 0 6px 12px rgba(0,0,0,.12);
+  }
+  .au-tg button.on { color: #fff; background: linear-gradient(180deg, #9be8aa, #3fb35f); box-shadow: 0 3px 0 #2a8746, 0 6px 12px rgba(0,0,0,.12); text-shadow: 0 1px 0 rgba(0,0,0,.2); }
+  .au-tg button:active { transform: translateY(2px); }
+  .kit-tg { margin-top: 12px; animation: kit-drop 1s .45s both; }
+  .kit-screen .kit-tg { margin-top: 10px; animation: none; }
+  /* 矮螢幕（手機橫放）：標題的音樂／音效開關放右下角 */
+  @media (max-height: 500px) { .kit-title .kit-tg { position: fixed; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); margin: 0; flex-direction: column; } }
+  #pauseBtn { position: fixed; right: 10px; top: 62px; z-index: 8100; width: 46px; height: 46px; border-radius: 50%; border: 3px solid #fff; cursor: pointer; padding: 10px;
+    background: linear-gradient(180deg, #c9b6ff, #8a63ee); box-shadow: var(--kg-shadow); display: none; }
+  #pauseBtn svg { width: 100%; height: 100%; display: block; }
+  #pauseBtn:active { transform: scale(.9); }
+  /* 直式：題目板往下移一點，讓出右上的暫停鍵；橫式：右邊留一欄給暫停鍵 */
+  @media not all and (min-aspect-ratio: 6/5) { #app { padding-top: 128px; } }
+  @media (min-aspect-ratio: 6/5) { #app { padding-right: max(66px, env(safe-area-inset-right)); } }
+  .pz-card { width: min(360px, 100%); text-align: center; background: linear-gradient(180deg, #fff, #f3eeff); border: 6px solid #fff; border-radius: 30px; padding: 18px 16px 20px;
+    box-shadow: 0 10px 0 rgba(0,0,0,.12), 0 24px 44px rgba(40,20,80,.3); animation: kit-cardin .5s cubic-bezier(.2,1.5,.4,1) both; color: #4b2a8f; }
+  .pz-card h2 { margin: 0 0 6px; font-size: 28px; }
+  .pz-card .ow { width: 110px; height: 110px; margin: 0 auto; }
+  .pz-card .ow svg { width: 100%; height: 100%; overflow: visible; }
+  .pz-card .au-tg { margin: 4px 0 14px; }
+  @media (max-height: 500px) { .pz-card .ow { width: 64px; height: 64px; } .pz-card { padding: 10px 16px 14px; } }
+  /* 矮的橫式：標題放在 🏠／🔊 中間，主角和按鈕縮小、按鈕排一列，開始鈕不再跑出畫面 */
+  @media (max-height: 520px) and (min-aspect-ratio: 11/10) {
+    .kit-title { padding-top: 10px; padding-bottom: 12px; gap: 6px; }
+    .kit-logo-svg { width: min(56vw, 420px, 70vh); }
+    .kit-hero { width: min(30vh, 150px); }
+    .kit-tsub { font-size: 15px; padding: 4px 14px; }
+    .kit-tbtns { flex-wrap: nowrap; gap: 12px; }
+    .kit-title .kit-bigbtn { min-height: 56px; font-size: 22px; padding: 6px 22px 6px 12px; }
+    .kit-title .kit-bigbtn svg { width: 30px; height: 30px; }
+  }
 </style>
 </head>
 <body>
@@ -358,6 +394,7 @@
   <div class="kit-chip" id="chipQ"><svg viewBox="0 0 100 100"><use href="#ic-cookie"/></svg><div class="kit-prog"><i id="progBar"></i></div></div>
   <div class="kit-chip" id="chipS"><span id="starIc"></span><span id="hudS">0</span></div>
 </div>
+<button id="pauseBtn" aria-label="暫停"><svg viewBox="0 0 100 100"><rect x="22" y="18" width="20" height="64" rx="8" fill="#fff"/><rect x="58" y="18" width="20" height="64" rx="8" fill="#fff"/></svg></button>
 <div id="app" style="visibility:hidden">
   <div id="board">
     <div id="eq"></div>
@@ -368,7 +405,96 @@
   <div id="cookies"></div>
 </div>
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
 <script>
+/* ===================== 聲音：KG.music 背景音樂 + KG.sfx 音效 ===================== */
+const AU = (function () {
+  const M = KG.music, S = KG.sfx;
+  const KEY = 'math-monster:sfx';
+  let sfxOn = KG.store.get(KEY, true) !== false;
+  const last = Object.create(null);
+  const PO = { vol: 1, pitch: 1, pan: 0 };
+  let base = 0.3, ducked = false, duckIv = 0, sayAt = 0, tonic = 523, winFn = null, loseFn = null;
+  function applyVol() { if (M) M.setVolume(ducked ? base * 0.45 : base); }
+  function can(name, gap) {
+    if (!sfxOn || !S || KG.isMuted()) return false;
+    const now = performance.now();
+    if (now - (last[name] || -1e9) < (gap == null ? 40 : gap)) return false;
+    last[name] = now;
+    return true;
+  }
+  /** 播放音效：40 ms 內同一種只播一次，音高隨機 ±4%（exact:true 不加隨機） */
+  function sfx(name, o, gap) {
+    if (!can(name, gap)) return;
+    PO.vol = o && o.vol != null ? o.vol : 1;
+    PO.pitch = (o && o.pitch || 1) * (o && o.exact ? 1 : 0.96 + Math.random() * 0.08);
+    PO.pan = o && o.pan || 0;
+    S.play(name, PO);
+  }
+  /** 依畫面 x 座標算左右聲道 */
+  function pan(x) { const w = innerWidth || 1; return Math.max(-0.7, Math.min(0.7, (x / w) * 1.4 - 0.7)); }
+  /** 連續答對：大調音階一階一階往上 */
+  const DEG = [0, 2, 4, 5, 7, 9, 11, 12, 14, 16];
+  function streakPitch(n) { return Math.pow(2, DEG[Math.max(0, Math.min(DEG.length - 1, (n || 1) - 1))] / 12); }
+  // 講話時把音樂調小，講完再恢復
+  const rawSay = KG.say;
+  KG.say = function (text, rate) {
+    rawSay(text, rate);
+    if (KG.isMuted() || !window.speechSynthesis) return;
+    sayAt = performance.now();
+    if (!ducked) { ducked = true; applyVol(); }
+    if (!duckIv) duckIv = setInterval(checkDuck, 150);
+  };
+  function checkDuck() {
+    const ss = window.speechSynthesis, el = performance.now() - sayAt;
+    if (el < 450 || (ss && (ss.speaking || ss.pending) && el < 15000)) return;
+    clearInterval(duckIv); duckIv = 0; ducked = false; applyVol();
+  }
+  function music(song) { if (!M || !song) return; base = song.mv || 0.3; applyVol(); M.play(song); }
+  function jingle(def) { if (M && sfxOn) M.jingle(def); }
+  /** 「音樂 開/關」「音效 開/關」兩顆按鈕 */
+  function paint() {
+    document.querySelectorAll('.au-tg').forEach(el => {
+      const m = el.querySelector('.au-m'), s = el.querySelector('.au-s');
+      const mo = !M || M.isEnabled();
+      m.classList.toggle('on', mo); m.textContent = '音樂 ' + (mo ? '開' : '關');
+      s.classList.toggle('on', sfxOn); s.textContent = '音效 ' + (sfxOn ? '開' : '關');
+    });
+  }
+  function toggles(cls) {
+    const el = document.createElement('div');
+    el.className = 'au-tg' + (cls ? ' ' + cls : '');
+    el.innerHTML = '<button type="button" class="au-m"></button><button type="button" class="au-s"></button>';
+    el.querySelector('.au-m').addEventListener('click', e => { e.stopPropagation(); if (M) M.setEnabled(!M.isEnabled()); sfx('ui'); paint(); });
+    el.querySelector('.au-s').addEventListener('click', e => { e.stopPropagation(); sfxOn = !sfxOn; KG.store.set(KEY, sfxOn); sfx('ui'); paint(); });
+    setTimeout(paint, 0);
+    return el;
+  }
+  // 共用音效：答對（音高跟著連續答對往上）、答錯（輕輕的，不嚇人）、出現、星星
+  if (S) {
+    S.define('au_chime', (p, s) => { s.tone(tonic * p, 0.14, { type: 'triangle', vol: 0.2 }); s.tone(tonic * 1.5 * p, 0.3, { type: 'sine', vol: 0.13, delay: 0.07 }); s.tone(tonic * 2 * p, 0.26, { type: 'sine', vol: 0.045, delay: 0.13 }); });
+    S.define('au_soft', (p, s) => { s.tone(440 * p, 0.15, { type: 'sine', vol: 0.13, slide: 400 * p }); s.tone(349 * p, 0.26, { type: 'sine', vol: 0.12, delay: 0.14, slide: 330 * p }); });
+    S.define('au_appear', (p, s) => { s.tone(520 * p, 0.07, { type: 'sine', vol: 0.08, slide: 700 * p }); });
+    S.define('au_star', (p, s) => { s.tone(1047 * p, 0.45, { type: 'sine', vol: 0.15 }); s.tone(1047 * 2.76 * p, 0.12, { type: 'sine', vol: 0.03 }); s.tone(1568 * p, 0.3, { type: 'triangle', vol: 0.05, delay: 0.06 }); });
+  }
+  return {
+    setKey(hz) { tonic = hz; },
+    onWin(fn) { winFn = fn; }, onLose(fn) { loseFn = fn; },
+    win() { if (winFn) winFn(); else sfx('levelup'); },
+    lose() { if (loseFn) loseFn(); else sfx('au_soft'); },
+    sfx, pan, streakPitch, music, jingle, toggles, paint,
+    get on() { return sfxOn; },
+    define(name, fn) { if (S) S.define(name, fn); },
+    tone(f, d, o) { if (sfxOn && S) S.tone(f, d, o); },
+    layer(n, on) { if (M) M.setLayer(n, on); },
+    tempo(x) { if (M) M.setTempo(x); },
+    stop(f) { if (M) M.stop(f); },
+    pause() { if (M) M.pause(); },
+    resume() { if (M) M.resume(); },
+    current() { return M ? M.current() : null; }
+  };
+})();
+
 /* ===== 遊戲共用 UI 套件 Kit：標題畫面、關卡選擇、結算、圖示、特效、背景音樂 ===== */
 const Kit = (function () {
   'use strict';
@@ -447,38 +573,14 @@ const Kit = (function () {
     return s + '</svg>';
   }
 
-  /* ---------- 背景音樂（用 KG.note 合成） ---------- */
-  const Music = (function () {
-    let timer = null, step = 0, song = null;
-    const mf = m => 440 * Math.pow(2, (m - 69) / 12);
-    function tick() {
-      if (!song) return;
-      const dur = 60 / song.bpm / 2;
-      if (!KG.isMuted() && !document.hidden) {
-        const m = song.mel[step % song.mel.length];
-        if (m) KG.note(mf(m), dur * 1.5, song.wave || 'triangle', song.vol || 0.045);
-        if (song.bass && step % 2 === 0) {
-          const b = song.bass[(step / 2 | 0) % song.bass.length];
-          if (b) KG.note(mf(b), dur * 1.9, 'sine', (song.vol || 0.045) * 1.4);
-        }
-        if (song.tick && step % 4 === 2) KG.note(2200, 0.03, 'square', 0.012);
-      }
-      step++;
-      timer = setTimeout(tick, dur * 1000);
-    }
-    return {
-      start(s) { this.stop(); song = s; step = 0; timer = setTimeout(tick, 80); },
-      stop() { clearTimeout(timer); timer = null; song = null; },
-      get playing() { return !!song; }
-    };
-  })();
-  // 幾首可愛的旋律（MIDI 音高，0 = 休止，每格 = 八分音符）
-  const SONGS = {
-    happy: { bpm: 112, mel: [72, 0, 76, 79, 81, 79, 76, 0, 74, 0, 77, 81, 79, 0, 0, 0, 72, 74, 76, 79, 77, 76, 74, 0, 72, 0, 67, 0, 72, 0, 0, 0], bass: [48, 55, 53, 55, 48, 55, 43, 48], tick: true },
-    bouncy: { bpm: 120, mel: [67, 72, 76, 72, 79, 0, 76, 0, 74, 77, 81, 77, 79, 0, 0, 0, 76, 79, 84, 79, 81, 79, 76, 0, 74, 76, 72, 0, 72, 0, 0, 0], bass: [48, 52, 53, 55, 48, 52, 50, 48], tick: true },
-    gentle: { bpm: 92, mel: [76, 0, 79, 0, 84, 0, 83, 81, 79, 0, 76, 0, 77, 0, 0, 0, 74, 0, 77, 0, 81, 0, 79, 77, 76, 0, 72, 0, 74, 0, 0, 0], bass: [48, 55, 53, 50, 48, 52, 53, 55], wave: 'sine', vol: 0.05 },
-    march: { bpm: 126, mel: [72, 72, 79, 79, 81, 81, 79, 0, 77, 77, 76, 76, 74, 74, 72, 0, 79, 79, 77, 77, 76, 76, 74, 0, 79, 79, 77, 77, 76, 76, 74, 0], bass: [48, 53, 48, 43, 48, 53, 55, 48], tick: true }
+  /* ---------- 背景音樂：交給 kg-music.js（曲子在遊戲裡） ---------- */
+  const Music = {
+    start(song) { AU.music(song); },
+    stop() { AU.stop(0.4); },
+    get playing() { return !!AU.current(); }
   };
+  const SONGS = {};
+
   document.addEventListener('visibilitychange', () => { /* tick 內會檢查 document.hidden */ });
 
   /* ---------- 粒子特效（全螢幕畫布） ---------- */
@@ -635,13 +737,14 @@ const Kit = (function () {
       btn.className = 'kit-bigbtn ' + (b.cls || '');
       btn.innerHTML = (b.icon || ICON.play()) + `<span>${b.text}</span>`;
       btn.addEventListener('click', () => {
-        KG.sound('pop');
+        AU.sfx('select');
         ov.classList.add('out');
         setTimeout(() => ov.remove(), 350);
         if (b.onClick) b.onClick();
       });
       box.appendChild(btn);
     });
+    ov.appendChild(AU.toggles('kit-tg'));
     document.body.appendChild(ov);
     if (o.onMount) o.onMount(ov);
     return ov;
@@ -666,11 +769,12 @@ const Kit = (function () {
     }
     html += '</div><div class="kit-extra"></div>';
     ov.innerHTML = html;
+    ov.querySelector('.kit-total').insertAdjacentElement('afterend', AU.toggles('kit-tg'));
     if (o.extra) o.extra(ov.querySelector('.kit-extra'), close);
     ov.querySelectorAll('.kit-lv').forEach(b => b.addEventListener('click', () => {
       const i = +b.dataset.i;
-      if (!prog.unlocked(i)) { KG.sound('wrong'); shake(b, 6); return; }
-      KG.sound('pop');
+      if (!prog.unlocked(i)) { AU.sfx('au_soft', { pitch: 1.2 }); shake(b, 6); return; }
+      AU.sfx('select');
       close();
       o.onPick(i);
     }));
@@ -704,7 +808,7 @@ const Kit = (function () {
       const el = document.createElement('button');
       el.className = 'kit-rbtn ' + b.cls;
       el.innerHTML = `<div class="b">${b.icon}</div><span>${b.text}</span>`;
-      el.addEventListener('click', () => { KG.sound('pop'); ov.remove(); b.fn(); });
+      el.addEventListener('click', () => { AU.sfx('ui'); ov.remove(); b.fn(); });
       box.appendChild(el);
     });
     document.body.appendChild(ov);
@@ -713,8 +817,7 @@ const Kit = (function () {
     for (let i = 0; i < s; i++) {
       setTimeout(() => {
         stars[i].classList.add('lit');
-        KG.note([784, 988, 1319][i], 0.25, 'triangle', 0.22);
-        KG.note([1568, 1976, 2637][i], 0.2, 'sine', 0.08, 0.05);
+        AU.sfx('au_star', { pitch: [1, 1.26, 1.5][i], exact: true }, 0);
         setTimeout(() => {
           const r = stars[i].getBoundingClientRect();
           FX.burst(r.left + r.width / 2, r.top + r.height / 2, { n: 12, types: ['star', 'spark'], colors: ['#ffd34d', '#fff1a8', '#ffb21f', '#ffffff'], speed: 300 });
@@ -722,8 +825,9 @@ const Kit = (function () {
       }, 450 + i * 380);
     }
     setTimeout(() => {
-      if (s > 0) { KG.sound('win'); KG.confetti(); } else KG.sound('lose');
+      if (s > 0) { AU.win(); KG.confetti(); } else AU.lose();
     }, 450 + s * 380);
+    if (o.unlock) setTimeout(() => { if (ov.isConnected) { AU.sfx('unlock'); setTimeout(() => AU.sfx('sparkle'), 300); } }, 1500 + s * 380);
     return ov;
   }
 
@@ -781,6 +885,56 @@ const Kit = (function () {
     { name: '金金', need: 18, c: ['#fff4c2', '#ffcf4d', '#d68a12'], belly: ['#fffbe8', '#ffe9a6'], acc: 'crown', iris: ['#b6f59a', '#2f9e44'] },
     { name: '彩虹', need: 24, c: ['#ffd6ec', '#c49cff', '#5aa8f0'], belly: ['#fff6fb', '#e4d6ff'], acc: 'star', spots: true }
   ];
+  // 標題／選關：60 年代泡泡糖扭扭舞（Bb 大調 124）
+  const SONG_TITLE = {
+    bpm: 124, steps: 16, swing: 0.04, mv: 0.42,
+    chords: ['Bb', 'Eb', 'Bb', 'F', 'Bb', 'Eb', 'F', 'Bb'],
+    tracks: [
+      { inst: 'kick', pat: 'x.......x.......', vol: 0.45 },
+      { inst: 'clap', pat: '....x.......x...', vol: 0.45 },
+      { inst: 'hat', pat: '..x...x...x...x.', vol: 0.4 },
+      { inst: 'bass', chord: 'R...3...5...8...', vol: 0.5 },
+      { inst: 'organ', chord: '..R...R...R...R.', vol: 0.35 },
+      { inst: 'organ', chord: '..3...3...3...3.', vol: 0.3 },
+      { inst: 'organ', chord: '..5...5...5...5.', vol: 0.3 },
+      { inst: 'bell', seq: ['D5 - F5 - D5 - Bb4 -', 'G4 - Bb4 - Eb5 - D5 C5', 'D5 - - F5 D5 - Bb4 -', 'C5 - A4 - F4 - . .', 'D5 - F5 - Bb5 - A5 G5', 'G5 - Eb5 - Bb4 - C5 D5', 'Eb5 - D5 C5 A4 - C5 -', 'Bb4 - - - . . . .'], vol: 0.6 },
+      { inst: 'flute', seq: ['', '', '', '. . . . . . C5 Eb5', '', '', '', '. . . . F5 D5 C5 D5'], vol: 0.6 }
+    ]
+  };
+  // 遊戲中：巴西 forró / baião 小怪獸吃吃樂（D 大調 112）
+  const SONG_PLAY = {
+    bpm: 112, steps: 16, mv: 0.42,
+    chords: ['D', 'G', 'A', 'D', 'Bm', 'G', 'A7', 'D'],
+    layers: { streak: false, final: false },
+    tracks: [
+      { inst: 'kick', pat: 'x..x....x..x....', vol: 0.5 },
+      { inst: 'tom', pat: '......x.......x.', pitch: 140, vol: 0.32 },
+      { inst: 'rim', pat: 'x.o.x.o.x.o.x.o.', vol: 0.28 },
+      { inst: 'shaker', pat: '..x...x...x...x.', vol: 0.45 },
+      { inst: 'bass', chord: 'R..5..R.R..5..8.', vol: 0.5 },
+      { inst: 'pluck', chord: '..3...5...3...5.', vol: 0.3 },
+      { inst: 'organ', seq: ['A4 - D5 - F#5 - E5 D5', 'B4 - D5 - G5 - F#5 E5', 'C#5 - E5 - A5 - G5 E5', 'F#5 - D5 - - - . .', 'D5 - F#5 - B4 - D5 -', 'E5 - D5 - B4 - G4 -', 'A4 - C#5 - E5 - G5 -', 'F#5 - E5 - D5 - - -'], vol: 0.6 },
+      // 連續答對：銅管＋開放鈸＋鈴鐺
+      { inst: 'brass', chord: '......R.......R.', layer: 'streak', vol: 0.4 },
+      { inst: 'brass', chord: '......3.......3.', layer: 'streak', vol: 0.35 },
+      { inst: 'ohat', pat: '..x...x...x...x.', layer: 'streak', vol: 0.4 },
+      { inst: 'bell', seq: ['', '. . . . . . D5 E5', '', '. . . . A5 . F#5 .', '', '. . . . . . D5 E5', '', '. . . . F#5 . D5 .'], layer: 'streak', vol: 0.4 },
+      // 最後兩題：弦樂
+      { inst: 'strings', chord: 'hold', layer: 'final', vol: 0.38 }
+    ]
+  };
+
+  AU.setKey(587); // 答對的鈴聲用 D 大調
+  AU.define('au_munch', (p, s) => { s.noise(0.07, { vol: 0.24, freq: 750 * p, q: 1.3, type: 'bandpass' }); s.tone(200 * p, 0.08, { type: 'triangle', vol: 0.16, slide: 120 * p }); });
+  AU.define('au_gulp', (p, s) => { s.tone(330 * p, 0.16, { type: 'sine', vol: 0.2, slide: 150 * p }); s.tone(600 * p, 0.08, { type: 'sine', vol: 0.07, delay: 0.12, slide: 900 * p }); });
+  AU.define('au_ahh', (p, s) => { s.tone(392 * p, 0.22, { type: 'triangle', vol: 0.07, attack: 0.04, slide: 523 * p }); });
+  AU.onWin(() => {
+    AU.jingle({ bpm: 168, inst: 'marimba', vol: 0.4, notes: [['A4', 1], ['D5', 1], ['F#5', 1], ['A5', 2], ['F#5', 1], ['A5+D5', 3]], bass: [['D3', 2, 0], ['A2', 2, 2], ['D3', 3, 6]], bassVol: 0.3 });
+    AU.jingle({ bpm: 168, inst: 'brass', vol: 0.22, notes: [['.', 6], ['D5+F#5', 3]] });
+  });
+  AU.onLose(() => AU.jingle({ bpm: 120, inst: 'marimba', vol: 0.35, notes: [['F#5', 1], ['E5', 1], ['D5', 2]] }));
+  let paused = false;
+
   const prog = Kit.progress('math-monster', LEVELS.length);
   let skinIdx = KG.store.get('math-monster:skin', 0);
   if (!SKINS[skinIdx] || SKINS[skinIdx].need > prog.total) skinIdx = 0;
@@ -1027,20 +1181,20 @@ const Kit = (function () {
       c.setAttribute('aria-label', String(v));
       bindCookie(c);
       cookiesEl.appendChild(c);
-      setTimeout(() => KG.note(520 + i * 160, 0.08, 'sine', 0.12), 150 + i * 120);
+      setTimeout(() => { if (!paused) AU.sfx('au_appear', { pitch: 1 + i * 0.25, pan: (i - 1) * 0.4, exact: true }, 0); }, 150 + i * 120);
     });
     triedWrong = false;
     setTimeout(sayQ, 400);
   }
   function sayQ() {
-    if (!q) return;
+    if (!q || paused) return;
     if (q.op === '?') KG.say(`${q.a} 加多少，會等於 ${q.c}？`);
     else KG.say(`${q.a} ${q.op === '+' ? '加' : '減'} ${q.b}，等於多少？`);
   }
-  $('sayBtn').addEventListener('click', () => { KG.sound('click'); sayQ(); });
+  $('sayBtn').addEventListener('click', () => { AU.sfx('ui'); sayQ(); });
   // 鍵盤：按數字或 1/2/3 號餅乾（左到右）
   window.addEventListener('keydown', e => {
-    if (busy || dragging || !q) return;
+    if (busy || dragging || !q || paused) return;
     const cs = Array.from(cookiesEl.querySelectorAll('.cookie:not(.nope):not(.gone)'));
     let c = cs.find(x => x.dataset.v === e.key);
     if (!c && ['ArrowLeft', 'ArrowDown', 'ArrowRight'].includes(e.key)) c = cookiesEl.children[['ArrowLeft', 'ArrowDown', 'ArrowRight'].indexOf(e.key)];
@@ -1062,7 +1216,8 @@ const Kit = (function () {
       c.style.transition = 'none';
       c.style.transform = 'scale(1.15)';
       c.classList.add('drag');
-      KG.sound('pop');
+      c._ahh = false;
+      AU.sfx('pop', { vol: 0.8, pan: AU.pan(e.clientX) });
     });
     c.addEventListener('pointermove', e => {
       if (dragging !== c || e.pointerId !== pid) return;
@@ -1072,6 +1227,8 @@ const Kit = (function () {
       const m = mouthScreen();
       const d = Math.hypot(e.clientX - m.x, e.clientY - m.y);
       mouthTarget = Math.max(0, Math.min(1, 1.3 - d / (300 * m.scale)));
+      // 餅乾靠近嘴巴：小怪獸「啊～」張大嘴
+      if (mouthTarget > 0.75 && !c._ahh) { c._ahh = true; AU.sfx('au_ahh', { pan: AU.pan(m.x) }, 300); } else if (mouthTarget < 0.4) c._ahh = false;
       lookAt(e.clientX, e.clientY);
     });
     const end = e => {
@@ -1085,7 +1242,7 @@ const Kit = (function () {
         mouthTarget = 0;
         c.style.transition = 'transform .5s cubic-bezier(.2,1.6,.4,1)';
         c.style.transform = '';
-        KG.sound('boing');
+        AU.sfx('boing', { vol: 0.55, pan: AU.pan(e.clientX) });
       }
     };
     c.addEventListener('pointerup', end);
@@ -1104,7 +1261,7 @@ const Kit = (function () {
     lookAt(m.x, m.y + 40);
     c.style.transition = 'transform .38s cubic-bezier(.4,0,.6,1)';
     c.style.transform = `translate(${tx}px, ${ty}px) scale(.42) rotate(220deg)`;
-    KG.sound('whoosh');
+    AU.sfx('swoosh', { vol: 0.8, pan: AU.pan(cx) });
     const v = +c.dataset.v;
     setTimeout(() => (v === q.ans ? right(c) : wrong(c)), 400);
   }
@@ -1120,13 +1277,14 @@ const Kit = (function () {
     const seq = [0.15, 0.85, 0.15, 0.75, 0.1, 0.6, 0];
     seq.forEach((o, i) => setTimeout(() => {
       mouthTarget = o; squish = 1;
-      if (o < 0.3) { KG.note(160 + Math.random() * 80, 0.09, 'square', 0.07); crumbs(m.x, m.y, 5); }
+      if (o < 0.3) { if (o === 0) AU.sfx('au_gulp', { pan: AU.pan(m.x) }); else AU.sfx('au_munch', { pitch: 0.9 + i * 0.05, pan: AU.pan(m.x) }); crumbs(m.x, m.y, 5); }
     }, i * 140));
     setTimeout(() => {
       happyUntil = performance.now() + 1300;
       jumpT = 0.7;
-      KG.sound('correct');
-      setTimeout(() => KG.sound('sparkle'), 150);
+      AU.layer('streak', streak >= 3);
+      AU.sfx('au_chime', { pitch: AU.streakPitch(streak || 1), exact: true });
+      setTimeout(() => AU.sfx('sparkle', { vol: 0.8 }), 150);
       const msg = streak >= 5 && streak % 5 === 0 ? '太厲害了！' : streak === 3 ? '連續答對！' : KG.pick(Kit.PRAISE);
       Kit.callout(msg, '#ffd34d', '#5a35b8');
       KG.say(KG.pick(['好好吃！答對了！', '答對了！好棒！', '哇！真好吃！']));
@@ -1144,7 +1302,8 @@ const Kit = (function () {
     mouthTarget = 0;
     squish = 0.6;
     sadT = 1.4; tearT = 1.2;
-    KG.note(392, 0.2, 'sine', 0.18); KG.note(311, 0.35, 'sine', 0.18, 0.18);
+    AU.sfx('au_soft', { pan: AU.pan(innerWidth / 2) });
+    AU.layer('streak', false);
     monWrap.classList.remove('no'); void monWrap.offsetWidth; monWrap.classList.add('no');
     KG.say('嗯～不是這個喔，再想想看！');
     c.style.transition = 'transform .65s cubic-bezier(.2,1.6,.4,1)';
@@ -1167,9 +1326,11 @@ const Kit = (function () {
   }
 
   function next() {
+    if ($('pauseBtn').style.display !== 'block') return; // 已經離開這一關
     qi++;
     if (qi >= TOTAL) return finish();
     q = makeQ(q);
+    AU.layer('final', qi >= TOTAL - 2); AU.tempo(qi >= TOTAL - 2 ? 1.05 : 1);
     renderQ();
     busy = false;
   }
@@ -1178,6 +1339,7 @@ const Kit = (function () {
     busy = true;
     $('progBar').style.width = '100%';
     Kit.Music.stop();
+    $('pauseBtn').style.display = 'none';
     const stars = firstTry >= 9 ? 3 : firstTry >= 6 ? 2 : 1;
     const before = prog.total;
     prog.set(lvIdx, stars);
@@ -1205,7 +1367,10 @@ const Kit = (function () {
     $('hudS').textContent = '0';
     $('hud').style.display = '';
     $('app').style.visibility = '';
-    if (!Kit.Music.playing) Kit.Music.start(Kit.SONGS.bouncy);
+    $('pauseBtn').style.display = 'block';
+    paused = false;
+    Kit.Music.start(SONG_PLAY);
+    AU.layer('streak', false); AU.layer('final', false); AU.tempo(1);
     q = makeQ(null);
     renderQ();
     busy = false;
@@ -1215,7 +1380,8 @@ const Kit = (function () {
   /* ---------- 關卡選擇 + 造型 ---------- */
   function showLevels() {
     busy = true;
-    if (!Kit.Music.playing) Kit.Music.start(Kit.SONGS.bouncy);
+    $('pauseBtn').style.display = 'none';
+    if (AU.current() !== SONG_TITLE) Kit.Music.start(SONG_TITLE);
     Kit.levelSelect({
       title: '選一關吧！', count: LEVELS.length, progress: prog, names: LEVELS.map(l => l.name),
       bg: 'linear-gradient(180deg, rgba(190,170,255,.92), rgba(255,214,236,.94))',
@@ -1229,12 +1395,12 @@ const Kit = (function () {
           b.className = 'kit-item' + (un ? '' : ' locked') + (i === skinIdx ? ' sel' : '');
           b.innerHTML = monsterSVG('sk' + i, s, 'pv') + (un ? `<span>${s.name}</span>` : `<span class="need">${Kit.ICON.star(true)}${s.need}</span>`);
           b.addEventListener('click', () => {
-            if (!un) { KG.sound('wrong'); Kit.shake(b, 5); return; }
+            if (!un) { AU.sfx('au_soft', { pitch: 1.2 }); Kit.shake(b, 5); return; }
             skinIdx = i;
             KG.store.set('math-monster:skin', i);
             shelf.querySelectorAll('.kit-item').forEach((x, j) => x.classList.toggle('sel', j === i));
             setMonster();
-            KG.sound('sparkle');
+            AU.sfx('sparkle'); AU.sfx('pickup');
             KG.say(s.name);
             const r = b.getBoundingClientRect();
             Kit.FX.burst(r.left + r.width / 2, r.top + r.height / 2, { n: 12, types: ['star', 'spark'] });
@@ -1244,6 +1410,32 @@ const Kit = (function () {
       }
     });
   }
+
+  /* ---------- 暫停 ---------- */
+  function pause() {
+    if (paused || $('app').style.visibility === 'hidden' || $('pauseBtn').style.display !== 'block') return;
+    paused = true;
+    AU.pause(); AU.sfx('click');
+    if (window.speechSynthesis) try { speechSynthesis.cancel(); } catch (e) { /* 忽略 */ }
+    const ov = document.createElement('div');
+    ov.className = 'kit-ov'; ov.id = 'pauseOv';
+    ov.innerHTML = `<div class="pz-card"><div class="ow">${monsterSVG('pz', SKINS[skinIdx], 'mon-idle')}</div><h2>休息一下</h2><div class="kit-rbtns"></div></div>`;
+    const card = ov.querySelector('.pz-card'), bx = ov.querySelector('.kit-rbtns');
+    card.insertBefore(AU.toggles(), bx);
+    const add = (cls, icon, text, fn) => { const el = document.createElement('button'); el.className = 'kit-rbtn ' + cls; el.innerHTML = `<div class="b">${icon}</div><span>${text}</span>`; el.addEventListener('click', () => { AU.sfx('ui'); ov.remove(); fn(); }); bx.appendChild(el); };
+    add('b2', Kit.ICON.menu(), '關卡', () => { paused = false; showLevels(); });
+    add('g big', Kit.ICON.play(), '繼續', resume);
+    document.body.appendChild(ov);
+  }
+  function resume() {
+    if (!paused) return;
+    paused = false;
+    const po = $('pauseOv'); if (po) po.remove();
+    AU.resume();
+  }
+  $('pauseBtn').addEventListener('click', pause);
+  window.addEventListener('keydown', e => { if (e.key === 'Escape' || e.key === 'p') { if (paused) { AU.sfx('ui'); resume(); } else pause(); } });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) pause(); });
 
   $('starIc').innerHTML = Kit.ICON.star(true);
   Kit.ensureDefs();
@@ -1255,6 +1447,7 @@ const Kit = (function () {
     sub: '算一算，把正確的餅乾餵給小怪獸！',
     buttons: [{ text: '開始', onClick: () => { KG.say('數學小怪獸！'); showLevels(); } }]
   });
+  Kit.Music.start(SONG_TITLE);
 })();
 </script>
 </body>

@@ -37,7 +37,8 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 let renderer = null;
 try {
-  renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gl'), antialias: true, powerPreference: 'high-performance' });
+  // 手機一開始不開發光（直接畫到畫面，用 MSAA 抗鋸齒）；大螢幕開發光，發光本身就柔，不用 MSAA
+  renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gl'), antialias: Math.min(innerWidth, innerHeight) < 600, powerPreference: 'high-performance' });
 } catch (e) {
   renderer = null;
 }
@@ -703,12 +704,15 @@ function main() {
   let W = innerWidth, H = innerHeight, mode = '';
   const small = Math.min(W, H) < 600;
 
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, small ? 1.75 : 2));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, small ? 1.5 : 2));
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.0;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  // 影子幾乎都是不動的東西：只在需要時重畫影子貼圖（鋼珠用貼地的軟影子）
+  renderer.shadowMap.autoUpdate = false;
+  renderer.shadowMap.needsUpdate = true;
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x140c30);
@@ -721,7 +725,7 @@ function main() {
   const key = new THREE.DirectionalLight(0xfff0dc, 1.7);
   key.position.set(-2.4, 5.2, 8);
   key.castShadow = true;
-  key.shadow.mapSize.set(small ? 1024 : 2048, small ? 1024 : 2048);
+  key.shadow.mapSize.set(small ? 512 : 1024, small ? 512 : 1024);
   Object.assign(key.shadow.camera, { left: -3.2, right: 5.2, top: 5.6, bottom: -6.6, near: 1, far: 25 });
   key.shadow.bias = -0.0005;
   key.shadow.normalBias = 0.012;
@@ -781,6 +785,38 @@ function main() {
     return m;
   }
   function shadowy(m) { m.castShadow = true; m.receiveShadow = true; return m; }
+  // 把同一種材質、不會各自動的網格合成一個（少很多 draw call）
+  const _mInv = new THREE.Matrix4(), _mRel = new THREE.Matrix4();
+  function mergeMeshes(parent, meshes) {
+    meshes = meshes.filter(Boolean);
+    if (meshes.length < 2) return meshes[0] || null;
+    parent.updateMatrixWorld(true);
+    _mInv.copy(parent.matrixWorld).invert();
+    const parts = meshes.map(m => {
+      let g = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone();
+      _mRel.multiplyMatrices(_mInv, m.matrixWorld);
+      g.applyMatrix4(_mRel);
+      return g;
+    });
+    const names = ['position', 'normal', 'uv'];
+    const out = new THREE.BufferGeometry();
+    names.forEach(n => {
+      const len = parts.reduce((a, g) => a + g.attributes.position.count, 0) * (n === 'uv' ? 2 : 3);
+      const arr = new Float32Array(len);
+      let o = 0;
+      parts.forEach(g => { if (g.attributes[n]) arr.set(g.attributes[n].array, o); o += g.attributes[n] ? g.attributes[n].array.length : g.attributes.position.count * (n === 'uv' ? 2 : 3); });
+      out.setAttribute(n, new THREE.BufferAttribute(arr, n === 'uv' ? 2 : 3));
+    });
+    out.computeBoundingSphere();
+    parts.forEach(g => g.dispose());
+    const merged = new THREE.Mesh(out, meshes[0].material);
+    merged.castShadow = meshes.some(m => m.castShadow);
+    merged.receiveShadow = meshes.some(m => m.receiveShadow);
+    merged.renderOrder = meshes[0].renderOrder;
+    meshes.forEach(m => { m.parent.remove(m); m.geometry.dispose(); });
+    parent.add(merged);
+    return merged;
+  }
 
   /* ---------- 背景：夜市 ---------- */
   const bgCnv = document.createElement('canvas');
@@ -797,6 +833,7 @@ function main() {
   scene.add(floor);
 
   /* ---------- 盤面 ---------- */
+  const STATIC_CHROME = [];
   const board = new THREE.Group();
   scene.add(board);
   const boardTex = new THREE.CanvasTexture(paintBoard(small ? 2 : 2.6));
@@ -817,6 +854,7 @@ function main() {
     sh.lineTo(cx + r1, cy);
     const arcMesh = new THREE.Mesh(new THREE.ExtrudeGeometry(sh, { depth: WALL_H, bevelEnabled: false, curveSegments: 72 }), MAT.chrome);
     board.add(shadowy(arcMesh));
+    STATIC_CHROME.push(arcMesh);
   }
   function wallBox(x1, y1, x2, y2, thick, mat, h) {
     h = h || WALL_H;
@@ -825,6 +863,7 @@ function main() {
     m.position.set(wx((x1 + x2) / 2), wy((y1 + y2) / 2), h / 2);
     m.rotation.z = -Math.atan2(y2 - y1, x2 - x1);
     board.add(shadowy(m));
+    STATIC_CHROME.push(m);
     return m;
   }
   wallBox(6, 200, 6, PH, 4);
@@ -832,6 +871,7 @@ function main() {
   wallBox(SEP_X, 170, SEP_X, PH, 3);
   DIVIDERS.forEach(x => wallBox(x, SLOT_TOP, x, PH, 3));
   RAMPS.forEach(r => wallBox(r[0], r[1], r[2], r[3], 3));
+  mergeMeshes(board, STATIC_CHROME);
 
   // 釘子（黃銅）
   {
@@ -901,6 +941,9 @@ function main() {
   });
 
   // 鬱金香與金杯洞口
+  const TULIP_BASE_MAT = new THREE.MeshStandardMaterial({ color: 0x5a1030, roughness: 0.5 });
+  const TULIP_STEM_MAT = new THREE.MeshStandardMaterial({ color: 0x3fae5c, roughness: 0.5 });
+  const tulipBases = [], tulipStems = [];
   CUPS.forEach(cp => {
     const g = new THREE.Group();
     g.position.set(wx(cp.x), wy(cp.y), 0);
@@ -909,6 +952,7 @@ function main() {
     if (cp.kind === 'tulip') {
       const mat = new THREE.MeshPhysicalMaterial({ color: 0xf0335f, roughness: 0.22, clearcoat: 1, clearcoatRoughness: 0.06, emissive: new THREE.Color(0xff6a8a), emissiveIntensity: 0 });
       mats.push(mat);
+      const petals = [];
       [-1, 1].forEach(sd => {
         const s = new THREE.Shape();
         s.moveTo(...P(sd * (cp.w + 1), -14));
@@ -917,25 +961,30 @@ function main() {
         s.quadraticCurveTo(...P(sd * (cp.w - 4), -2), ...P(sd * (cp.w - 2), -14));
         const m = shadowy(new THREE.Mesh(new THREE.ExtrudeGeometry(s, { depth: 0.14, bevelEnabled: true, bevelThickness: 0.012, bevelSize: 0.008, bevelSegments: 2 }), mat));
         g.add(m);
+        petals.push(m);
       });
-      const base = shadowy(new THREE.Mesh(new RoundedBoxGeometry(18 * K, 6 * K, 0.1, 2, 0.01), new THREE.MeshStandardMaterial({ color: 0x5a1030, roughness: 0.5 })));
+      mergeMeshes(g, petals);
+      const base = shadowy(new THREE.Mesh(new RoundedBoxGeometry(18 * K, 6 * K, 0.1, 2, 0.01), TULIP_BASE_MAT));
       base.position.set(0, -9 * K, 0.05);
-      const stem = new THREE.Mesh(new THREE.CylinderGeometry(1.4 * K, 1.4 * K, 9 * K, 8), new THREE.MeshStandardMaterial({ color: 0x3fae5c, roughness: 0.5 }));
+      const stem = new THREE.Mesh(new THREE.CylinderGeometry(1.4 * K, 1.4 * K, 9 * K, 8), TULIP_STEM_MAT);
       stem.position.set(0, -16 * K, 0.02);
       g.add(base, stem);
+      tulipBases.push(base); tulipStems.push(stem);
     } else {
       const mat = new THREE.MeshStandardMaterial({ color: 0xffd04a, metalness: 1, roughness: 0.22, emissive: new THREE.Color(0xffc040), emissiveIntensity: 0 });
       mats.push(mat);
       const s = new THREE.Shape();
       s.moveTo(...P(-cp.w - 1, -14)); s.lineTo(...P(-7, 8)); s.lineTo(...P(7, 8)); s.lineTo(...P(cp.w + 1, -14));
       s.lineTo(...P(cp.w - 3, -14)); s.lineTo(...P(5, 5)); s.lineTo(...P(-5, 5)); s.lineTo(...P(-cp.w + 3, -14));
-      g.add(shadowy(new THREE.Mesh(new THREE.ExtrudeGeometry(s, { depth: 0.15, bevelEnabled: true, bevelThickness: 0.012, bevelSize: 0.008, bevelSegments: 2 }), mat)));
+      const cupParts = [shadowy(new THREE.Mesh(new THREE.ExtrudeGeometry(s, { depth: 0.15, bevelEnabled: true, bevelThickness: 0.012, bevelSize: 0.008, bevelSegments: 2 }), mat))];
+      g.add(cupParts[0]);
       [-1, 1].forEach(sd => {
         const tg = new THREE.TorusGeometry(5 * K, 1.2 * K, 8, 16, Math.PI);
         const hd = shadowy(new THREE.Mesh(tg, mat));
         hd.position.set(sd * (cp.w + 2) * K, 6 * K, 0.075);
         hd.rotation.z = sd > 0 ? -Math.PI / 2 : Math.PI / 2;
         g.add(hd);
+        cupParts.push(hd);
       });
       const b1 = shadowy(new THREE.Mesh(new RoundedBoxGeometry(16 * K, 5 * K, 0.12, 2, 0.01), mat));
       b1.position.set(0, -10.5 * K, 0.06);
@@ -946,23 +995,26 @@ function main() {
         const rad = (i % 2 ? 2 : 4.5) * K, a = i * Math.PI / 5 + Math.PI / 2;
         if (i === 0) starShape.moveTo(Math.cos(a) * rad, Math.sin(a) * rad); else starShape.lineTo(Math.cos(a) * rad, Math.sin(a) * rad);
       }
-      const starM = shadowy(new THREE.Mesh(new THREE.ExtrudeGeometry(starShape, { depth: 0.03, bevelEnabled: false }), mat));
+      const starM = new THREE.Mesh(new THREE.ExtrudeGeometry(starShape, { depth: 0.03, bevelEnabled: false }), mat);
+      starM.receiveShadow = true;   // 會轉，不放進固定的影子貼圖
       starM.position.set(0, 22 * K, 0.1);
       g.add(b1, b2, starM);
+      cupParts.push(b1, b2);
+      board.add(g);
+      mergeMeshes(g, cupParts);
       cp.star = starM;
     }
     board.add(g);
     cp.mats = mats;
   });
+  mergeMeshes(board, tulipBases);
+  mergeMeshes(board, tulipStems);
 
   // 洞口上的小燈
-  const slotLamps = [];
-  for (let i = 0; i < SLOTS; i++) {
-    const m = new THREE.Mesh(new THREE.SphereGeometry(0.032, 14, 10), new THREE.MeshBasicMaterial({ color: 0x664422, toneMapped: false }));
-    m.position.set(wx(SLOT_L + (i + 0.5) * SLOT_W), wy(605), 0.025);
-    board.add(m);
-    slotLamps.push(m);
-  }
+  const slotLamps = new THREE.InstancedMesh(new THREE.SphereGeometry(0.032, 14, 10), new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }), SLOTS);
+  const slotLit = new Array(SLOTS).fill(-1);
+  for (let i = 0; i < SLOTS; i++) slotLamps.setColorAt(i, new THREE.Color(0x664422));
+  board.add(slotLamps);
 
   // 鋼珠
   const ballGeo = new THREE.SphereGeometry(BALL_Z, 32, 24);
@@ -970,17 +1022,31 @@ function main() {
   function ballMesh(i) {
     while (ballPool.length <= i) {
       const m = new THREE.Mesh(ballGeo, MAT.ball);
-      m.castShadow = true;
       board.add(m);
       ballPool.push(m);
     }
     return ballPool[i];
   }
   const restBall = new THREE.Mesh(ballGeo, MAT.ball);
-  restBall.castShadow = true;
   board.add(restBall);
-  const plHead = shadowy(new THREE.Mesh(new THREE.BoxGeometry((392 - SEP_X - 4) * K, 9 * K, 0.12), MAT.chrome));
+  const plHead = new THREE.Mesh(new THREE.BoxGeometry((392 - SEP_X - 4) * K, 9 * K, 0.12), MAT.chrome);
+  plHead.receiveShadow = true;
   board.add(plHead);
+  // 鋼珠會一直動：不畫進影子貼圖，改用貼在盤面上的軟影子（一個 draw call 畫全部）
+  const BLOB_MAX = 64;
+  const blobTex = canvasTex(64, 64, (c, w, h) => {
+    const g = c.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, w / 2);
+    g.addColorStop(0, 'rgba(0,0,0,.62)'); g.addColorStop(0.45, 'rgba(0,0,0,.42)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+    c.fillStyle = g; c.fillRect(0, 0, w, h);
+  });
+  const blobs = new THREE.InstancedMesh(new THREE.PlaneGeometry(BALL_Z * 2.6, BALL_Z * 2.6), new THREE.MeshBasicMaterial({ map: blobTex, transparent: true, depthWrite: false }), BLOB_MAX);
+  blobs.count = 0;
+  blobs.frustumCulled = false;
+  board.add(blobs);
+  const _bm = new THREE.Matrix4();
+  // 光從左上前方來：影子往右下偏
+  const BLOB_DX = BALL_Z * 0.3, BLOB_DY = -BALL_Z * 0.62;
+  function setBlob(i, x, y) { _bm.makeTranslation(x + BLOB_DX, y + BLOB_DY, 0.003); blobs.setMatrixAt(i, _bm); }
 
   // 玻璃（反光）
   const glass = new THREE.Mesh(new THREE.PlaneGeometry(PW * K, PH * K), new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.03, metalness: 0, transparent: true, opacity: 0.06, depthWrite: false }));
@@ -1026,6 +1092,7 @@ function main() {
   /* ---------- 機身、招牌、操作台（直式和橫式不同） ---------- */
   let cabinet = null;
   const lamps = [];
+  const CAB_GOLD = [];
   const UI3 = {};
   const ledC = makeCanvas(512, 232), betC = makeCanvas(256, 160);
   let ledShown = -1, betShown = -1;
@@ -1052,15 +1119,42 @@ function main() {
     c.fillStyle = color; c.fillText(s, align === 'left' ? 6 : w / 2, h / 2 + 2);
   });
 
+  // 數字一直跳：底板和每個數字的光暈先畫好存起來（shadowBlur 很貴），每次只拼起來
+  let ledBase = null;
+  const ledGlow = {};
+  const LED_PAD = 40;
+  function ledGlyph(ch) {
+    if (ledGlow[ch]) return ledGlow[ch];
+    const m = document.createElement('canvas').getContext('2d');
+    m.font = font(900, 128);
+    const adv = m.measureText(ch).width;
+    const cv2 = document.createElement('canvas');
+    cv2.width = Math.ceil(adv + LED_PAD * 2); cv2.height = 232;
+    const g = cv2.getContext('2d');
+    g.font = font(900, 128); g.textAlign = 'left'; g.textBaseline = 'middle';
+    g.shadowColor = '#ff6a00'; g.shadowBlur = 26; g.shadowOffsetX = 10000;
+    g.fillStyle = '#ffb340';
+    g.fillText(ch, LED_PAD - 10000, 116 + 10);
+    return (ledGlow[ch] = { cv: cv2, adv });
+  }
   function drawLED() {
     const c = ledC.c, w = 512, h = 232;
+    if (!ledBase) {
+      ledBase = document.createElement('canvas');
+      ledBase.width = w; ledBase.height = h;
+      const b = ledBase.getContext('2d');
+      rr(b, 6, 6, w - 12, h - 12, 28);
+      b.fillStyle = '#0d0408'; b.fill();
+      b.lineWidth = 6; b.strokeStyle = '#a77a26'; b.stroke();
+      txt(b, '鋼珠', 74, 50, 38, '#ffcf5a');
+      steelBall(b, 74, 140, 34);
+    }
     c.clearRect(0, 0, w, h);
-    rr(c, 6, 6, w - 12, h - 12, 28);
-    c.fillStyle = '#0d0408'; c.fill();
-    c.lineWidth = 6; c.strokeStyle = '#a77a26'; c.stroke();
-    txt(c, '鋼珠', 74, 50, 38, '#ffcf5a');
-    steelBall(c, 74, 140, 34);
-    txt(c, String(Math.round(shown)), w - 34, h / 2 + 10, 128, '#ffb340', { align: 'right', glow: '#ff6a00', blur: 26 });
+    c.drawImage(ledBase, 0, 0);
+    const str = String(Math.round(shown));
+    let x = w - 34;
+    for (let i = str.length - 1; i >= 0; i--) { const gl = ledGlyph(str[i]); x -= gl.adv; c.drawImage(gl.cv, x - LED_PAD, 0); }
+    txt(c, str, w - 34, h / 2 + 10, 128, '#ffb340', { align: 'right' });
     ledC.tex.needsUpdate = true;
   }
   function drawBetBox() {
@@ -1080,6 +1174,7 @@ function main() {
     socketGeo.rotateX(Math.PI / 2);
     const socket = shadowy(new THREE.Mesh(socketGeo, MAT.gold));
     socket.position.z = 0.025;
+    CAB_GOLD.push(socket);
     const cap = new THREE.Group();
     const bodyGeo = new THREE.CylinderGeometry(r, r, 0.08, 40);
     bodyGeo.rotateX(Math.PI / 2);
@@ -1092,6 +1187,7 @@ function main() {
     dome.position.z = 0.1;
     dome.scale.z = 0.38;
     cap.add(body, dome);
+    mergeMeshes(cap, [body, dome]);
     g.add(socket, cap);
     return { g, cap, mat, top: 0.1 + r * 0.38 };
   }
@@ -1102,6 +1198,7 @@ function main() {
       cabinet.traverse(o => { if (o.geometry) o.geometry.dispose(); });
     }
     lamps.length = 0;
+    CAB_GOLD.length = 0;
     cabinet = new THREE.Group();
     board.add(cabinet);
     const port = mode === 'port';
@@ -1113,6 +1210,7 @@ function main() {
     const trim = frameRing(B.x - B.w / 2 + 0.07, B.y - B.h / 2 + 0.07, B.w - 0.14, B.h - 0.14, 0.16, 0.05, 0.02, MAT.gold);
     trim.position.z = -0.02;
     cabinet.add(trim);
+    CAB_GOLD.push(trim);
     floor.position.y = B.y - B.h / 2;
     // 招牌
     const mq = { x: B.x, y: 4.2, w: B.w - 0.3, h: 1.3 };
@@ -1122,6 +1220,7 @@ function main() {
     const mqRing = frameRing(mq.x - mq.w / 2, mq.y - mq.h / 2, mq.w, mq.h, 0.12, 0.07, 0.05, MAT.gold, 0.012);
     mqRing.position.z = 0.19;
     cabinet.add(mqRing);
+    CAB_GOLD.push(mqRing);
     const titleTex = canvasTex(1024, 220, (c, w, h) => {
       txt(c, '夜市彈珠台', w / 2, h / 2 + 6, 150, '#ffe9f6', { stroke: '#ff3d9a', sw: 14, glow: '#ff4fa8', blur: 40 });
     });
@@ -1144,6 +1243,7 @@ function main() {
       const label = decal(0.36, 0.19, textTexOutlined('×' + v), false);
       label.position.set(lx, ly, 0.2 + 0.19 * 0.7 + 0.004);
       cabinet.add(socket, dome, label);
+      CAB_GOLD.push(socket);
       lamps.push({ dome, mat });
     });
     // 操作台
@@ -1173,6 +1273,7 @@ function main() {
     const pRing = frameRing(-L.w / 2, -L.h / 2, L.w, L.h, 0.1, 0.06, 0.03, MAT.gold, 0.01);
     pRing.position.z = 0.1;
     pg.add(pRing);
+    CAB_GOLD.push(pRing);
     const Z = 0.125;
     const led = decal(L.led[2], L.led[3], ledC.tex, true);
     led.position.set(L.led[0], L.led[1], Z);
@@ -1219,6 +1320,7 @@ function main() {
     const groove = new THREE.Mesh(new RoundedBoxGeometry(0.16, travel + 0.4, 0.03, 2, 0.05), MAT.groove);
     groove.position.set(L.knob[0], (L.knob[1] + L.knob[2]) / 2, Z);
     pg.add(groove);
+    mergeMeshes(pg, [gbg, groove]);
     const knob = new THREE.Group();
     const rodGeo = new THREE.CylinderGeometry(0.045, 0.045, 0.24, 16);
     rodGeo.rotateX(Math.PI / 2);
@@ -1229,6 +1331,7 @@ function main() {
     const ball = shadowy(new THREE.Mesh(new THREE.SphereGeometry(0.2, 32, 24), MAT.red));
     ball.position.z = 0.3;
     knob.add(rod, spring, ball);
+    mergeMeshes(knob, [rod, spring]);
     knob.position.set(L.knob[0], L.knob[1], Z);
     pg.add(knob);
     UI3.knob = { g: knob, ball, top: L.knob[1], bottom: L.knob[2] };
@@ -1237,6 +1340,8 @@ function main() {
     pg.add(hint);
     UI3.panel = pg;
     ledShown = -1; betShown = -1;
+    mergeMeshes(cabinet, CAB_GOLD);
+    renderer.shadowMap.needsUpdate = true;
   }
   function textTexOutlined(s) {
     return canvasTex(192, 100, (c, w, h) => txt(c, s, w / 2, h / 2 + 3, s.length > 2 ? 58 : 68, '#ffffff', { stroke: '#2a0a3c', sw: 16 }));
@@ -1541,13 +1646,21 @@ function main() {
   const SLOT_ON = new THREE.Color(3, 2.6, 1.4), SLOT_OFF = new THREE.Color(0.55, 0.38, 0.2);
   function sync3D(t) {
     // 鋼珠
-    flying.forEach((b, i) => { const m = ballMesh(i); m.visible = true; m.position.set(wx(b.x), wy(b.y), BALL_Z); });
+    let nb = 0;
+    for (let i = 0; i < flying.length; i++) {
+      const b = flying[i], m = ballMesh(i);
+      m.visible = true; m.position.set(wx(b.x), wy(b.y), BALL_Z);
+      if (nb < BLOB_MAX) setBlob(nb++, m.position.x, m.position.y);
+    }
     for (let i = flying.length; i < ballPool.length; i++) ballPool[i].visible = false;
     const pw = chargePower();
     const plY = 652 + pw * 6;
     plHead.position.set(wx((SEP_X + 392) / 2), wy(plY + 4.5), 0.06);
     restBall.visible = phase === 'play' && st.balls > 0 && cooldown <= 0;
     restBall.position.set(wx(LANE_X), wy(plY - R), BALL_Z);
+    if (restBall.visible && nb < BLOB_MAX) setBlob(nb++, restBall.position.x, restBall.position.y);
+    blobs.count = nb;
+    if (nb) blobs.instanceMatrix.needsUpdate = true;
     // 彈跳球、洞口、燈
     BUMPERS.forEach((b, i) => {
       const s = 1 + b.flash * 0.18;
@@ -1561,11 +1674,17 @@ function main() {
       cp.mats.forEach(m => { m.emissiveIntensity = f; });
       if (cp.star) cp.star.rotation.z = t * 1.5;
     });
-    slotLamps.forEach((m, i) => {
-      const lit = slotFlash[i] > 0 && Math.floor(slotFlash[i] * 10) % 2 === 0;
-      m.material.color.copy(lit ? SLOT_ON : SLOT_OFF);
-      m.scale.setScalar(lit ? 1.6 : 1);
-    });
+    let slotDirty = false;
+    for (let i = 0; i < SLOTS; i++) {
+      const lit = slotFlash[i] > 0 && Math.floor(slotFlash[i] * 10) % 2 === 0 ? 1 : 0;
+      if (lit === slotLit[i]) continue;
+      slotLit[i] = lit; slotDirty = true;
+      const sc = lit ? 1.6 : 1;
+      _bm.makeScale(sc, sc, sc).setPosition(wx(SLOT_L + (i + 0.5) * SLOT_W), wy(605), 0.025);
+      slotLamps.setMatrixAt(i, _bm);
+      slotLamps.setColorAt(i, lit ? SLOT_ON : SLOT_OFF);
+    }
+    if (slotDirty) { slotLamps.instanceMatrix.needsUpdate = true; slotLamps.instanceColor.needsUpdate = true; }
     const fast = bigWin ? 22 : 7, ph = Math.floor(t * fast);
     for (let i = 0; i < BULB_PTS.length; i++) {
       bulbs.setColorAt(i, (i + ph) % 3 === 0 ? BULB_COLS[(i + Math.floor(ph / 3)) % 3] : BULB_OFF);
@@ -1596,7 +1715,11 @@ function main() {
     const kn = UI3.knob;
     kn.g.position.y = kn.top + (kn.bottom - kn.top) * pw;
     kn.ball.scale.setScalar(charging ? 1.05 : 1);
+    // 拉桿、按鈕動了才重畫影子
+    const sig = kn.g.position.y * 7 + kn.ball.scale.x * 3 + UI3.minus.cap.position.z + UI3.plus.cap.position.z * 2 + sp.cap.position.z * 4;
+    if (sig !== shadowSig) { shadowSig = sig; renderer.shadowMap.needsUpdate = true; }
   }
+  let shadowSig = NaN;
 
   /* ---------- 2D 疊加：飄字、粒子、開始/結束卡片 ---------- */
   function drawHUD(t) {
@@ -1664,16 +1787,22 @@ function main() {
 
   let firstFrame = true;
   /* ---------- 自動畫質：太卡就一步步降低（解析度 → 發光 → 影子），並記住 ---------- */
-  const QKEY = 'quality:' + location.pathname.split('/').filter(Boolean).slice(-1)[0];
-  const baseRatio = Math.min(window.devicePixelRatio || 1, small ? 1.75 : 2);
-  const QLEVELS = [
+  const QKEY = 'quality2:' + (small ? 'p:' : 'd:') + location.pathname.split('/').filter(Boolean).slice(-1)[0];
+  const baseRatio = Math.min(window.devicePixelRatio || 1, small ? 1.5 : 2);
+  // 手機：不開發光、解析度最高 1.5；大螢幕才開發光
+  const QLEVELS = small ? [
+    { ratio: baseRatio, bloom: false, shadow: true },
+    { ratio: Math.min(baseRatio, 1.25), bloom: false, shadow: true },
+    { ratio: 1, bloom: false, shadow: true },
+    { ratio: 1, bloom: false, shadow: false }
+  ] : [
     { ratio: baseRatio, bloom: true, shadow: true },
-    { ratio: Math.min(baseRatio, 1.35), bloom: true, shadow: true },
+    { ratio: Math.min(baseRatio, 1.5), bloom: true, shadow: true },
     { ratio: 1, bloom: true, shadow: true },
     { ratio: 1, bloom: false, shadow: true },
     { ratio: 1, bloom: false, shadow: false }
   ];
-  let qLevel = clamp(KG.store.get(QKEY, KG.lowEnd ? 2 : 0) | 0, 0, QLEVELS.length - 1);
+  let qLevel = clamp(KG.store.get(QKEY, KG.lowEnd ? (small ? 1 : 2) : 0) | 0, 0, QLEVELS.length - 1);
   const perf = { last: 0, n: 0, sum: 0, cool: 2.5 };
   function applyQuality() {
     const q = QLEVELS[qLevel];
@@ -1683,6 +1812,7 @@ function main() {
     composer.setSize(W, H);
     if (renderer.shadowMap.enabled !== q.shadow) {
       renderer.shadowMap.enabled = q.shadow;
+      renderer.shadowMap.needsUpdate = true;
       scene.traverse(o => { if (o.material) [].concat(o.material).forEach(m => { m.needsUpdate = true; }); });
     }
   }
@@ -1695,7 +1825,7 @@ function main() {
     perf.cool -= dt;
     if (perf.cool > 0) return;
     perf.sum += dt; perf.n++;
-    if (perf.n >= 60) {
+    if (perf.n >= 60 || perf.sum >= 1.5) {   // 很卡時（張數少）也要在 1.5 秒內判斷
       // 平均低於約 45 張/秒就降一級
       if (perf.sum / perf.n > 1 / 45) {
         qLevel++;
@@ -1725,6 +1855,12 @@ function main() {
 
   resize();
   applyQuality();
+  // 先把所有材質的 shader 編好，進遊戲不會卡一下
+  updateCamera(0);
+  // 開發光時場景畫在 composer 的貼圖上（shader 不一樣），要對那個目標編
+  if (QLEVELS[qLevel].bloom) renderer.setRenderTarget(composer.readBuffer);
+  renderer.compile(scene, camera);
+  renderer.setRenderTarget(null);
   if (st.balls <= 0) st = freshState();
   shown = st.balls;
   requestAnimationFrame(frame);
@@ -1736,7 +1872,9 @@ function main() {
     spin: () => startSpin(),
     setBet: i => setBetIdx(i),
     setBalls: v => { st.balls = v; },
-    hits: () => HITS.map(h => ({ id: h.id, x: Math.round(h.x), y: Math.round(h.y), r: Math.round(h.r || 0) }))
+    hits: () => HITS.map(h => ({ id: h.id, x: Math.round(h.x), y: Math.round(h.y), r: Math.round(h.r || 0) })),
+    quality: n => { qLevel = clamp(n, 0, QLEVELS.length - 1); perf.cool = 1e9; applyQuality(); return qLevel; },
+    info: () => ({ calls: renderer.info.render.calls, tris: renderer.info.render.triangles, q: qLevel })
   };
   window.__pinsim = function (n, pmin, pmax) {
     const res = {};

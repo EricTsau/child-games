@@ -17,6 +17,7 @@
 <body>
 <canvas id="game" aria-label="青蛙過河"></canvas>
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
 <script>
 'use strict';
 const SLUG = 'frog-jump';
@@ -31,6 +32,7 @@ let W = 0, H = 0, dpr = 1, U = 1, time = 0;
 
 const Game = {
   onResize() {}, onDown() {}, onMove() {}, onUp() {}, onKey() {},
+  canPause() { return false; }, onPause() {}, onPauseRestart() {}, onPauseMenu() {}, onResultSound() {},
   update() {}, draw() {}
 };
 
@@ -325,6 +327,7 @@ function drawIcon(name, x, y, s, col) {
     rr(-s * 0.38, -s * 0.12, s * 0.76, s * 0.6, s * 0.12); ctx.fill();
     ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.beginPath(); circ(0, s * 0.15, s * 0.08); ctx.fill();
   }
+  else if (name === 'pause') { rr(-s * 0.32, -s * 0.4, s * 0.22, s * 0.8, s * 0.07); ctx.fill(); rr(s * 0.1, -s * 0.4, s * 0.22, s * 0.8, s * 0.07); ctx.fill(); }
   else if (name === 'music') { ctx.beginPath(); ctx.ellipse(-s * 0.18, s * 0.3, s * 0.18, s * 0.13, -0.4, 0, TAU); ctx.fill(); ctx.lineWidth = s * 0.12; ctx.beginPath(); ctx.moveTo(-s * 0.02, s * 0.3); ctx.lineTo(-s * 0.02, -s * 0.45); ctx.quadraticCurveTo(s * 0.25, -s * 0.3, s * 0.35, -s * 0.1); ctx.stroke(); }
   ctx.restore();
 }
@@ -373,7 +376,8 @@ function hitBtn(x, y) {
 cv.addEventListener('pointerdown', (e) => {
   e.preventDefault();
   const b = hitBtn(e.clientX, e.clientY);
-  if (b) { pressed = { id: b.id, pid: e.pointerId }; KG.note(880, 0.06, 'sine', 0.15); return; }
+  if (b) { pressed = { id: b.id, pid: e.pointerId }; sfx('tap', { vol: 0.6, pan: panX(e.clientX) }); return; }
+  if (Paused.on) return;
   Game.onDown(e.clientX, e.clientY, e);
 });
 cv.addEventListener('pointermove', (e) => { Game.onMove(e.clientX, e.clientY, e); });
@@ -381,7 +385,7 @@ function endPointer(e, cancel) {
   if (pressed && pressed.pid === e.pointerId) {
     const b = hitBtn(e.clientX, e.clientY), id = pressed.id;
     pressed = null;
-    if (!cancel && b && b.id === id && b.onClick) { KG.sound('pop'); b.onClick(); }
+    if (!cancel && b && b.id === id && b.onClick) { sfx('ui', { pan: panX(e.clientX) }); b.onClick(); }
     return;
   }
   Game.onUp(e.clientX, e.clientY, e);
@@ -389,55 +393,121 @@ function endPointer(e, cancel) {
 cv.addEventListener('pointerup', (e) => endPointer(e, false));
 cv.addEventListener('pointercancel', (e) => endPointer(e, true));
 cv.addEventListener('contextmenu', (e) => e.preventDefault());
-window.addEventListener('keydown', (e) => Game.onKey(e, true));
+window.addEventListener('keydown', (e) => { if (Paused.key(e)) return; Game.onKey(e, true); });
 window.addEventListener('keyup', (e) => Game.onKey(e, false));
 
-/* ---------- 背景音樂（用 KG.note 合成） ---------- */
-// 瀏覽器規定：使用者互動後才能播放聲音
-let userActed = false;
-window.addEventListener('pointerdown', () => { userActed = true; }, { capture: true });
-window.addEventListener('keydown', () => { userActed = true; }, { capture: true });
-const NOTE_IDX = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
-function nf(name) {
-  const m = /^([A-G])(#|b)?(\d)$/.exec(name);
-  if (!m) return 0;
-  let n = NOTE_IDX[m[1]] + (m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0) + (parseInt(m[3], 10) + 1) * 12;
-  return 440 * Math.pow(2, (n - 69) / 12);
+/* ---------- 聲音：共用 kg-music.js（背景音樂、短樂句、音效） ---------- */
+const M = KG.music, SX = KG.sfx;
+let sfxOn = KG.store.get(SLUG + ':sfx', true) !== false;
+const sfxLast = Object.create(null);
+/** 播放音效：同一種音效 40ms 內只播一次、音高隨機 ±4%（exact 時不抖） */
+function sfx(name, o) {
+  if (!sfxOn || !SX) return;
+  const now = performance.now();
+  if (now - (sfxLast[name] || 0) < 40) return;
+  sfxLast[name] = now;
+  const p = ((o && o.pitch) || 1) * (o && o.exact ? 1 : 0.96 + Math.random() * 0.08);
+  SX.play(name, { vol: o ? o.vol : undefined, pitch: p, pan: o ? o.pan : undefined });
 }
+/** 依畫面左右位置決定聲音偏左或偏右 */
+function panX(x) { return clamp((x / Math.max(1, W)) * 2 - 1, -1, 1) * 0.6; }
+function jingle(def) { if (sfxOn && M) M.jingle(def); }
 const Music = {
-  on: false, song: null, step: 0, next: 0,
-  /** song: {bpm, mel:'C5 E5 - G5 ...'（八分音符，- 表示延長，. 表示休止）, bass:'C3 . G2 .'} */
-  start(song) {
-    this.song = { bpm: song.bpm, mel: song.mel.trim().split(/\s+/), bass: (song.bass || '').trim().split(/\s+/), vol: song.vol || 1, wave: song.wave || 'triangle' };
-    this.on = true; this.step = 0; this.next = 0.15;
+  on: false,
+  /** restart：從頭播（重新開始關卡時，順便把樂器層和速度歸零） */
+  start(song, restart) { this.on = true; if (M) { M.setVolume(song.mvol || 0.24); M.play(song, restart ? { restart: true } : undefined); M.setTempo(1); } },
+  stop(fade) { this.on = false; if (M) M.stop(fade || 0.3); },
+  layer(name, on) { if (M) M.setLayer(name, on); },
+  tempo(k) { if (M) M.setTempo(Math.min(1.1, k)); }
+};
+/** 持續的環境聲（風聲、水聲）：音效關掉、暫停、離開遊戲時要停 */
+const Amb = {
+  h: null, kind: null, x: 0, v: 0,
+  use(kind) { if (this.kind === kind) return; this.stop(); if (kind && SX) { this.kind = kind; this.h = SX.loop(kind); } },
+  set(x, v) { this.x = x; this.v = v; this.apply(); },
+  apply() { if (this.h) this.h.set(this.x, sfxOn && !Paused.on ? this.v : 0); },
+  stop() { if (this.h) this.h.stop(); this.h = null; this.kind = null; }
+};
+/** 標題、暫停選單共用：「音樂 開/關」「音效 開/關」兩顆按鈕 */
+function soundToggles(x, y, w, h) {
+  const gw = (w - 10) / 2, mOn = !M || M.isEnabled(), fs = Math.min(h * 0.42, gw / 4.6);
+  button('tgMusic', x, y, gw, h, { label: '音樂 ' + (mOn ? '開' : '關'), color: mOn ? 'green' : 'white', size: fs, onClick: () => { if (M) M.setEnabled(!M.isEnabled()); } });
+  button('tgSfx', x + gw + 10, y, gw, h, { label: '音效 ' + (sfxOn ? '開' : '關'), color: sfxOn ? 'purple' : 'white', size: fs, onClick: () => {
+    sfxOn = !sfxOn; KG.store.set(SLUG + ':sfx', sfxOn);
+    Amb.apply();
+    if (sfxOn) sfx('select');
+  } });
+}
+/** 標題畫面的開關：放在開始鍵下面，放不下（橫向手機）就放在旁邊 */
+function titleToggles(bx, by, bw, bh) {
+  const h = Math.max(40, 46 * U), w = Math.min(W - 40, 300 * U);
+  let x = (W - w) / 2, y = by + bh + 16 * U;
+  if (y + h > H - 10) {
+    const room = W - (bx + bw) - 28;
+    if (room >= 220) { soundToggles(bx + bw + 16, by + (bh - h) / 2 + 4, Math.min(room, 300 * U), h); return; }
+    y = H - h - 10;
+  }
+  soundToggles(x, y, w, h);
+}
+
+/* ---------- 暫停：右上 🔊 下面的暫停鍵、P／Esc 鍵、切到別的分頁 ---------- */
+const Paused = {
+  on: false, t: 0,
+  open() {
+    if (this.on || !Game.canPause()) return;
+    this.on = true; this.t = 0; pressed = null;
+    if (M) M.pause();
+    Amb.apply();
+    Game.onPause(true);
+    sfx('back');
   },
-  stop() { this.on = false; },
-  update(dt) {
-    if (!this.on || !this.song || !userActed) return;
-    this.next -= dt;
-    if (this.next < -0.3) this.next = 0;
-    const s = this.song, beat = 60 / s.bpm / 2;
-    while (this.next <= 0) {
-      if (!KG.isMuted() && !document.hidden) {
-        const i = this.step % s.mel.length, tok = s.mel[i];
-        if (tok !== '-' && tok !== '.') {
-          let len = 1;
-          while (s.mel[(i + len) % s.mel.length] === '-' && len < 8) len++;
-          const f = nf(tok);
-          KG.note(f, beat * len * 0.95, s.wave, 0.05 * s.vol);
-          KG.note(f * 2, beat * len * 0.5, 'sine', 0.015 * s.vol);
-        }
-        if (s.bass.length > 1) {
-          const bi = this.step % s.bass.length, bt = s.bass[bi];
-          if (bt !== '-' && bt !== '.') KG.note(nf(bt), beat * 1.8, 'sine', 0.07 * s.vol);
-        }
-      }
-      this.step++;
-      this.next += beat;
+  close() {
+    if (!this.on) return;
+    this.on = false;
+    if (M) M.resume();
+    Amb.apply();
+    Game.onPause(false);
+    lastFrame = performance.now();
+    sfx('select');
+  },
+  /** 從暫停選單離開（重新開始／回選關）：音樂交給下一個畫面 */
+  quit() { this.on = false; Amb.stop(); Game.onPause(false); },
+  key(e) {
+    if (e.code === 'KeyP' || e.code === 'Escape') {
+      if (e.repeat) return true;
+      if (this.on) { this.close(); return true; }
+      if (Game.canPause()) { e.preventDefault(); this.open(); return true; }
+      return false;
     }
+    if (this.on) { if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); this.close(); } return true; }
+    return false;
+  },
+  draw() {
+    if (!this.on) {
+      if (Game.canPause()) button('pause', W - 58, 61, 46, 46, { icon: 'pause', color: 'white', radius: 23, onClick: () => this.open() });
+      return;
+    }
+    btnReg = [];   // 暫停時只能按選單上的按鈕
+    ctx.fillStyle = 'rgba(50,25,70,0.5)'; ctx.fillRect(0, 0, W, H);
+    const pw = Math.min(W - 32, 330 * U), bh = Math.max(40, 54 * U), gap = 12 * U;
+    const ph = 66 * U + 4 * bh + 3 * gap + 24 * U;
+    const px = (W - pw) / 2, py = Math.max(64, (H - ph) / 2);
+    const s = Ease.outBack(clamp(this.t * 5, 0, 1));
+    ctx.save(); ctx.translate(W / 2, py + ph / 2); ctx.scale(s, s); ctx.translate(-W / 2, -(py + ph / 2));
+    rr(px, py + 8, pw, ph, 28 * U); ctx.fillStyle = 'rgba(60,30,70,0.3)'; ctx.fill();
+    rr(px, py, pw, ph, 28 * U); ctx.fillStyle = '#fffdf6'; ctx.fill();
+    ctx.lineWidth = 6 * U; ctx.strokeStyle = '#9b6ff2'; ctx.stroke();
+    txt('暫停中', W / 2, py + 36 * U, 30 * U, '#fff', { stroke: '#7a55d6', sw: 8 * U });
+    const bx = px + 20 * U, bw = pw - 40 * U;
+    let y = py + 66 * U;
+    button('pResume', bx, y, bw, bh, { label: '繼續', icon: 'play', color: 'green', onClick: () => this.close() }); y += bh + gap;
+    soundToggles(bx, y, bw, bh); y += bh + gap;
+    button('pRestart', bx, y, bw, bh, { label: '重新開始', icon: 'replay', color: 'yellow', onClick: () => { this.quit(); Game.onPauseRestart(); } }); y += bh + gap;
+    button('pMenu', bx, y, bw, bh, { label: '選擇關卡', icon: 'menu', color: 'blue', onClick: () => { this.quit(); Game.onPauseMenu(); } });
+    ctx.restore();
   }
 };
-document.addEventListener('visibilitychange', () => { if (document.hidden) Music.next = 0.2; });
+document.addEventListener('visibilitychange', () => { if (document.hidden) Paused.open(); });
 
 /* ---------- 存檔 ---------- */
 const Save = {
@@ -508,7 +578,7 @@ function levelSelect(opts) {
       const locked = total < sk.need;
       const sel = opts.skin === i;
       button('sk' + i, x, y, sz, sz, { color: sel ? 'yellow' : 'white', radius: 18 * U, label: '', onClick: () => {
-        if (locked) { KG.sound('wrong'); KG.toast('還需要 ' + (sk.need - total) + ' 顆星星喔！'); return; }
+        if (locked) { sfx('error'); KG.toast('還需要 ' + (sk.need - total) + ' 顆星星喔！'); return; }
         opts.onSkin(i);
       } });
       ctx.save();
@@ -532,7 +602,8 @@ const Result = {
     this.on = true; this.t = 0; this.o = o; this.shown = 0; this.panel.s = 0;
     killTweens(this.panel);
     tween(this.panel, { s: 1 }, 0.5, 'outBack');
-    if (o.stars > 0) { KG.sound('win'); KG.confetti(); } else KG.sound('lose');
+    if (o.stars > 0) KG.confetti();
+    Game.onResultSound(o);
   },
   hide() { this.on = false; },
   update(dt, fx) {
@@ -541,8 +612,7 @@ const Result = {
     const o = this.o;
     while (this.shown < 3 && this.t > 0.6 + this.shown * 0.38) {
       if (this.shown < o.stars) {
-        KG.note(660 * Math.pow(1.26, this.shown), 0.25, 'triangle', 0.22);
-        KG.note(1320 * Math.pow(1.26, this.shown), 0.3, 'sine', 0.08);
+        sfx('star', { pitch: Math.pow(1.122, this.shown), exact: true, vol: 0.9 });
         const p = this.starPos(this.shown);
         fx.burst(p[0], p[1], { n: 16, colors: ['#ffe066', '#fff', '#ffb02e'], speed: 260, g: 300, size: 7 * U });
       }
@@ -642,12 +712,12 @@ function frame(now) {
   if (shakeT > 0) shakeT -= rdt;
   let dt = rdt;
   if (stopT > 0) { stopT -= rdt; dt = 0; }
-  updateTweens(rdt);
-  Music.update(rdt);
-  Game.update(dt, rdt);
+  if (Paused.on) Paused.t += rdt;
+  else { updateTweens(rdt); Game.update(dt, rdt); }
   btnReg = [];
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   Game.draw();
+  Paused.draw();
   requestAnimationFrame(frame);
 }
 function bootGame() {
@@ -684,11 +754,68 @@ const SKINS = [
   { name: '金金', need: 9, c: ['#fff4b0', '#ffd23a', '#d99a10'], belly: '#fffbe0', acc: 'leaf' },
   { name: '王子', need: 12, c: ['#eadcff', '#b48cff', '#7d55d6'], belly: '#f8f2ff', acc: 'crown' }
 ];
-const SONG = {
-  bpm: 112,
-  mel: 'C5 D5 E5 G5 E5 D5 C5 - A4 C5 D5 E5 D5 - . . E5 G5 A5 G5 E5 D5 C5 D5 E5 - D5 C5 C5 - . .',
-  bass: 'C3 . G2 . A2 . E2 . F2 . C3 . G2 . G2 . C3 . G2 . A2 . E2 . F2 . G2 . C3 . C3 .'
+// 標題：慵懶的河口門廊搖擺（Eb 大調，84）
+const SONG_TITLE = {
+  bpm: 84, mvol: 0.32, swing: 0.3,
+  chords: ['Eb', 'Ab', 'Eb', 'Bb', 'Eb', 'Ab', 'Bb7', 'Eb'],
+  tracks: [
+    { inst: 'kick', pat: 'x.......x.......', vol: 0.4 },
+    { inst: 'rim', pat: '....x.......x...', vol: 0.35 },
+    { inst: 'shaker', pat: 'x.x.x.x.x.x.x.x.', vol: 0.45 },
+    { inst: 'sub', chord: 'R.......5.......', vol: 0.75 },
+    { inst: 'pluck', arp: 'updown', rate: 2, oct: 4, vol: 0.4 },
+    { inst: 'flute', vol: 1, seq: [
+      'Bb4 - G4 Bb4 Eb5 - - .', 'C5 - Eb5 - F5 Eb5 C5 .', 'G5 - F5 Eb5 Bb4 - - .', 'D5 - F5 - Bb4 - . .',
+      'Eb5 - G5 - Bb5 - G5 .', 'Ab5 - F5 - C5 Eb5 - .', 'D5 - F5 Ab4 Bb4 - D5 .', 'Eb5 - - - . . . .'] }
+  ]
 };
+// 遊戲中：迪克西蘭爵士二拍子（Ab 大調，112）
+const SONG_PLAY = {
+  bpm: 112, mvol: 0.28, swing: 0.22,
+  chords: ['Ab', 'Ab', 'Eb7', 'Eb7', 'Ab', 'Db', 'Eb7', 'Ab'],
+  layers: { home: false, hurry: false },
+  tracks: [
+    { inst: 'kick', pat: 'x.......x.......', vol: 0.6 },
+    { inst: 'snare', pat: ['....x..o....x.o.', '....x..o....x.oo'], vol: 0.4 },
+    { inst: 'hat', pat: 'x.x.x.x.x.x.x.x.', vol: 0.4 },
+    { inst: 'sub', chord: 'R.......5.......', vol: 0.85 },
+    { inst: 'pluck', chord: 'hold', rate: 4, oct: 4, vol: 0.28 },
+    { inst: 'brass', vol: 0.75, seq: [
+      'Eb5 - C5 Eb5 Ab5 - Eb5 .', 'F5 - Eb5 C5 Ab4 - - .', 'G4 Bb4 Eb5 - Db5 - Bb4 .', 'G5 - F5 - Eb5 - . .',
+      'C5 Eb5 Ab5 - G5 Ab5 Eb5 C5', 'Db5 - F5 - Ab5 - F5 .', 'Eb5 - G5 - Bb4 Db5 - .', 'Ab4 - C5 - Ab4 - - .'] },
+    // 一半的青蛙到家了：豎笛（長笛）對位＋開放鈸
+    { inst: 'flute', layer: 'home', vol: 0.7, seq: ['. C5 Eb5 .', 'Ab5 . . .', '. Bb5 G5 .', 'Db5 . . .', '. Eb5 Ab5 .', 'F5 . Ab5 .', '. G5 Bb5 .', 'Ab5 . . .'] },
+    { inst: 'ohat', layer: 'home', pat: '..x...x...x...x.', vol: 0.45 },
+    // 最後一隻：拍手＋低音鼓
+    { inst: 'clap', layer: 'hurry', pat: '....x.......x...', vol: 0.38 },
+    { inst: 'tom', layer: 'hurry', pitch: 120, pat: 'x.....x.....x.x.', vol: 0.38 }
+  ]
+};
+/* ---------- 青蛙過河的音效與短樂句（Ab 大調） ---------- */
+if (SX) {
+  // 跳：呱一聲往上滑（越往上的列音越高）
+  SX.define('fj_hop', (p, s) => { s.tone(360 * p, 0.12, { type: 'triangle', vol: 0.2, slide: 760 * p }); s.tone(180 * p, 0.05, { type: 'square', vol: 0.04, slide: 260 * p }); });
+  // 跳不過去（邊邊）
+  SX.define('fj_bonk', (p, s) => { s.tone(220 * p, 0.09, { type: 'triangle', vol: 0.16, slide: 160 * p }); });
+  // 落在荷葉：啵
+  SX.define('fj_pad', (p, s) => { s.tone(420 * p, 0.09, { vol: 0.2, slide: 900 * p }); s.noise(0.05, { vol: 0.05, freq: 1400 * p, q: 2 }); });
+  // 落在木頭：叩
+  SX.define('fj_log', (p, s) => { s.tone(280 * p, 0.07, { type: 'triangle', vol: 0.24, slide: 220 * p }); s.noise(0.04, { vol: 0.12, freq: 900 * p, q: 3 }); });
+  // 落在烏龜殼：喀
+  SX.define('fj_shell', (p, s) => { s.noise(0.035, { vol: 0.2, freq: 2400 * p, q: 4 }); s.tone(520 * p, 0.06, { type: 'triangle', vol: 0.1 }); });
+  // 落在草地
+  SX.define('fj_grass', (p, s) => { s.noise(0.07, { vol: 0.12, freq: 1800 * p, q: 0.9 }); });
+  // 烏龜快要潛水了：咕嚕咕嚕
+  SX.define('fj_bubble', (p, s) => { s.tone(300 * p, 0.08, { vol: 0.12, slide: 700 * p }); s.tone(420 * p, 0.07, { vol: 0.09, slide: 900 * p, delay: 0.09 }); });
+  // 吃到小蟲：舌頭咻＋啵
+  SX.define('fj_bug', (p, s) => { s.noise(0.06, { vol: 0.1, freq: 2600 * p, sweep: 900 * p, q: 1.5 }); s.tone(880 * p, 0.1, { type: 'triangle', vol: 0.15, slide: 1320 * p, delay: 0.04 }); });
+  // 差一點點就踩空：咻
+  SX.define('fj_near', (p, s) => { s.noise(0.2, { vol: 0.13, freq: 900 * p, sweep: 3000 * p, q: 1.4 }); });
+}
+const J_HOME = { bpm: 220, inst: 'marimba', vol: 0.34, notes: [['Eb5', 1], ['Ab5', 1], ['C6', 2]] };
+const J_WIN = { bpm: 150, inst: 'brass', vol: 0.24, notes: [['Eb5', 1], ['Ab5', 1], ['C6', 1], ['Eb6', 3], ['C6', 1], ['Ab5', 4]], bass: [['Ab2', 4, 0], ['Eb3', 2, 4], ['Ab2', 4, 6]], bassVol: 0.32 };
+const J_WIN2 = { bpm: 150, inst: 'flute', vol: 0.3, notes: [['C5', 1], ['Eb5', 1], ['Ab5', 1], ['G5', 3], ['Bb5', 1], ['Ab5', 4]] };
+const J_RECORD = { bpm: 190, inst: 'bell', vol: 0.26, notes: [['Ab5', 1], ['Bb5', 1], ['C6', 1], ['Eb6', 1], ['Ab5+C6+Eb6', 4]] };
 
 let scene = 'title', sceneT = 0;
 let skin = clamp(Save.get('skin', 0), 0, SKINS.length - 1);
@@ -770,14 +897,35 @@ function startLevel(i) {
   splashes = 0; bugsEaten = 0; fx.list = []; ripples = [];
   buildLevel();
   resetFrog();
-  Music.start(SONG);
+  chain = 0; chainT = 0; warnT = 0;
+  Music.start(SONG_PLAY, true);
+  Music.tempo(1 + i * 0.015);
+  Amb.use('water'); Amb.set(0.2, 0.045);
+  sfx('go', { vol: 0.8 });
 }
 function resetFrog() {
   frog.x = Math.floor(COLS / 2); frog.r = 0; frog.hop = null; frog.onPlat = null; frog.splashT = 0; frog.face = 0;
   frog.sx = 0.3; frog.sy = 0.3; killTweens(frog); tween(frog, { sx: 1, sy: 1 }, 0.5, 'outElastic');
 }
-function goTitle() { scene = 'title'; Result.hide(); TH = THEMES.day; Music.start(SONG); prepDemo(); }
-function goMap() { scene = 'map'; sceneT = 0; Result.hide(); TH = THEMES.day; if (!Music.on) Music.start(SONG); }
+function goTitle() { scene = 'title'; Result.hide(); TH = THEMES.day; Amb.stop(); Music.start(SONG_TITLE); prepDemo(); }
+function goMap() { scene = 'map'; sceneT = 0; Result.hide(); TH = THEMES.day; Amb.stop(); Music.start(SONG_TITLE); }
+/* 聲音的狀態：吃蟲連鎖、烏龜潛水提醒 */
+let chain = 0, chainT = 0, warnT = 0;
+Game.canPause = () => scene === 'play' && !Result.on && sub === 'play';
+Game.onPauseRestart = () => startLevel(lvIdx);
+Game.onPauseMenu = () => goMap();
+Game.onResultSound = (o) => {
+  jingle(J_WIN); jingle(J_WIN2);
+  if (o.record) setTimeout(() => { if (Result.on) { jingle(J_RECORD); KG.toast('新紀錄！'); } }, 1900);
+};
+/** 到家的進度：一半到家加豎笛，剩最後一隻加快 */
+function homeProgress() {
+  const n = homes.filter(h => h.filled).length;
+  Music.layer('home', n >= homes.length / 2);
+  const last = homes.length - n === 1;
+  Music.layer('hurry', last);
+  Music.tempo((last ? 1.06 : 1) + lvIdx * 0.015);
+}
 
 /* ---------- 平台查詢 ---------- */
 function platX(lane, p) {
@@ -808,7 +956,7 @@ function hop(dir) {
   const nr = clamp(frog.r + dr, 0, ROWS - 1);
   let nx = clamp(Math.round(frog.x + dx), 0, COLS - 1);
   if (dx === 0) nx = clamp(frog.x, 0, COLS - 1);
-  if (nr === frog.r && nx === frog.x) { KG.note(200, 0.08, 'sine', 0.12); return; }
+  if (nr === frog.r && nx === frog.x) { sfx('fj_bonk', { pan: panX(cx(frog.x)) }); return; }
   // 跳到終點列：吸到最近的空荷花
   if (lanes[nr].kind === 'goal') {
     let best = null, bd = 99;
@@ -818,7 +966,7 @@ function hop(dir) {
   frog.face = dir === 'left' ? -1 : dir === 'right' ? 1 : 0;
   frog.hop = { x0: frog.x, r0: frog.r, x1: nx, r1: nr, t: 0, dur: 0.17 };
   frog.onPlat = null;
-  KG.note(420 + nr * 30, 0.1, 'sine', 0.18, 0, 820);
+  sfx('fj_hop', { pitch: 0.92 + nr / Math.max(1, ROWS - 1) * 0.3, pan: panX(cx(nx)) });
   killTweens(frog); frog.sx = 0.8; frog.sy = 1.25;
 }
 Game.onKey = (e, down) => {
@@ -848,7 +996,7 @@ Game.onUp = (x, y, e) => {
 function splash() {
   frog.splashT = 1.0; frog.hop = null; frog.onPlat = null;
   splashes++;
-  KG.sound('splash'); KG.vibrate(50);
+  sfx('splash', { pan: panX(cx(frog.x)) }); KG.vibrate(50); chain = 0;
   const px = cx(frog.x), py = cy(frog.r);
   fx.burst(px, py, { n: 18, shape: 'drop', colors: ['#bff0ff', '#ffffff', '#7fd8f0'], speed: 260, dir: -Math.PI / 2, spread: 2.2, g: 700, size: C * 0.09, life: 0.8 });
   fx.ring(px, py, '#ffffff', C * 0.8, 0.6); fx.ring(px, py, '#bff0ff', C * 0.5, 0.8);
@@ -857,7 +1005,8 @@ function splash() {
 function arriveHome(h) {
   h.filled = true; h.skin = skin; h.pop = 0;
   tween(h, { pop: 1 }, 0.6, 'outElastic');
-  KG.sound('correct'); KG.sound('sparkle');
+  jingle(J_HOME); sfx('sparkle', { vol: 0.7 });
+  homeProgress();
   const px = cx(h.x), py = cy(ROWS - 1);
   fx.burst(px, py, { n: 24, shape: 'heart', colors: ['#ff8fb1', '#ffb3cf', '#fff'], speed: 240, g: 200, size: C * 0.1 });
   fx.burst(px, py, { n: 12, shape: 'sparkle', colors: ['#fff', '#ffe066'], speed: 160, g: 0, size: C * 0.12 });
@@ -869,15 +1018,16 @@ function arriveHome(h) {
 function winLevel() {
   sub = 'win'; subT = 0; frog.r = -99;
   const st = splashes <= 1 ? 3 : splashes <= 4 ? 2 : 1;
-  const before = Save.total();
+  const before = Save.total(), prevSt = Save.stars()[lvIdx] || 0;
+  Music.stop(1.2);
   Save.setStars(lvIdx, st);
   const after = Save.total();
   const newSkin = SKINS.find(s => s.need > before && s.need <= after);
   setTimeout(() => {
     if (scene !== 'play') return;
-    Music.stop();
+    Music.stop(); Amb.stop();
     Result.show({
-      stars: st, title: st === 3 ? '完美！全部回家了！' : '全部回家了！好棒！', color: '#3fbf5c',
+      stars: st, record: st > prevSt && prevSt > 0, title: st === 3 ? '完美！全部回家了！' : '全部回家了！好棒！', color: '#3fbf5c',
       lines: ['掉進水裡 ' + splashes + ' 次', '吃到 ' + bugsEaten + ' 隻小蟲'],
       unlock: newSkin ? '解鎖新造型：' + newSkin.name + '！' : '',
       onNext: lvIdx < LEVELS.length - 1 ? () => startLevel(lvIdx + 1) : null,
@@ -892,8 +1042,9 @@ function eatBugs() {
     const bx = platX(lane, b.p) + b.off;
     if (Math.abs(bx - (frog.x + 0.5)) < 0.9) {
       b.eaten = true; bugsEaten++;
+      chain = chainT > 0 ? Math.min(chain + 1, 8) : 1; chainT = 4;
+      sfx('fj_bug', { pitch: Math.pow(1.06, chain - 1), exact: true, pan: panX(cx(bx - 0.5)) });
       frog.tongue = 0.25; frog.tongueTo = [cx(bx - 0.5), cy(b.r) - C * 0.25];
-      KG.sound('pop');
       fx.burst(frog.tongueTo[0], frog.tongueTo[1], { n: 8, shape: 'sparkle', colors: ['#fff', '#ffe066'], speed: 120, g: 0, size: C * 0.1 });
       fx.text(frog.tongueTo[0], frog.tongueTo[1] - 10, '+1', { color: '#ffe066', size: 22 * U });
     }
@@ -914,6 +1065,10 @@ Game.update = (dt, rdt) => {
   if (scene === 'title') { updateDemo(dt); return; }
   if (scene !== 'play') return;
   subT += dt;
+  if (chainT > 0) chainT -= dt;
+  // 站在快要潛水的烏龜上：咕嚕咕嚕提醒（最多每 0.45 秒一次）
+  warnT -= dt;
+  if (warnT <= 0 && frog.onPlat && frog.onPlat.warn && !frog.hop) { warnT = 0.45; sfx('fj_bubble', { pan: panX(cx(frog.x)) }); }
   // 平台移動與烏龜潛水
   lanes.forEach(lane => {
     if (lane.kind !== 'water') return;
@@ -943,17 +1098,23 @@ Game.update = (dt, rdt) => {
       if (lane.kind === 'goal') {
         const h = homes.find(o => !o.filled && Math.abs(o.x - frog.x) < 0.6);
         if (h) arriveHome(h);
-        else { frog.r -= 1; KG.sound('boing'); }
+        else { frog.r -= 1; sfx('boing', { pan: panX(cx(frog.x)) }); }
       } else if (lane.kind === 'water') {
         const p = platformAt(frog.r, frog.x);
         if (!p) splash();
         else {
           frog.onPlat = p;
           ripples.push({ x: cx(frog.x), y: cy(frog.r), t: 0, big: true });
-          if (lane.t === 'turtle') KG.note(300, 0.08, 'sine', 0.12);
+          const pn = panX(cx(frog.x)), sp = 0.97 + frog.r * 0.015;
+          sfx(lane.t === 'turtle' ? 'fj_shell' : lane.t === 'log' ? 'fj_log' : 'fj_pad', { pitch: sp, pan: pn });
+          // 落在平台最邊邊：好險！
+          let px = platX(lane, p);
+          if (!(frog.x + 0.5 > px - 0.15 && frog.x + 0.5 < px + p.len + 0.15)) px -= lane.L;
+          if (Math.min(frog.x + 0.5 - px, px + p.len - (frog.x + 0.5)) < 0.12) sfx('fj_near', { pan: pn });
           eatBugs();
         }
       } else {
+        sfx('fj_grass', { pan: panX(cx(frog.x)) });
         fx.burst(cx(frog.x), cy(frog.r) + C * 0.3, { n: 5, shape: 'circle', colors: ['#b8f09a', '#fff'], speed: 80, dir: -Math.PI / 2, spread: 2.5, g: 200, size: C * 0.06, life: 0.4 });
       }
     }
@@ -1382,7 +1543,9 @@ function drawTitle() {
   const t = (time * 0.8) % 1, lift = t < 0.35 ? Math.sin(t / 0.35 * Math.PI) * 60 * U : 0;
   drawFrog(W / 2, py, 140 * U, { lift, blink: frog.blink > 0, mood: lift > 20 ? 'happy' : 'idle', sx: t > 0.35 && t < 0.45 ? 1.15 : 1, sy: t > 0.35 && t < 0.45 ? 0.85 : 1 });
   const bw = 210 * U, bh = 74 * U;
-  button('start', W / 2 - bw / 2, Math.min(H - bh - 40, H * 0.74), bw, bh, { label: '開始', icon: 'play', color: 'green', pulse: true, onClick: goMap });
+  const by = Math.min(H - bh - 40, H * 0.74);
+  button('start', W / 2 - bw / 2, by, bw, bh, { label: '開始', icon: 'play', color: 'green', pulse: true, onClick: goMap });
+  titleToggles(W / 2 - bw / 2, by, bw, bh);
 }
 function drawMap() {
   titleBg();
@@ -1391,7 +1554,7 @@ function drawMap() {
     levels: LEVELS, title: '選擇關卡', color: '#2a8aa8', cardColors: ['green', 'blue', 'yellow', 'orange', 'purple'],
     onPick: (i) => startLevel(i),
     skins: SKINS.map((s, i) => ({ name: s.name, need: s.need, draw: (x, y, sz) => drawFrog(x, y + sz * 0.1, sz * 1.6, { skin: i }) })),
-    skin, onSkin: (i) => { skin = i; Save.set('skin', i); KG.sound('sparkle'); ui.burst(W / 2, H - 100 * U, { n: 16, speed: 200, g: 200 }); }
+    skin, onSkin: (i) => { skin = i; Save.set('skin', i); sfx('sparkle'); ui.burst(W / 2, H - 100 * U, { n: 16, speed: 200, g: 200 }); }
   });
 }
 

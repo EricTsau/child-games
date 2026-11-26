@@ -18,6 +18,7 @@
 <body>
 <canvas id="game" aria-label="夜市撈金魚"></canvas>
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
 <script>
 'use strict';
 /* =====================================================================
@@ -154,135 +155,165 @@ let stars = Save.get('stars', []);
 let aqList = Save.get('aq', []);
 function saveAll() { Save.set('coins', coins); Save.set('owned', owned); Save.set('stars', stars); Save.set('aq', aqList); }
 
-/* ---------- 音效 ---------- */
-let userActed = false;
-window.addEventListener('pointerdown', () => { userActed = true; Snd.ctx(); }, { capture: true });
-window.addEventListener('keydown', () => { userActed = true; }, { capture: true });
-const Snd = {
-  ac: null, nb: null, amb: null, ambG: null, chimeT: 3,
-  ctx() {
-    if (!userActed) return null;
-    if (!this.ac) {
-      const AC = window.AudioContext || window.webkitAudioContext;
-      if (!AC) return null;
-      try { this.ac = new AC(); } catch (e) { return null; }
-      const len = this.ac.sampleRate * 2, b = this.ac.createBuffer(1, len, this.ac.sampleRate), d = b.getChannelData(0);
-      for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
-      this.nb = b;
-    }
-    if (this.ac.state === 'suspended') this.ac.resume();
-    return this.ac;
-  },
-  noise(dur, vol, freq, type, delay) {
-    if (KG.isMuted()) return;
-    const a = this.ctx(); if (!a) return;
-    const t = a.currentTime + (delay || 0);
-    const s = a.createBufferSource(); s.buffer = this.nb;
-    const f = a.createBiquadFilter(); f.type = type || 'bandpass'; f.frequency.value = freq || 1000;
-    const g = a.createGain();
-    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    s.connect(f); f.connect(g); g.connect(a.destination);
-    s.start(t, Math.random(), dur + 0.05);
-  },
-  ambience(on) {
-    const a = on ? this.ctx() : this.ac;
-    if (!a) return;
-    if (!this.amb && on) {
-      const s = a.createBufferSource(); s.buffer = this.nb; s.loop = true;
-      const f = a.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 520;
-      const f2 = a.createBiquadFilter(); f2.type = 'bandpass'; f2.frequency.value = 1100; f2.Q.value = 2.5;
-      const g = a.createGain(); g.gain.value = 0;
-      const g2 = a.createGain(); g2.gain.value = 0.25;
-      s.connect(f); f.connect(g); s.connect(f2); f2.connect(g2); g2.connect(g); g.connect(a.destination);
-      s.start();
-      this.amb = s; this.ambG = g;
-    }
-    if (this.ambG) {
-      const target = on && !KG.isMuted() ? 0.03 : 0;
-      this.ambG.gain.setTargetAtTime(target, a.currentTime, 0.3);
-    }
-  },
-  dip() { this.noise(0.2, 0.28, 900, 'bandpass'); KG.note(260, 0.14, 'sine', 0.18, 0, 120); },
-  lift() { this.noise(0.28, 0.16, 1800, 'bandpass'); KG.note(700, 0.1, 'sine', 0.1, 0, 1300); KG.note(1050, 0.08, 'sine', 0.07, 0.09, 1500); },
-  tear() {
-    for (let i = 0; i < 6; i++) this.noise(0.05, 0.32, 2800 + Math.random() * 2500, 'highpass', i * 0.04 + Math.random() * 0.02);
-    this.noise(0.3, 0.22, 1400, 'bandpass', 0.2);
-    KG.note(240, 0.3, 'sawtooth', 0.05, 0.02, 110);
-  },
-  creak() { this.noise(0.035, 0.12, 4200, 'highpass'); this.noise(0.03, 0.09, 3600, 'highpass', 0.06); },
-  caught() { KG.note(660, 0.1, 'triangle', 0.2); KG.note(880, 0.12, 'triangle', 0.2, 0.08); KG.note(1320, 0.16, 'sine', 0.12, 0.16); },
-  escape() { KG.note(520, 0.22, 'sine', 0.16, 0, 200); this.noise(0.3, 0.2, 700, 'bandpass', 0.05); },
-  plop() { KG.note(380, 0.12, 'sine', 0.26, 0, 950); this.noise(0.15, 0.16, 1200, 'bandpass'); },
-  quack() { KG.note(560, 0.1, 'sawtooth', 0.07, 0, 420); KG.note(560, 0.1, 'sawtooth', 0.07, 0.14, 400); },
-  heavy() { KG.note(130, 0.3, 'sine', 0.3, 0, 70); this.noise(0.2, 0.2, 400, 'lowpass'); },
-  rare() { KG.sound('sparkle'); [784, 988, 1175, 1568].forEach((f, i) => KG.note(f, 0.18, 'triangle', 0.16, 0.15 + i * 0.08)); },
-  newPaper() { KG.note(990, 0.06, 'square', 0.06); KG.note(1320, 0.1, 'square', 0.06, 0.06); },
-  update(dt) {
-    const want = scene === 'play' && !overlay && !document.hidden;
-    if (userActed && (want || this.amb)) this.ambience(want);
-    if (want && !KG.isMuted()) {
-      this.chimeT -= dt;
-      if (this.chimeT <= 0) {
-        this.chimeT = 3 + Math.random() * 5;
-        const f = [1568, 1760, 2093, 2349][Math.floor(Math.random() * 4)];
-        KG.note(f, 0.7, 'sine', 0.018); KG.note(f * 1.5, 0.5, 'sine', 0.01, 0.12);
-      }
-    }
-  }
-};
-
-/* ---------- 背景音樂（KG.note 合成的輕快夜市小調） ---------- */
-const NOTE_IDX = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
-function nf(name) {
-  const m = /^([A-G])(#|b)?(\d)$/.exec(name); if (!m) return 0;
-  const n = NOTE_IDX[m[1]] + (m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0) + (parseInt(m[3], 10) + 1) * 12;
-  return 440 * Math.pow(2, (n - 69) / 12);
+/* ---------- 聲音：KG.sfx 音效＋KG.music 原創配樂 ---------- */
+const S = KG.sfx, M = KG.music;
+let sfxOn = Save.get('sfx', true) !== false;
+const sfxLast = Object.create(null);
+/** 音效：同一種 40ms 內只播一次、音高隨機 ±4%（exact 不加）、依畫面左右 pan */
+function sfx(name, o) {
+  if (!sfxOn || !S) return;
+  const now = performance.now();
+  if (now - (sfxLast[name] || 0) < ((o && o.gap) || 40)) return;
+  sfxLast[name] = now;
+  const pitch = ((o && o.pitch) || 1) * (o && o.exact ? 1 : 0.96 + Math.random() * 0.08);
+  S.play(name, { vol: o && o.vol != null ? o.vol : undefined, pitch, pan: o && o.pan ? o.pan : undefined });
 }
-const SONG_NIGHT = {
-  bpm: 112, wave: 'triangle',
-  mel: 'E5 G5 A5 G5 E5 D5 C5 D5 E5 - G5 - D5 - . . C5 D5 E5 G5 A5 G5 E5 D5 C5 - A4 - C5 - . . ' +
-       'G5 A5 C6 A5 G5 E5 D5 E5 G5 - E5 - D5 - . . E5 G5 D5 E5 C5 D5 A4 C5 D5 - C5 - C5 - . .',
-  bass: 'C3 . G3 . C3 . G3 . A2 . E3 . A2 . E3 . F2 . C3 . F2 . C3 . G2 . D3 . G2 . D3 .'
+function panX(x) { return clamp((x / Math.max(1, W)) * 2 - 1, -1, 1) * 0.6; }
+if (S) {
+  // 紙網下水：噗＋水聲
+  S.define('gf_dip', (p, s) => { s.tone(260 * p, 0.14, { vol: 0.2, slide: 130 * p }); s.noise(0.2, { vol: 0.16, freq: 900 * p, sweep: 450, q: 1 }); });
+  // 撈起來：水嘩啦往上
+  S.define('gf_lift', (p, s) => { s.noise(0.26, { vol: 0.14, freq: 1200 * p, sweep: 2600 * p, q: 1.2 }); s.tone(700 * p, 0.1, { vol: 0.08, slide: 1300 * p }); s.tone(1050 * p, 0.08, { vol: 0.05, delay: 0.09, slide: 1500 * p }); });
+  // 紙網破掉：一連串撕紙聲（用帶通，不會爆音）
+  S.define('gf_tear', (p, s) => {
+    let d = 0;
+    for (let i = 0; i < 7; i++) { s.noise(0.04 + Math.random() * 0.03, { vol: 0.2, freq: (2400 + Math.random() * 2400) * p, q: 2.2, delay: d }); d += 0.025 + Math.random() * 0.03; }
+    s.noise(0.28, { vol: 0.12, freq: 1300 * p, q: 1, delay: 0.18 });
+    s.tone(240 * p, 0.3, { type: 'triangle', vol: 0.08, delay: 0.02, slide: 110 });
+  });
+  // 紙網快撐不住：細細的嘶
+  S.define('gf_creak', (p, s) => { s.noise(0.035, { vol: 0.09, freq: 3800 * p, q: 6 }); s.noise(0.03, { vol: 0.07, freq: 3300 * p, q: 6, delay: 0.06 }); });
+  S.define('gf_caught', (p, s) => { s.tone(660 * p, 0.1, { type: 'triangle', vol: 0.18 }); s.tone(880 * p, 0.12, { type: 'triangle', vol: 0.17, delay: 0.08 }); s.tone(1320 * p, 0.16, { vol: 0.1, delay: 0.16 }); });
+  S.define('gf_escape', (p, s) => { s.tone(520 * p, 0.2, { vol: 0.14, slide: 200 * p }); s.noise(0.26, { vol: 0.16, freq: 800 * p, sweep: 400, q: 1, delay: 0.05 }); });
+  // 金魚進碗：小小噗通
+  S.define('gf_plop', (p, s) => { s.tone(380 * p, 0.12, { vol: 0.22, slide: 950 * p }); s.noise(0.14, { vol: 0.12, freq: 1200 * p, q: 1.2 }); s.tone(1320 * p, 0.14, { type: 'triangle', vol: 0.08, delay: 0.1 }); });
+  S.define('gf_quack', (p, s) => { s.tone(560 * p, 0.1, { type: 'sawtooth', vol: 0.05, slide: 420 * p }); s.tone(560 * p, 0.1, { type: 'sawtooth', vol: 0.05, delay: 0.14, slide: 400 * p }); s.tone(280 * p, 0.2, { vol: 0.06 }); });
+  S.define('gf_heavy', (p, s) => { s.tone(130 * p, 0.3, { vol: 0.28, slide: 70 }); s.noise(0.2, { vol: 0.16, freq: 400 * p, q: 1, type: 'lowpass' }); });
+  S.define('gf_paper', (p, s) => {
+    for (let i = 0; i < 3; i++) s.noise(0.05, { vol: 0.1, freq: (2600 + i * 500) * p, q: 1.5, delay: i * 0.04 });
+    s.tone(990 * p, 0.07, { type: 'triangle', vol: 0.1, delay: 0.1 }); s.tone(1320 * p, 0.12, { type: 'triangle', vol: 0.1, delay: 0.16 });
+  });
+  // 夜市風鈴
+  S.define('gf_chime', (p, s) => { s.tone(1568 * p, 0.7, { vol: 0.03 }); s.tone(2352 * p, 0.5, { vol: 0.016, delay: 0.12 }); });
+  S.define('gf_heart', (p, s) => { s.tone(880 * p, 0.08, { type: 'triangle', vol: 0.13 }); s.tone(1320 * p, 0.1, { type: 'triangle', vol: 0.11, delay: 0.07 }); });
+  S.define('gf_food', (p, s) => { for (let i = 0; i < 3; i++) s.tone((1300 + i * 140) * p, 0.05, { vol: 0.06, delay: i * 0.05, slide: (1700 + i * 140) * p }); });
+  S.define('gf_eat', (p, s) => { s.tone(900 * p, 0.07, { vol: 0.09, slide: 1300 * p }); });
+}
+/* SONGS-BEGIN */
+// 標題／選單：那卡西風的夜市散步（A 小調・四七抜き，112，手風琴風琴＋吉他反拍＋兩拍貝斯）
+const GF_TITLE_MEL = [
+  'E5 - - F5 E5 - C5 -', 'B4 - C5 B4 A4 - - -', 'F5 - - E5 F5 - A5 -', 'E5 - - - C5 - B4 -',
+  'C5 - - A4 C5 - F5 -', 'E5 - F5 E5 B4 - G#4 -', 'A4 - B4 C5 E5 - C5 B4', 'A4 - - - - - . .',
+  'A5 - - F5 E5 - F5 -', 'E5 - C5 - A4 - - -', 'B4 - - C5 B4 - E5 -', 'C5 - B4 - A4 - - -',
+  'F5 - - E5 F5 - A5 -', 'F5 - E5 - D5 - F5 -', 'E5 - - F5 E5 - B4 -', 'A4 - - - - - . .'
+];
+const GF_TITLE = {
+  key: 'Am', scale: ['A', 'B', 'C', 'E', 'F'], bpm: 112, steps: 16, swing: 0.16, vol: 0.34,
+  chords: ['Am', 'Am', 'Dm', 'Am', 'F', 'E7', 'Am', 'Am', 'Dm', 'Am', 'E7', 'Am', 'F', 'Dm', 'E7', 'Am'],
+  tracks: [
+    { inst: 'kick', pat: 'x.......x.......', vol: 0.42 },
+    { inst: 'rim', pat: '....x.......x...', vol: 0.36 },
+    { inst: 'sub', chord: 'R.......5.......', vol: 0.62 },
+    { inst: 'pluck', chord: '..3...3...3...3.', oct: 4, vol: 0.2 },
+    { inst: 'pluck', chord: '..5...5...5...5.', oct: 4, vol: 0.17 },
+    { inst: 'organ', seq: GF_TITLE_MEL, vol: 0.62 },
+    { inst: 'flute', seq: GF_TITLE_MEL, vol: 0.2, legato: 0.85 }
+  ]
 };
-const SONG_AQ = {
-  bpm: 84, wave: 'sine', vol: 0.9,
-  mel: 'G4 - C5 - E5 - D5 - C5 - A4 - G4 - - - A4 - C5 - D5 - E5 - G5 - E5 - D5 - - - ' +
-       'E5 - G5 - A5 - G5 - E5 - D5 - C5 - - - D5 - E5 - D5 - C5 - A4 - C5 - - - - -',
-  bass: 'C3 - - - G2 - - - A2 - - - E2 - - - F2 - - - C3 - - - G2 - - - G2 - - -'
+// 撈金魚：電子花車味的夜市民俗迪斯可（Eb 大調五聲，132，四拍大鼓、拍手、八度貝斯、晶片＋風琴旋律）
+const GF_PLAY_MEL = [
+  'G5 . Bb5 G5 F5 . Eb5 .', 'C5 . Eb5 . F5 G5 . .', 'Bb4 . C5 Eb5 G5 . F5 Eb5', 'C5 - - . Eb5 . F5 .',
+  'G5 . Bb5 . G5 F5 Eb5 .', 'F5 . D5 . Bb4 . F5 .', 'Eb5 . C5 . Ab4 . C5 Eb5', 'F5 - - - . . . .',
+  'C5 . Eb5 . G5 . Bb5 .', 'Ab5 . G5 . Eb5 . C5 .', 'Bb4 . Eb5 . G5 . Bb5 .', 'F5 . G5 F5 D5 . Bb4 .',
+  'C5 . Eb5 . Ab5 . G5 .', 'F5 . Bb5 . F5 . D5 .', 'Eb5 . G5 . Bb5 . G5 .', 'Eb5 - - - . . . .'
+];
+const GF_PLAY = {
+  key: 'Eb', scale: ['Eb', 'F', 'G', 'Bb', 'C'], bpm: 132, steps: 16, swing: 0, vol: 0.25,
+  chords: ['Eb', 'Eb', 'Cm', 'Ab', 'Eb', 'Bb', 'Ab', 'Bb', 'Cm', 'Ab', 'Eb', 'Bb', 'Ab', 'Bb', 'Eb', 'Eb'],
+  layers: { rare: false, hurry: false },
+  tracks: [
+    { inst: 'kick', pat: 'x...x...x...x...', vol: 0.6 },
+    { inst: 'clap', pat: '....x.......x...', vol: 0.42 },
+    { inst: 'ohat', pat: '..x...x...x...x.', vol: 0.26 },
+    { inst: 'sub', chord: 'R.8.R.8.R.8.R.8.', vol: 0.5 },
+    { inst: 'organ', chord: 'hold', oct: 4, vol: 0.14 },
+    { inst: 'chip', seq: GF_PLAY_MEL, vol: 0.5 },
+    { inst: 'organ', seq: GF_PLAY_MEL, vol: 0.42 },
+    // 撈到稀有金魚：銅管長音＋鐘琴
+    { inst: 'brass', chord: 'hold', oct: 4, layer: 'rare', vol: 0.22 },
+    { inst: 'bell', arp: 'updown', rate: 2, oct: 5, layer: 'rare', vol: 0.22 },
+    // 最後 10 秒：沙鈴＋小鼓
+    { inst: 'shaker', pat: 'xoxoxoxoxoxoxoxo', layer: 'hurry', vol: 0.5 },
+    { inst: 'tom', pat: '............x.x.', layer: 'hurry', vol: 0.32, pitch: 170 }
+  ]
 };
-const Music = {
-  on: false, song: null, step: 0, next: 0, cur: null,
-  start(song) {
-    if (this.on && this.cur === song) return;
-    this.cur = song;
-    this.song = { bpm: song.bpm, mel: song.mel.trim().split(/\s+/), bass: song.bass.trim().split(/\s+/), vol: song.vol || 1, wave: song.wave };
-    this.on = true; this.step = 0; this.next = 0.2;
-  },
-  stop() { this.on = false; this.cur = null; },
-  update(dt) {
-    if (!this.on || !userActed) return;
-    this.next -= dt;
-    if (this.next < -0.3) this.next = 0;
-    const s = this.song, beat = 60 / s.bpm / 2;
-    while (this.next <= 0) {
-      if (!KG.isMuted() && !document.hidden && overlay !== 'pause') {
-        const i = this.step % s.mel.length, tok = s.mel[i];
-        if (tok !== '-' && tok !== '.') {
-          let len = 1;
-          while (s.mel[(i + len) % s.mel.length] === '-' && len < 8) len++;
-          const f = nf(tok);
-          KG.note(f, beat * len * 0.95, s.wave, 0.045 * s.vol);
-          KG.note(f * 2, beat * len * 0.4, 'sine', 0.012 * s.vol);
-        }
-        const bt = s.bass[this.step % s.bass.length];
-        if (bt !== '-' && bt !== '.') KG.note(nf(bt), beat * 1.8, 'sine', 0.065 * s.vol);
-        if (s === this.song && this.cur === SONG_NIGHT && this.step % 4 === 2) KG.note(1900, 0.03, 'square', 0.012);
-      }
-      this.step++;
-      this.next += beat;
-    }
+// 水族箱：燈籠下的泡泡搖籃曲（E 大調 68，卡林巴＋鐘琴＋pad，沒有鼓）
+const GF_AQ_MEL = [
+  'B4 - - - E5 - G#5 -', 'G#5 - - - E5 - C#5 -', 'C#5 - E5 - A5 - - -', 'F#5 - - - D#5 - B4 -',
+  'E5 - - - G#5 - B5 -', 'B5 - - - G#5 - D#5 -', 'E5 - C#5 - A4 - C#5 -', 'B4 - - - - - . .',
+  'E5 - - - G#5 - C#5 -', 'C#5 - - - E5 - A5 -', 'G#5 - - - B5 - E5 -', 'F#5 - - - D#5 - - -',
+  'C#5 - E5 - A5 - G#5 -', 'F#5 - - - B4 - D#5 -', 'E5 - - - B4 - - -', 'E5 - - - . . . .'
+];
+const GF_AQ = {
+  key: 'E', bpm: 68, steps: 16, swing: 0, vol: 0.55,
+  chords: ['E', 'C#m', 'A', 'B', 'E', 'G#m', 'A', 'B', 'C#m', 'A', 'E', 'B', 'A', 'B', 'E', 'E'],
+  tracks: [
+    { inst: 'sub', chord: 'R.......5.......', vol: 0.55 },
+    { inst: 'pad', chord: 'hold', oct: 3, vol: 0.32 },
+    { inst: 'kalimba', arp: 'updown', rate: 4, oct: 4, vol: 0.24 },
+    { inst: 'kalimba', seq: GF_AQ_MEL, vol: 1 },
+    { inst: 'bell', seq: GF_AQ_MEL, vol: 0.28 }
+  ]
+};
+const MUSIC = { title: GF_TITLE, play: GF_PLAY, aquarium: GF_AQ };
+/* SONGS-END */
+function jWin() {
+  if (!M || !sfxOn) return;
+  const n = [['Eb5', 1], ['G5', 1], ['Bb5', 1], ['C6', 1], ['Bb5', 2], ['G5+Bb5+Eb6', 4]];
+  M.jingle({ bpm: 180, inst: 'chip', vol: 0.3, notes: n, bass: [['Eb3', 4, 0], ['Bb2', 2, 4], ['Eb3', 4, 6]], bassVol: 0.3 });
+  M.jingle({ bpm: 180, inst: 'marimba', vol: 0.3, notes: n });
+}
+function jLose() {
+  if (!M || !sfxOn) return;
+  M.jingle({ bpm: 120, inst: 'organ', vol: 0.3, notes: [['E5', 1], ['C5', 1], ['B4', 1], ['A4', 3]], bass: [['A2', 6, 0]], bassVol: 0.25 });
+}
+function jRare() {
+  if (!M || !sfxOn) return;
+  M.jingle({ bpm: 200, inst: 'brass', vol: 0.24, notes: [['Bb4', 1], ['Eb5', 1], ['G5', 1], ['Bb5', 3]] });
+  M.jingle({ bpm: 200, inst: 'bell', vol: 0.3, notes: [['.', 3], ['G5+Bb5', 1], ['Eb6', 2]] });
+}
+/** 音樂與持續聲音：依畫面自動換曲、暫停、最後 10 秒加速、稀有魚加樂器 */
+let curSong = null, wasPaused = false, slosh = null, chimeT = 3, rareT = 0, hurryOn = false;
+function wantSong() {
+  if (scene === 'aquarium') return GF_AQ;
+  if (scene === 'play') return (overlay === 'result' || (G.over && G.endT <= 0)) ? null : GF_PLAY;
+  return GF_TITLE;
+}
+function stopLoops() { if (slosh) { slosh.stop(); slosh = null; } }
+function audioUpdate(dt) {
+  if (!M) return;
+  const want = wantSong();
+  if (want !== curSong) {
+    curSong = want;
+    if (want) { M.setVolume(want.vol || 0.24); M.play(want); hurryOn = false; rareT = 0; } else M.stop(0.3);
   }
-};
+  const p = scene === 'play' && overlay === 'pause';
+  if (p !== wasPaused) { wasPaused = p; if (p) { M.pause(); stopLoops(); } else M.resume(); }
+  if (curSong === GF_PLAY) {
+    const hurry = !!G.timeMax && !G.over && G.timeLeft <= 10;
+    if (hurry !== hurryOn) { hurryOn = hurry; M.setLayer('hurry', hurry); M.setTempo(hurry ? 1.08 : 1); }
+    if (rareT > 0) { rareT -= dt; if (rareT <= 0) M.setLayer('rare', false); }
+  }
+  // 水聲：紙網在水裡攪動時變大
+  const live = scene === 'play' && !overlay && !G.over && !document.hidden && sfxOn;
+  if (live) {
+    if (!slosh) slosh = S.loop('water');
+    const sp = net.state === 'down' ? clamp(net.speed / 6, 0, 1) : 0;
+    slosh.set(0.1 + sp * 0.7, 0.02 + sp * 0.09);
+    chimeT -= dt;
+    if (chimeT <= 0) { chimeT = 3 + Math.random() * 5; sfx('gf_chime', { pitch: [1, 1.122, 1.335, 1.498][Math.floor(Math.random() * 4)], exact: true, pan: (Math.random() - 0.5) * 0.8 }); }
+  } else if (slosh) stopLoops();
+}
 
 /* ---------- 版面 ---------- */
 const LY = { land: false, R: 40, fishL: 42, rim: 10, tub: {}, water: {}, bowl: {}, awnH: 90, hud: [], goal: {}, gauge: null, lanterns: [], bulbs: [], aq: {} };
@@ -975,7 +1006,7 @@ function startGame(mode, level, intro) {
   net.x = net.tx = LY.water.x + LY.water.w / 2; net.y = net.ty = LY.water.y + LY.water.h * 0.62; net.speed = 0; net.still = 0; net.drag = false;
   scene = 'play'; sceneT = 0;
   overlay = intro ? 'intro' : null;
-  Music.start(SONG_NIGHT);
+  sfx('go', { vol: 0.6 });
 }
 function endRound(reason) {
   if (G.over) return;
@@ -1007,8 +1038,9 @@ function endRound(reason) {
 }
 function showResult() {
   overlay = 'result'; sceneT = 0;
-  if (G.mode === 'challenge') { if (G.won) { KG.sound('win'); KG.confetti(W / 2, H * 0.35, 90); } else KG.sound('lose'); }
-  else { KG.sound(G.score > 0 ? 'win' : 'lose'); if (G.newRecord) KG.confetti(W / 2, H * 0.35, 90); }
+  stopLoops();
+  if (G.mode === 'challenge') { if (G.won) { jWin(); KG.confetti(W / 2, H * 0.35, 90); } else jLose(); }
+  else { if (G.score > 0) jWin(); else jLose(); if (G.newRecord) KG.confetti(W / 2, H * 0.35, 90); }
 }
 
 /* ---------- 紙網操作 ---------- */
@@ -1025,7 +1057,7 @@ function dip(x, y) {
   G.dips++;
   ripple(net.x, net.y, LY.R * 1.6, 3); ripple(net.x, net.y, LY.R * 1.1, 2);
   splash(net.x, net.y, 10, LY.R * 1.6);
-  Snd.dip(); KG.vibrate(10);
+  sfx('gf_dip', { pan: panX(net.x) }); KG.vibrate(10);
   return true;
 }
 function moveNet(x, y) {
@@ -1036,12 +1068,12 @@ function lift() {
   if (!playable() || net.state !== 'down') return false;
   const R = LY.R;
   net.state = 'lifting'; net.liftT = 0; net.carry.length = 0;
-  ripple(net.x, net.y, R * 1.5, 3); splash(net.x, net.y, 8, R * 1.2); Snd.lift();
+  ripple(net.x, net.y, R * 1.5, 3); splash(net.x, net.y, 8, R * 1.2); sfx('gf_lift', { pan: panX(net.x) });
   const fast = net.speed > FLEE_SPEED;
   // 小鴨擋住
   for (const c of critters) {
     if (c.type === 'duck' && Math.hypot(c.x - net.x, c.y - net.y) < R * 0.85) {
-      Snd.quack(); floatText('小鴨擋住了！', net.x, net.y - R, '#ffe04a', 22);
+      sfx('gf_quack', { pan: panX(c.x) }); floatText('小鴨擋住了！', net.x, net.y - R, '#ffe04a', 22);
       c.push = 1; c.vx = (c.x - net.x) * 3; c.vy = (c.y - net.y) * 3; net.hp -= 0.05 / G.q;
       if (net.hp <= 0) tear();
       return true;
@@ -1049,7 +1081,7 @@ function lift() {
   }
   for (const c of critters) {
     if (c.type === 'turtle' && Math.hypot(c.x - net.x, c.y - net.y) < R * 0.75) {
-      Snd.heavy(); floatText('烏龜好重！', net.x, net.y - R, '#9be86a', 22); shake(4, 0.25);
+      sfx('gf_heavy', { pan: panX(c.x) }); floatText('烏龜好重！', net.x, net.y - R, '#9be86a', 22); shake(4, 0.25);
       net.hp -= 0.45 / G.q; c.wa = Math.atan2(c.y - net.y, c.x - net.x); c.push = 1.2;
       if (net.hp <= 0) tear();
       return true;
@@ -1080,11 +1112,11 @@ function lift() {
       f.state = 'caught'; f.ox = (f.x - net.x) * 0.6; f.oy = (f.y - net.y) * 0.6; net.carry.push(f);
     } else {
       f.flee = 1.2; f.dart = 0.6; const a = Math.atan2(f.y - net.y, f.x - net.x); f.vx = Math.cos(a) * R * 3; f.vy = Math.sin(a) * R * 3;
-      floatText('溜走了！', f.x, f.y - R * 0.6, '#ffd0a0', 20); Snd.escape(); splash(f.x, f.y, 8, R * 1.4);
+      floatText('溜走了！', f.x, f.y - R * 0.6, '#ffd0a0', 20); sfx('gf_escape', { pan: panX(f.x) }); splash(f.x, f.y, 8, R * 1.4);
     }
   }
   if (net.carry.length) {
-    Snd.caught(); KG.vibrate(20);
+    sfx('gf_caught', { pitch: net.carry.length > 1 ? 1.12 : 1, pan: panX(net.x) }); KG.vibrate(20);
     floatText(net.carry.length > 1 ? '一網兩隻！' : '撈到了！', net.x, net.y - R * 1.1, '#fff58a', 26);
     for (const f of net.carry) if (KINDS[f.k].rare) { for (let i = 0; i < 12; i++) part('spark', net.x, net.y, (Math.random() - 0.5) * 220, (Math.random() - 0.5) * 220, 0.8, 9, ''); }
   }
@@ -1096,13 +1128,13 @@ function tear() {
   net.carry.length = 0;
   for (let i = 0; i < 18; i++) { const a = Math.random() * TAU, s = 40 + Math.random() * 120; part('shred', net.x + Math.cos(a) * LY.R * 0.5, net.y + Math.sin(a) * LY.R * 0.5, Math.cos(a) * s, Math.sin(a) * s, 0.9 + Math.random() * 0.5, 3 + Math.random() * 4, i % 3 ? '#fffdf2' : '#e8eef8'); }
   splash(net.x, net.y, 12, LY.R * 2); ripple(net.x, net.y, LY.R * 2, 3);
-  Snd.tear(); shake(7, 0.3); KG.vibrate(60);
+  sfx('gf_tear', { pan: panX(net.x) }); shake(7, 0.3); KG.vibrate(60);
   floatText('紙網破了！', net.x, net.y - LY.R * 0.2, '#ff8a8a', 28);
 }
 function toBowl() {
   if (!playable() || net.state !== 'carry') return false;
   net.state = 'deposit'; net.dep = { x0: net.x, y0: net.y, t: 0 };
-  KG.sound('whoosh');
+  sfx('swoosh', { pan: panX(net.x) });
   return true;
 }
 function deposited() {
@@ -1114,10 +1146,10 @@ function deposited() {
     if (bowlFish.length > 10) bowlFish.shift();
     const i = fishes.indexOf(f); if (i >= 0) fishes.splice(i, 1);
     floatText('+' + kd.val, b.x, b.y - b.r - 8, '#ffe25a', 26);
-    if (kd.rare) { Snd.rare(); KG.confetti(b.x, b.y, 70); floatText(kd.name + '！', W / 2, LY.tub.y + LY.tub.h * 0.4, '#fff07a', 32); shake(3, 0.2); }
+    if (kd.rare) { jRare(); if (M) M.setLayer('rare', true); rareT = 9; KG.confetti(b.x, b.y, 70); floatText(kd.name + '！', W / 2, LY.tub.y + LY.tub.h * 0.4, '#fff07a', 32); shake(3, 0.2); }
   }
   splash(b.x, b.y, 10, b.r * 1.5);
-  Snd.plop(); KG.sound('coin');
+  sfx('gf_plop', { pan: panX(b.x) }); sfx('coin', { pitch: Math.pow(1.05, Math.min(G.caught.length % 8, 7)), exact: true, pan: panX(b.x) });
   net.carry.length = 0; net.state = 'up';
   const p = clampWater(net.dep.x0, net.dep.y0);
   net.x = net.tx = p[0]; net.y = net.ty = p[1];
@@ -1128,7 +1160,7 @@ function nextPaper() {
   G.used++;
   if (G.used >= G.scoops) { endRound('paper'); return; }
   genPaper();
-  Snd.newPaper();
+  sfx('gf_paper');
   floatText('換新紙網！剩 ' + (G.scoops - G.used) + ' 張', LY.tub.x + LY.tub.w / 2, LY.tub.y + LY.tub.h * 0.5, '#ffffff', 24);
 }
 
@@ -1144,7 +1176,7 @@ function updatePlay(dt) {
   if (G.timeMax) {
     const before = Math.ceil(G.timeLeft);
     G.timeLeft = Math.max(0, G.timeLeft - dt);
-    if (G.timeLeft <= 10 && Math.ceil(G.timeLeft) !== before && G.timeLeft > 0) KG.sound('tick');
+    if (G.timeLeft <= 10 && Math.ceil(G.timeLeft) !== before && G.timeLeft > 0) sfx(G.timeLeft <= 3 ? 'countdown' : 'tick', { exact: true });
     if (G.timeLeft <= 0) { endRound('time'); return; }
   }
   // 鍵盤
@@ -1171,7 +1203,7 @@ function updatePlay(dt) {
       net.hp -= MECH.soak(dt, net.speed, G.q);
       net.trailT -= dt;
       if (net.speed > 1 && net.trailT <= 0) { net.trailT = 0.12; ripple(net.x, net.y, R * 1.2, 1.5); if (net.speed > FLEE_SPEED) splash(net.x, net.y, 2, R); }
-      if (net.hp < 0.3) { net.creakT -= dt; if (net.creakT <= 0) { net.creakT = 0.5 + net.hp * 3; Snd.creak(); } }
+      if (net.hp < 0.3) { net.creakT -= dt; if (net.creakT <= 0) { net.creakT = 0.5 + net.hp * 3; sfx('gf_creak', { pan: panX(net.x) }); } }
       if (net.hp <= 0) { floatText('泡太久了！', net.x, net.y - R, '#ffb0b0', 22); tear(); }
       break;
     }
@@ -1188,7 +1220,7 @@ function updatePlay(dt) {
         if (rng() < MECH.thrashHazard(f.k, net.hp) * dt) {
           net.carry.splice(i, 1); f.state = 'swim'; f.flee = 1.2;
           const p = clampWater(net.x, net.y); f.x = p[0]; f.y = p[1];
-          floatText('跳走了！', net.x, net.y - R, '#ffd0a0', 22); Snd.escape(); splash(p[0], p[1], 12, R * 1.5); ripple(p[0], p[1], R * 1.4, 3);
+          floatText('跳走了！', net.x, net.y - R, '#ffd0a0', 22); sfx('gf_escape', { pan: panX(net.x) }); splash(p[0], p[1], 12, R * 1.5); ripple(p[0], p[1], R * 1.4, 3);
           net.hp -= 0.05;
         }
       }
@@ -1575,13 +1607,25 @@ function drawTitle() {
     ['aq', '我的水族箱', aqList.length + '/30 隻金魚', 'green', () => enterAquarium()],
     ['shop', '商店', '紙網與裝飾', 'yellow', () => { scene = 'shop'; sceneT = 0; }]
   ];
+  // 下面留一排給「音樂／音效」開關
   if (!land) {
-    const bw = Math.min(W - 60, 320), bh = clamp((H - by0 - 30) / 4 - 14, 54, 74);
+    const th = clamp((H - by0) * 0.08, 40, 50);
+    const bw = Math.min(W - 60, 320), bh = clamp((H - by0 - 30 - th - 14) / 4 - 14, 50, 74);
     items.forEach((it, i) => button(it[0], W / 2 - bw / 2, by0 + i * (bh + 14), bw, bh, it[1], { color: it[3], sub: it[2], on: it[4], primary: i === 0, fs: Math.min(bh * 0.4, 26) }));
+    soundToggles(W / 2 - bw / 2, Math.min(H - th - 12, by0 + 4 * (bh + 14) + 4), bw, th);
   } else {
-    const bw = Math.min((W - 80) / 2, 280), bh = clamp((H - by0 - 24) / 2 - 12, 50, 74);
+    const th = clamp((H - by0) * 0.18, 38, 46);
+    const bw = Math.min((W - 80) / 2, 280), bh = clamp((H - by0 - 24 - th - 10) / 2 - 12, 46, 74);
     items.forEach((it, i) => button(it[0], W / 2 + (i % 2 ? 6 : -bw - 6), by0 + Math.floor(i / 2) * (bh + 12), bw, bh, it[1], { color: it[3], sub: it[2], on: it[4], primary: i === 0, fs: Math.min(bh * 0.4, 26) }));
+    const tw = Math.min(bw * 2 + 12, 360);
+    soundToggles(W / 2 - tw / 2, Math.min(H - th - 10, by0 + 2 * (bh + 12) + 2), tw, th);
   }
+}
+/** 「音樂 開/關」（全站共用）與「音效 開/關」（這個遊戲自己的） */
+function soundToggles(x, y, w, h) {
+  const g = 10, gw = (w - g) / 2, mOn = !!(M && M.isEnabled()), fs = Math.min(h * 0.44, 20);
+  button('tgM', x, y, gw, h, '音樂 ' + (mOn ? '開' : '關'), { color: mOn ? 'purple' : 'gray', fs, on: () => { if (M) M.setEnabled(!M.isEnabled()); } });
+  button('tgS', x + gw + g, y, gw, h, '音效 ' + (sfxOn ? '開' : '關'), { color: sfxOn ? 'purple' : 'gray', fs, on: () => { sfxOn = !sfxOn; Save.set('sfx', sfxOn); if (sfxOn) sfx('ui'); else stopLoops(); } });
 }
 
 /* ---------- 關卡選擇 ---------- */
@@ -1603,7 +1647,7 @@ function drawLevels() {
     if (appear <= 0) continue;
     ctx.save(); ctx.translate(x + s / 2, y + s / 2); ctx.scale(appear, appear); ctx.translate(-x - s / 2, -y - s / 2);
     button('lv' + i, x, y, s, s * 0.92, '', { color: locked ? 'gray' : (stars[i] ? 'yellow' : 'white'), r: s * 0.2, on: () => {
-      if (locked) { KG.sound('wrong'); floatText('先過前一關喔！', W / 2, H / 2, '#fff', 24); return; }
+      if (locked) { sfx('error'); floatText('先過前一關喔！', W / 2, H / 2, '#fff', 24); return; }
       startGame('challenge', i, true);
     } });
     if (locked) {
@@ -1684,8 +1728,8 @@ function netIcon(x, y, r, p) {
   ctx.restore();
 }
 function buy(price, apply) {
-  if (coins < price) { KG.sound('wrong'); floatText('金幣不夠喔！', W / 2, H * 0.5, '#ffb0b0', 26); return; }
-  coins -= price; apply(); saveAll(); KG.sound('coin'); Snd.rare(); floatText('購買成功！', W / 2, H * 0.5, '#fff58a', 28);
+  if (coins < price) { sfx('error'); floatText('金幣不夠喔！', W / 2, H * 0.5, '#ffb0b0', 26); return; }
+  coins -= price; apply(); saveAll(); sfx('coin'); sfx('levelup'); floatText('購買成功！', W / 2, H * 0.5, '#fff58a', 28);
 }
 function drawShop() {
   ctx.fillStyle = 'rgba(30,10,40,0.7)'; ctx.fillRect(0, 0, W, H);
@@ -1715,7 +1759,7 @@ function drawShop() {
       const own = owned.papers.indexOf(i) >= 0, eq = owned.paper === i;
       items.push({ name: p.name, sub: '耐用 ×' + p.q, icon: () => 0, draw: (x, y, s) => netIcon(x - s * 0.15, y - s * 0.1, s * 0.55, p),
         status: eq ? '使用中' : own ? '點我使用' : null, price: own ? 0 : p.price,
-        on: () => { if (eq) return; if (own) { owned.paper = i; saveAll(); KG.sound('pop'); } else buy(p.price, () => { owned.papers.push(i); owned.paper = i; }); } });
+        on: () => { if (eq) return; if (own) { owned.paper = i; saveAll(); sfx('select'); } else buy(p.price, () => { owned.papers.push(i); owned.paper = i; }); } });
     });
     EXTRAS.forEach((e, i) => {
       const got = (owned.extra || 0) > i, avail = (owned.extra || 0) === i;
@@ -1790,16 +1834,15 @@ function enterAquarium() {
   const a = LY.aq;
   AQ.fish = aqList.map((d, i) => { const f = makeFish(d.k, a.x + a.w * (0.15 + Math.random() * 0.7), a.y + a.h * (0.15 + Math.random() * 0.7), true); f.name = d.n; f.date = d.d; f.idx = i; f.v = i % 3; return f; });
   for (const p of AQ.food) p.on = false;
-  Music.start(SONG_AQ);
 }
 function dropFood(x, y, n) {
   for (let i = 0; i < n; i++) for (const p of AQ.food) if (!p.on) { p.on = true; p.x = x + (Math.random() - 0.5) * 30; p.y = y + (Math.random() - 0.5) * 30; p.t = 8; break; }
-  KG.note(1400, 0.05, 'sine', 0.1); KG.note(1700, 0.05, 'sine', 0.08, 0.05);
+  sfx('gf_food', { pan: panX(x) });
   ripple(x, y, LY.aqL * 0.8, 1.5);
 }
 function updateAq(dt) {
   const a = LY.aq;
-  updateFish(AQ.fish, dt, a, { R: LY.aqL * 0.95, L: LY.aqL, net: null, aq: true, food: AQ.food, onEat: (f) => { KG.note(900 + Math.random() * 300, 0.07, 'sine', 0.12); part('heart', f.x, f.y - 10, 0, -30, 1.2, 7, '#ff6a9a'); } });
+  updateFish(AQ.fish, dt, a, { R: LY.aqL * 0.95, L: LY.aqL, net: null, aq: true, food: AQ.food, onEat: (f) => { sfx('gf_eat', { pitch: 1 + Math.random() * 0.3, pan: panX(f.x) }); part('heart', f.x, f.y - 10, 0, -30, 1.2, 7, '#ff6a9a'); } });
   for (const p of AQ.food) if (p.on) { p.t -= dt; if (p.t <= 0) p.on = false; }
   if (AQ.sel >= 0) { AQ.selT -= dt; if (AQ.selT <= 0) AQ.sel = -1; }
   if (owned.deco.indexOf('bubble') >= 0 && Math.random() < dt * 2) { const p = DECO_POS.bubble; ripple(a.x + a.w * p[0], a.y + a.h * p[1], 16, 1); }
@@ -1851,7 +1894,7 @@ function drawAquarium() {
     ctx.globalAlpha = 1;
   }
   const by = H - 62;
-  button('aqback', 14, by, 110, 50, '返回', { color: 'white', back: true, on: () => { scene = 'title'; sceneT = 0; Music.start(SONG_NIGHT); } });
+  button('aqback', 14, by, 110, 50, '返回', { color: 'white', back: true, on: () => { scene = 'title'; sceneT = 0; } });
   button('feed', W - 124, by, 110, 50, '餵飼料', { color: 'green', primary: true, on: () => { if (!AQ.fish.length) return; for (let i = 0; i < 3; i++) dropFood(a.x + a.w * (0.25 + Math.random() * 0.5), a.y + a.h * (0.25 + Math.random() * 0.5), 3); } });
 }
 function aqTap(x, y) {
@@ -1861,7 +1904,7 @@ function aqTap(x, y) {
   AQ.fish.forEach((f, i) => { const d = Math.hypot(f.x - x, f.y - y); if (d < bd) { bd = d; best = i; } });
   if (best >= 0) {
     AQ.sel = best; AQ.selT = 3; const f = AQ.fish[best];
-    KG.note(880, 0.08, 'triangle', 0.15); KG.note(1320, 0.1, 'triangle', 0.12, 0.07);
+    sfx('gf_heart', { pan: panX(f.x) });
     part('heart', f.x, f.y - 12, 0, -30, 1, 8, '#ff6a9a'); f.dart = 0.4;
   } else dropFood(x, y, 3);
 }
@@ -1883,19 +1926,20 @@ function drawIntro() {
   } else txt('小提示：紙網不動時，金魚會游過來喔！', W / 2, c.y + 160, fitSize('小提示：紙網不動時，金魚會游過來喔！', 14, w - 40, '700'), '#9a6a5a', { weight: '700' });
   const bw = Math.min(150, (w - 50) / 2);
   button('ibk', W / 2 - bw - 6, c.y + h - 76, bw, 52, '返回', { color: 'white', back: true, on: () => { overlay = null; scene = 'levels'; sceneT = 0; } });
-  button('igo', W / 2 + 6, c.y + h - 76, bw, 52, '開始！', { color: 'green', primary: true, on: () => { overlay = null; KG.sound('correct'); } });
+  button('igo', W / 2 + 6, c.y + h - 76, bw, 52, '開始！', { color: 'green', primary: true, on: () => { overlay = null; sfx('correct'); } });
   endCard();
 }
 function drawPause() {
   const w = Math.min(W - 40, 320), night = G.mode === 'night';
-  const n = night ? 4 : 3, h = Math.min(90 + n * 62, H - 50), sp = (h - 80) / n, bh = Math.min(50, sp - 10);
+  const n = night ? 5 : 4, h = Math.min(90 + n * 62, H - 40), sp = (h - 80) / n, bh = Math.min(50, sp - 10);
   const c = card(w, h, '暫停', '#9a72f0');
   const bw = w - 70;
   let y = c.y + 40;
   button('pres', W / 2 - bw / 2, y, bw, bh, '繼續', { color: 'green', primary: true, on: () => { overlay = null; } }); y += sp;
   if (night) { button('pend', W / 2 - bw / 2, y, bw, bh, '收攤結算', { color: 'yellow', on: () => { overlay = null; endRound('quit'); G.endT = 0.01; } }); y += sp; }
   button('prst', W / 2 - bw / 2, y, bw, bh, '重新開始', { color: 'blue', on: () => { startGame(G.mode, G.level, false); } }); y += sp;
-  button('pmenu', W / 2 - bw / 2, y, bw, bh, '回選單', { color: 'white', back: true, on: () => { overlay = null; scene = G.mode === 'challenge' ? 'levels' : 'title'; sceneT = 0; } });
+  button('pmenu', W / 2 - bw / 2, y, bw, bh, '回選單', { color: 'white', back: true, on: () => { overlay = null; scene = G.mode === 'challenge' ? 'levels' : 'title'; sceneT = 0; } }); y += sp;
+  soundToggles(W / 2 - bw / 2, y, bw, bh);
   endCard();
 }
 function drawResult() {
@@ -1954,7 +1998,7 @@ cv.addEventListener('pointerdown', (e) => {
   const [x, y] = ptrPos(e);
   if (activePtr !== null && activePtr !== e.pointerId) return;
   const b = hitBtn(x, y);
-  if (b) { pressId = b.id; activePtr = e.pointerId; KG.note(880, 0.05, 'sine', 0.12); try { cv.setPointerCapture(e.pointerId); } catch (er) { /* 忽略 */ } return; }
+  if (b) { pressId = b.id; activePtr = e.pointerId; sfx('click', { pan: panX(x) }); try { cv.setPointerCapture(e.pointerId); } catch (er) { /* 忽略 */ } return; }
   activePtr = e.pointerId;
   try { cv.setPointerCapture(e.pointerId); } catch (er) { /* 忽略 */ }
   net.kbd = false;
@@ -1983,7 +2027,7 @@ function endPtr(e, cancel) {
   if (pressId) {
     const id = pressId; pressId = null;
     const b = hitBtn(x, y);
-    if (!cancel && b && b.id === id && b.on) { KG.sound('click'); b.on(); }
+    if (!cancel && b && b.id === id && b.on) { sfx(b.back ? 'back' : 'ui', { pan: panX(x) }); b.on(); }
     return;
   }
   if (!playable()) return;
@@ -1998,10 +2042,10 @@ window.addEventListener('keydown', (e) => {
   if (e.repeat) return;
   if (e.code === 'Escape' || e.code === 'KeyP') {
     if (scene === 'play' && !G.over) { overlay = overlay === 'pause' ? null : overlay === null ? 'pause' : overlay; return; }
-    const b = btns.find(b => b.back); if (b && e.code === 'Escape') { KG.sound('click'); b.on(); }
+    const b = btns.find(b => b.back); if (b && e.code === 'Escape') { sfx('back'); b.on(); }
     return;
   }
-  if (e.code === 'Enter' && !(scene === 'play' && !overlay)) { const b = btns.find(b => b.primary); if (b) { KG.sound('click'); b.on(); } return; }
+  if (e.code === 'Enter' && !(scene === 'play' && !overlay)) { const b = btns.find(b => b.primary); if (b) { sfx('ui'); b.on(); } return; }
   if (playable()) {
     if (/^Arrow|^Key[WASD]$/.test(e.code)) { net.kbd = true; e.preventDefault(); }
     if (e.code === 'Space' || e.code === 'Enter') {
@@ -2017,7 +2061,7 @@ window.addEventListener('keyup', (e) => {
   if (playable() && (e.code === 'Space' || e.code === 'Enter') && net.state === 'down') lift();
 });
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) { if (scene === 'play' && !overlay && !G.over) overlay = 'pause'; Music.next = 0.2; }
+  if (document.hidden) { if (scene === 'play' && !overlay && !G.over) overlay = 'pause'; }
 });
 
 /* ---------- 主迴圈 ---------- */
@@ -2074,8 +2118,7 @@ function frame(now) {
   if (prevOverlay !== overlay) { if (overlay) sceneT = 0; prevOverlay = overlay; }
   if (prevScene !== scene) { prevScene = scene; }
   if (!frozen && !document.hidden) update(dt);
-  Music.update(dt);
-  Snd.update(dt);
+  audioUpdate(dt);
   draw();
   requestAnimationFrame(frame);
 }
@@ -2125,7 +2168,6 @@ window.__gf = {
 };
 
 relayout();
-Music.start(SONG_NIGHT);
 requestAnimationFrame((t) => { last = t; frame(t); });
 </script>
 </body>

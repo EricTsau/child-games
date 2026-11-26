@@ -17,6 +17,7 @@
 <body>
 <canvas id="game" aria-label="糖果打磚塊"></canvas>
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
 <script>
 'use strict';
 const SLUG = 'candy-breakout';
@@ -325,6 +326,7 @@ function drawIcon(name, x, y, s, col) {
     rr(-s * 0.38, -s * 0.12, s * 0.76, s * 0.6, s * 0.12); ctx.fill();
     ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.beginPath(); circ(0, s * 0.15, s * 0.08); ctx.fill();
   }
+  else if (name === 'pause') { rr(-s * 0.32, -s * 0.4, s * 0.22, s * 0.8, s * 0.07); ctx.fill(); rr(s * 0.1, -s * 0.4, s * 0.22, s * 0.8, s * 0.07); ctx.fill(); }
   else if (name === 'music') { ctx.beginPath(); ctx.ellipse(-s * 0.18, s * 0.3, s * 0.18, s * 0.13, -0.4, 0, TAU); ctx.fill(); ctx.lineWidth = s * 0.12; ctx.beginPath(); ctx.moveTo(-s * 0.02, s * 0.3); ctx.lineTo(-s * 0.02, -s * 0.45); ctx.quadraticCurveTo(s * 0.25, -s * 0.3, s * 0.35, -s * 0.1); ctx.stroke(); }
   ctx.restore();
 }
@@ -373,7 +375,7 @@ function hitBtn(x, y) {
 cv.addEventListener('pointerdown', (e) => {
   e.preventDefault();
   const b = hitBtn(e.clientX, e.clientY);
-  if (b) { pressed = { id: b.id, pid: e.pointerId }; KG.note(880, 0.06, 'sine', 0.15); return; }
+  if (b) { pressed = { id: b.id, pid: e.pointerId }; sfx('click'); return; }
   Game.onDown(e.clientX, e.clientY, e);
 });
 cv.addEventListener('pointermove', (e) => { Game.onMove(e.clientX, e.clientY, e); });
@@ -381,7 +383,7 @@ function endPointer(e, cancel) {
   if (pressed && pressed.pid === e.pointerId) {
     const b = hitBtn(e.clientX, e.clientY), id = pressed.id;
     pressed = null;
-    if (!cancel && b && b.id === id && b.onClick) { KG.sound('pop'); b.onClick(); }
+    if (!cancel && b && b.id === id && b.onClick) { sfx('ui'); b.onClick(); }
     return;
   }
   Game.onUp(e.clientX, e.clientY, e);
@@ -392,52 +394,27 @@ cv.addEventListener('contextmenu', (e) => e.preventDefault());
 window.addEventListener('keydown', (e) => Game.onKey(e, true));
 window.addEventListener('keyup', (e) => Game.onKey(e, false));
 
-/* ---------- 背景音樂（用 KG.note 合成） ---------- */
-// 瀏覽器規定：使用者互動後才能播放聲音
-let userActed = false;
-window.addEventListener('pointerdown', () => { userActed = true; }, { capture: true });
-window.addEventListener('keydown', () => { userActed = true; }, { capture: true });
-const NOTE_IDX = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
-function nf(name) {
-  const m = /^([A-G])(#|b)?(\d)$/.exec(name);
-  if (!m) return 0;
-  let n = NOTE_IDX[m[1]] + (m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0) + (parseInt(m[3], 10) + 1) * 12;
-  return 440 * Math.pow(2, (n - 69) / 12);
+/* ---------- 聲音：共用引擎 kg-music.js（音效開關、40ms 節流、隨機音高） ---------- */
+const MUS = KG.music, SFXE = KG.sfx;
+let sfxOn = KG.store.get(SLUG + ':sfx', true) !== false;
+const sfxLast = Object.create(null);
+function sfx(name, o) {
+  if (!sfxOn || !SFXE) return;
+  const now = performance.now();
+  if (now - (sfxLast[name] || 0) < ((o && o.gap) || 40)) return;
+  sfxLast[name] = now;
+  const pitch = ((o && o.pitch) || 1) * (o && o.exact ? 1 : 0.96 + Math.random() * 0.08);
+  SFXE.play(name, { vol: o ? o.vol : undefined, pitch, pan: o ? o.pan : undefined });
 }
-const Music = {
-  on: false, song: null, step: 0, next: 0,
-  /** song: {bpm, mel:'C5 E5 - G5 ...'（八分音符，- 表示延長，. 表示休止）, bass:'C3 . G2 .'} */
-  start(song) {
-    this.song = { bpm: song.bpm, mel: song.mel.trim().split(/\s+/), bass: (song.bass || '').trim().split(/\s+/), vol: song.vol || 1, wave: song.wave || 'triangle' };
-    this.on = true; this.step = 0; this.next = 0.15;
-  },
-  stop() { this.on = false; },
-  update(dt) {
-    if (!this.on || !this.song || !userActed) return;
-    this.next -= dt;
-    if (this.next < -0.3) this.next = 0;
-    const s = this.song, beat = 60 / s.bpm / 2;
-    while (this.next <= 0) {
-      if (!KG.isMuted() && !document.hidden) {
-        const i = this.step % s.mel.length, tok = s.mel[i];
-        if (tok !== '-' && tok !== '.') {
-          let len = 1;
-          while (s.mel[(i + len) % s.mel.length] === '-' && len < 8) len++;
-          const f = nf(tok);
-          KG.note(f, beat * len * 0.95, s.wave, 0.05 * s.vol);
-          KG.note(f * 2, beat * len * 0.5, 'sine', 0.015 * s.vol);
-        }
-        if (s.bass.length > 1) {
-          const bi = this.step % s.bass.length, bt = s.bass[bi];
-          if (bt !== '-' && bt !== '.') KG.note(nf(bt), beat * 1.8, 'sine', 0.07 * s.vol);
-        }
-      }
-      this.step++;
-      this.next += beat;
-    }
-  }
-};
-document.addEventListener('visibilitychange', () => { if (document.hidden) Music.next = 0.2; });
+function jingle(def) { if (sfxOn && MUS) MUS.jingle(def); }
+function setSfx(on) { sfxOn = !!on; KG.store.set(SLUG + ':sfx', sfxOn); }
+/** 「音樂 開/關」「音效 開/關」兩顆畫在畫布上的按鈕 */
+function soundToggles(x, y, w, h, vertical) {
+  const mo = !MUS || MUS.isEnabled(), gap = 10 * U;
+  const bw = vertical ? w : (w - gap) / 2, bh = vertical ? (h - gap) / 2 : h;
+  button('tgMusic', x, y, bw, bh, { label: '音樂 ' + (mo ? '開' : '關'), color: mo ? 'green' : 'white', size: Math.min(17 * U, bh * 0.42), onClick: () => { if (MUS) MUS.setEnabled(!MUS.isEnabled()); } });
+  button('tgSfx', vertical ? x : x + bw + gap, vertical ? y + bh + gap : y, bw, bh, { label: '音效 ' + (sfxOn ? '開' : '關'), color: sfxOn ? 'green' : 'white', size: Math.min(17 * U, bh * 0.42), onClick: () => { setSfx(!sfxOn); sfx('ui'); } });
+}
 
 /* ---------- 存檔 ---------- */
 const Save = {
@@ -508,7 +485,7 @@ function levelSelect(opts) {
       const locked = total < sk.need;
       const sel = opts.skin === i;
       button('sk' + i, x, y, sz, sz, { color: sel ? 'yellow' : 'white', radius: 18 * U, label: '', onClick: () => {
-        if (locked) { KG.sound('wrong'); KG.toast('還需要 ' + (sk.need - total) + ' 顆星星喔！'); return; }
+        if (locked) { sfx('error'); KG.toast('還需要 ' + (sk.need - total) + ' 顆星星喔！'); return; }
         opts.onSkin(i);
       } });
       ctx.save();
@@ -532,7 +509,8 @@ const Result = {
     this.on = true; this.t = 0; this.o = o; this.shown = 0; this.panel.s = 0;
     killTweens(this.panel);
     tween(this.panel, { s: 1 }, 0.5, 'outBack');
-    if (o.stars > 0) { KG.sound('win'); KG.confetti(); } else KG.sound('lose');
+    if (o.stars > 0) { JG.clear(); KG.confetti(); } else JG.over();
+    if (o.record) setTimeout(() => { if (this.on) JG.record(); }, 1500);
   },
   hide() { this.on = false; },
   update(dt, fx) {
@@ -541,8 +519,7 @@ const Result = {
     const o = this.o;
     while (this.shown < 3 && this.t > 0.6 + this.shown * 0.38) {
       if (this.shown < o.stars) {
-        KG.note(660 * Math.pow(1.26, this.shown), 0.25, 'triangle', 0.22);
-        KG.note(1320 * Math.pow(1.26, this.shown), 0.3, 'sine', 0.08);
+        sfx('cb_star', { pitch: Math.pow(1.26, this.shown), exact: true });
         const p = this.starPos(this.shown);
         fx.burst(p[0], p[1], { n: 16, colors: ['#ffe066', '#fff', '#ffb02e'], speed: 260, g: 300, size: 7 * U });
       }
@@ -636,14 +613,14 @@ function resizeCanvas() {
 window.addEventListener('resize', resizeCanvas);
 let lastFrame = performance.now();
 function frame(now) {
-  const rdt = Math.min(0.05, Math.max(0, (now - lastFrame) / 1000));
+  let rdt = Math.min(0.05, Math.max(0, (now - lastFrame) / 1000));
   lastFrame = now;
   time += rdt;
   if (shakeT > 0) shakeT -= rdt;
   let dt = rdt;
   if (stopT > 0) { stopT -= rdt; dt = 0; }
+  if (paused) { dt = 0; rdt = 0; }
   updateTweens(rdt);
-  Music.update(rdt);
   Game.update(dt, rdt);
   btnReg = [];
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -669,11 +646,115 @@ const LEVELS = [
 const SKINS = [
   { name: '雲朵', need: 0 }, { name: '馬卡龍', need: 3 }, { name: '彩虹', need: 6 }, { name: '甜甜圈', need: 10 }, { name: '獨角獸', need: 14 }
 ];
-const SONG = {
-  bpm: 120,
-  mel: 'E5 G5 A5 G5 E5 C5 D5 E5 D5 C5 A4 C5 D5 - . . E5 G5 A5 C6 A5 G5 E5 G5 D5 E5 D5 C5 C5 - . .',
-  bass: 'A2 . E3 . F2 . C3 . G2 . D3 . G2 . G2 . A2 . E3 . F2 . C3 . G2 . G2 . C3 . C3 .'
+// 可愛步態舞（C 大調，120）
+const SONG_TITLE = {
+  bpm: 120, swing: 0.18, key: 'C major',
+  chords: ['C', 'A7', 'Dm', 'G7', 'C', 'E7', 'F', 'G7'],
+  tracks: [
+    { inst: 'sub', chord: 'R.......5.......', vol: 0.7 },
+    { inst: 'pad', chord: 'hold', oct: 4, vol: 0.4 },
+    { inst: 'pluck', chord: '....3.......3...', oct: 4, vol: 0.28 },
+    { inst: 'pluck', chord: '....5.......5...', oct: 4, vol: 0.24 },
+    { inst: 'rim', pat: '....x.......x...', vol: 0.4 },
+    { inst: 'shaker', pat: 'x.x.x.x.x.x.x.x.', vol: 0.3 },
+    { inst: 'marimba', seq: [
+      'G4 C5 . E5 G5 . E5 .', 'E5 - C#5 E5 A5 - G5 .', 'F5 . D5 F5 A5 . F5 .', 'D5 - B4 D5 G5 - F5 .',
+      'E5 . C5 E5 G5 - E5 C5', 'B4 . G#4 B4 E5 - D5 .', 'A4 . C5 F5 A5 . G5 F5', 'D5 - - B4 G4 - . .'], vol: 0.9 },
+    { inst: 'bell', seq: [
+      'G4 C5 . E5 G5 . E5 .', 'E5 - C#5 E5 A5 - G5 .', 'F5 . D5 F5 A5 . F5 .', 'D5 - B4 D5 G5 - F5 .',
+      'E5 . C5 E5 G5 - E5 C5', 'B4 . G#4 B4 E5 - D5 .', 'A4 . C5 F5 A5 . G5 F5', 'D5 - - B4 G4 - . .'], vol: 0.45 }
+  ]
 };
+// 英式車庫 2-step（Ab 大調，132）
+const SONG_PLAY = {
+  bpm: 132, swing: 0.2, key: 'Ab major',
+  chords: ['Fm7', 'Dbmaj7', 'Abmaj7', 'Eb7', 'Fm7', 'Dbmaj7', 'Bbm7', 'Eb7'],
+  layers: { fever: false, danger: false },
+  tracks: [
+    { inst: 'kick', pat: ['x.........x.....', 'x......x..x.....'], vol: 0.7 },
+    { inst: 'clap', pat: '....x.......x...', vol: 0.45 },
+    { inst: 'rim', pat: '..x.....o..x....', vol: 0.3 },
+    { inst: 'hat', pat: '..x...x...x...x.', vol: 0.35 },
+    { inst: 'shaker', pat: 'x.x.x.x.x.x.x.x.', vol: 0.25 },
+    { inst: 'sub', chord: 'R.....R...R.....', vol: 0.65 },
+    { inst: 'organ', chord: '...3......3.....', oct: 4, vol: 0.35 },
+    { inst: 'organ', chord: '...7......7.....', oct: 4, vol: 0.3 },
+    { inst: 'bell', seq: [
+      'C5 . Eb5 F5 . Ab5 . F5', 'F5 . Ab5 - F5 . C5 .', 'Eb5 . C5 Eb5 . Ab5 . G5', 'G5 - - Eb5 Bb4 . . .',
+      'Ab5 . G5 F5 . C5 . Eb5', 'F5 . Db5 F5 . Ab5 . C5', 'Db5 . C5 Bb4 . F5 . Db5', 'Eb5 - G5 - Bb5 - . .'], vol: 0.85 },
+    { inst: 'kalimba', seq: [
+      'C5 . Eb5 F5 . Ab5 . F5', 'F5 . Ab5 - F5 . C5 .', 'Eb5 . C5 Eb5 . Ab5 . G5', 'G5 - - Eb5 Bb4 . . .',
+      'Ab5 . G5 F5 . C5 . Eb5', 'F5 . Db5 F5 . Ab5 . C5', 'Db5 . C5 Bb4 . F5 . Db5', 'Eb5 - G5 - Bb5 - . .'], vol: 0.45 },
+    { inst: 'brass', chord: '...5......5.....', oct: 4, layer: 'fever', vol: 0.4 },
+    { inst: 'ohat', pat: '......x.......x.', layer: 'fever', vol: 0.45 },
+    { inst: 'bell', arp: 'up', rate: 2, oct: 5, layer: 'fever', vol: 0.25 },
+    { inst: 'strings', chord: 'hold', oct: 3, layer: 'danger', vol: 0.6 },
+    { inst: 'tom', pat: '........x.x.x.x.', pitch: 100, layer: 'danger', vol: 0.5 }
+  ]
+};
+function playSong(sg) { if (MUS) { MUS.setVolume(sg === SONG_TITLE ? 0.62 : 0.42); MUS.play(sg); } }
+if (SFXE) {
+  // 打到板子：Q 彈的「啵嗯」
+  SFXE.define('cb_paddle', (p, s) => { s.tone(300 * p, 0.12, { vol: 0.26, slide: 560 * p }); s.noise(0.04, { vol: 0.08, freq: 900 * p, q: 1.5 }); });
+  // 碰到牆：小小的「嗒」
+  SFXE.define('cb_wall', (p, s) => { s.tone(880 * p, 0.04, { type: 'triangle', vol: 0.1 }); s.noise(0.025, { vol: 0.05, freq: 2400 * p, q: 3 }); });
+  // 糖果磚碎掉：脆脆的「喀嚓」＋音高（上面的排比較高）
+  SFXE.define('cb_break', (p, s) => {
+    s.noise(0.07, { vol: 0.18, freq: 2600 * p, q: 1.6 });
+    s.tone(660 * p, 0.12, { type: 'triangle', vol: 0.17 }); s.tone(1320 * p, 0.08, { vol: 0.06, delay: 0.015 });
+  });
+  // 巧克力磚：第一下悶悶的「咚」
+  SFXE.define('cb_clunk', (p, s) => { s.tone(220 * p, 0.1, { type: 'triangle', vol: 0.2, slide: 150 * p }); s.noise(0.05, { vol: 0.1, freq: 600 * p, q: 1.5 }); });
+  // 球掉下去：往下滑的「咻～」
+  SFXE.define('cb_lost', (p, s) => { s.tone(660 * p, 0.45, { type: 'triangle', vol: 0.18, slide: 160 * p }); s.tone(330 * p, 0.3, { type: 'square', vol: 0.05, slide: 110 * p, delay: 0.25 }); });
+  // 球變慢
+  SFXE.define('cb_slow', (p, s) => { s.tone(900 * p, 0.4, { type: 'triangle', vol: 0.15, slide: 300 * p }); s.tone(600 * p, 0.3, { vol: 0.08, slide: 250 * p, delay: 0.15 }); });
+  // 結算的星星
+  SFXE.define('cb_star', (p, s) => { s.tone(660 * p, 0.22, { type: 'triangle', vol: 0.2 }); s.tone(1320 * p, 0.28, { vol: 0.07 }); });
+}
+const JG = {
+  start: () => jingle({ bpm: 220, inst: 'bell', vol: 0.28, notes: [['Eb5', 1], ['Ab5', 2]] }),
+  clear: () => { jingle({ bpm: 170, inst: 'marimba', vol: 0.34, notes: [['Ab4', 1], ['C5', 1], ['Eb5', 1], ['Ab5', 2], ['G5', 1], ['Ab5', 3]], bass: [['Ab2', 5, 0], ['Eb2', 1, 5], ['Ab2', 3, 6]], bassVol: 0.3 }); jingle({ bpm: 170, inst: 'bell', vol: 0.2, notes: [['Eb5', 3], ['C6', 2], ['Bb5', 1], ['C6', 3]] }); },
+  over: () => jingle({ bpm: 120, inst: 'marimba', vol: 0.32, notes: [['Eb5', 1], ['C5', 1], ['Bb4', 1], ['Ab4', 3]], bass: [['Ab2', 6, 0]], bassVol: 0.25 }),
+  record: () => jingle({ bpm: 210, inst: 'bell', vol: 0.28, notes: [['C5', 1], ['Eb5', 1], ['F5', 1], ['Ab5', 3]] })
+};
+// 音樂隨遊戲變化：連擊 5 塊以上＝fever；剩 2 顆愛心以下＝danger；糖果快打完時加快
+let mFever = false, mDanger = false, mFast = false;
+function musicMood() {
+  if (!MUS) return;
+  const play = scene === 'play' && sub === 'play';
+  const f = play && combo >= 5, d = play && lives <= 2, t = play && bricks.length <= Math.max(2, totalBricks * 0.15);
+  if (f !== mFever) { mFever = f; MUS.setLayer('fever', f); }
+  if (d !== mDanger) { mDanger = d; MUS.setLayer('danger', d); }
+  if (t !== mFast) { mFast = t; MUS.setTempo(t ? 1.06 : 1); }
+}
+/** 場地 x 換成左右聲道 */
+function panF(x) { return clamp(((ox + x * sc) / Math.max(1, W)) * 2 - 1, -1, 1) * 0.6; }
+/* ---------- 暫停 ---------- */
+let paused = false;
+function canPause() { return scene === 'play' && sub === 'play' && !Result.on; }
+function pauseGame() { if (paused || !canPause()) return; paused = true; pressed = null; sfx('back'); if (MUS) MUS.pause(); }
+function resumeGame() { if (!paused) return; paused = false; lastFrame = performance.now(); if (MUS) MUS.resume(); }
+function leavePause(fn) { paused = false; if (MUS) MUS.resume(); fn(); }
+document.addEventListener('visibilitychange', () => { if (document.hidden) pauseGame(); });
+function drawPauseBtn() {
+  if (paused || !canPause()) return;
+  button('pause', W - 56, 62, 44, 44, { icon: 'pause', color: 'white', size: 18, onClick: pauseGame });
+}
+function drawPause() {
+  if (!paused) return;
+  ctx.fillStyle = 'rgba(50,25,70,0.5)'; ctx.fillRect(0, 0, W, H);
+  const pw = Math.min(W - 32, 340 * U), ph = 236 * U, px = (W - pw) / 2, py = (H - ph) / 2;
+  rr(px, py + 8, pw, ph, 30 * U); ctx.fillStyle = 'rgba(60,30,70,0.3)'; ctx.fill();
+  rr(px, py, pw, ph, 30 * U); ctx.fillStyle = '#fffdf6'; ctx.fill(); ctx.lineWidth = 6 * U; ctx.strokeStyle = '#f45f93'; ctx.stroke();
+  txt('暫停中', W / 2, py + 38 * U, 30 * U, '#fff', { stroke: '#b8366a', sw: 8 * U });
+  soundToggles(px + 24 * U, py + 70 * U, pw - 48 * U, 46 * U, false);
+  const bh = 58 * U, by = py + ph - bh - 24 * U, gap = 12 * U, wide = 120 * U, unit = 72 * U, tot = wide + unit * 2 + gap * 2;
+  let bx = W / 2 - tot / 2;
+  button('presume', bx, by, wide, bh, { icon: 'play', label: '繼續', color: 'green', onClick: resumeGame }); bx += wide + gap;
+  button('pretry', bx, by, unit, bh, { icon: 'replay', color: 'yellow', onClick: () => leavePause(() => startLevel(lvIdx)) }); bx += unit + gap;
+  button('pmenu', bx, by, unit, bh, { icon: 'menu', color: 'blue', onClick: () => leavePause(goMap) });
+}
 const FW = 480, COLS = 8, BGAP = 6, BX0 = 22, BY0 = 120, BH = 28;
 const BW = (FW - BX0 * 2 - BGAP * (COLS - 1)) / COLS;
 const BALL_R = 11;
@@ -722,14 +803,14 @@ function buildLevel(n) {
 function ballSpeed() { return (290 + lvIdx * 18) * (slowT > 0 ? 0.68 : 1); }
 function newBall() { balls = [{ x: paddle.x, y: paddle.y - 24, vx: 0, vy: 0, stuck: true, trail: [], col: 0 }]; }
 
-function goTitle() { scene = 'title'; Result.hide(); Music.start(SONG); }
-function goMap() { scene = 'map'; sceneT = 0; Result.hide(); if (!Music.on) Music.start(SONG); }
+function goTitle() { scene = 'title'; paused = false; Result.hide(); musicMood(); playSong(SONG_TITLE); }
+function goMap() { scene = 'map'; sceneT = 0; paused = false; Result.hide(); musicMood(); playSong(SONG_TITLE); }
 function startLevel(i) {
   lvIdx = i; scene = 'play'; sub = 'play'; subT = 0; sceneT = 0;
   score = 0; lives = 5; lost = 0; slowT = 0; combo = 0; drops = []; fx.list = [];
   paddle.w = paddle.tw = 112; paddle.wideT = 0; paddle.x = targetX = FW / 2;
-  buildLevel(i); newBall();
-  Music.start(SONG);
+  buildLevel(i); newBall(); paused = false;
+  playSong(SONG_PLAY); JG.start();
 }
 
 /* ---------- 輸入 ---------- */
@@ -740,15 +821,17 @@ function launch() {
     b.stuck = false;
     const a = (Math.random() - 0.5) * 0.6, s = ballSpeed();
     b.vx = Math.sin(a) * s; b.vy = -Math.cos(a) * s;
-    KG.sound('boing');
+    sfx('jump', { pan: panF(b.x) });
     paddle.sx = 1.2; paddle.sy = 0.75; tween(paddle, { sx: 1, sy: 1 }, 0.4, 'outElastic');
   });
 }
-Game.onDown = (x) => { if (scene === 'play' && sub === 'play' && !Result.on) { targetX = toField(x); launch(); } };
-Game.onMove = (x) => { if (scene === 'play' && sub === 'play') targetX = toField(x); };
+Game.onDown = (x) => { if (scene === 'play' && sub === 'play' && !Result.on && !paused) { targetX = toField(x); launch(); } };
+Game.onMove = (x) => { if (scene === 'play' && sub === 'play' && !paused) targetX = toField(x); };
 Game.onKey = (e, down) => {
   if (e.code === 'ArrowLeft' || e.code === 'KeyA') { e.preventDefault(); keyDir = down ? -1 : (keyDir < 0 ? 0 : keyDir); }
   else if (e.code === 'ArrowRight' || e.code === 'KeyD') { e.preventDefault(); keyDir = down ? 1 : (keyDir > 0 ? 0 : keyDir); }
+  else if (down && (e.code === 'KeyP' || e.code === 'Escape')) { e.preventDefault(); if (paused) resumeGame(); else pauseGame(); }
+  else if (down && paused) return;
   else if (down && (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'Enter')) {
     e.preventDefault();
     if (scene === 'play' && sub === 'play') launch(); else if (scene === 'title') goMap();
@@ -763,18 +846,18 @@ function breakBrick(b) {
   combo++;
   const pts = 10 * Math.min(combo, 5);
   score += pts;
-  KG.note(520 + Math.min(combo, 12) * 45, 0.12, 'triangle', 0.2);
   const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+  sfx('cb_break', { pitch: (1.3 - b.r * 0.07) * (1 + Math.min(combo, 10) * 0.012), pan: panF(cx), gap: 30 });
   fx.burst(cx, cy, { n: 10, shape: 'confetti', colors: [b.k === 'c' ? '#8a5332' : b.color, shade(b.k === 'c' ? '#8a5332' : b.color, 60), '#fff'], speed: 220, g: 600, size: 8 });
   fx.burst(cx, cy, { n: 5, shape: 'sparkle', colors: ['#fff', '#fff6b0'], speed: 120, g: 0, size: 7, life: 0.5 });
   fx.text(cx, cy, '+' + pts, { color: '#fff', size: 20 + Math.min(combo, 5) * 2, stroke: shade(b.color, -60), life: 0.8 });
   if (combo > 0 && combo % 5 === 0) {
     ui.text(W / 2, H * 0.42, CHEERS[(combo / 5 - 1) % CHEERS.length], { color: '#fff07a', size: 42 * U, vy: -40, life: 1.2, stroke: '#e0568a' });
-    KG.sound('correct'); setMood('happy', 1);
+    sfx('star'); setMood('happy', 1);
   }
   if (b.k === 'b') {
     // 炸彈糖：把旁邊的磚一起炸掉
-    KG.sound('hit'); shake(10, 0.35); hitStop(0.08);
+    sfx('explosion', { vol: 0.55, pitch: 1.3, pan: panF(cx) }); shake(10, 0.35); hitStop(0.08);
     fx.ring(cx, cy, '#ffe066', 70, 0.5); fx.ring(cx, cy, '#ff8fb1', 50, 0.4);
     fx.burst(cx, cy, { n: 20, shape: 'star', colors: ['#ffe066', '#ff8fb1', '#fff'], speed: 320, g: 200, size: 8 });
     bricks.forEach(o => { if (!o.dead && o !== b && Math.abs(o.x - b.x) < BW * 1.6 && Math.abs(o.y - b.y) < BH * 1.8) { o.hp = 1; setTimeout(() => { if (!o.dead && bricks.includes(o)) breakBrick(o); }, 90); } });
@@ -783,11 +866,11 @@ function breakBrick(b) {
 }
 function hitBrick(b) {
   b.hp--; b.flash = 0.2;
-  if (b.hp > 0) { KG.sound('tick'); fx.burst(b.x + b.w / 2, b.y + b.h / 2, { n: 4, shape: 'circle', colors: ['#8a5332', '#c58a5a'], speed: 120, g: 500, size: 4 }); return; }
+  if (b.hp > 0) { sfx('cb_clunk', { pan: panF(b.x + b.w / 2) }); fx.burst(b.x + b.w / 2, b.y + b.h / 2, { n: 4, shape: 'circle', colors: ['#8a5332', '#c58a5a'], speed: 120, g: 500, size: 4 }); return; }
   breakBrick(b);
 }
 function catchDrop(d) {
-  KG.sound('sparkle');
+  sfx(d.type === 'slow' ? 'cb_slow' : d.type === 'life' ? 'unlock' : 'powerup', { pan: panF(d.x) });
   fx.burst(d.x, d.y, { n: 12, colors: ['#ffe066', '#fff', '#ff8fb1'], speed: 200, g: 100 });
   setMood('happy', 1);
   if (d.type === 'wide') { paddle.tw = 168; paddle.wideT = 12; ui.text(W / 2, H * 0.5, '板子變長了！', { color: '#a8e0ff', size: 30 * U, stroke: '#22659e', vy: -30 }); }
@@ -815,9 +898,9 @@ function setSpeed(b, s) {
 function stepBall(b, dt) {
   const r = BALL_R;
   b.x += b.vx * dt; b.y += b.vy * dt;
-  if (b.x < r) { b.x = r; b.vx = Math.abs(b.vx); KG.note(900, 0.04, 'sine', 0.08); }
-  if (b.x > FW - r) { b.x = FW - r; b.vx = -Math.abs(b.vx); KG.note(900, 0.04, 'sine', 0.08); }
-  if (b.y < 60 + r) { b.y = 60 + r; b.vy = Math.abs(b.vy); KG.note(900, 0.04, 'sine', 0.08); }
+  if (b.x < r) { b.x = r; b.vx = Math.abs(b.vx); sfx('cb_wall', { pan: -0.6 }); }
+  if (b.x > FW - r) { b.x = FW - r; b.vx = -Math.abs(b.vx); sfx('cb_wall', { pan: 0.6 }); }
+  if (b.y < 60 + r) { b.y = 60 + r; b.vy = Math.abs(b.vy); sfx('cb_wall', { pitch: 1.12, pan: panF(b.x) }); }
   const px = paddle.x - paddle.w / 2, py = paddle.y - paddle.h / 2;
   if (b.vy > 0 && b.y + r > py && b.y - r < py + paddle.h && b.x > px - r && b.x < px + paddle.w + r) {
     const off = clamp((b.x - paddle.x) / (paddle.w / 2 + r), -1, 1);
@@ -826,7 +909,7 @@ function stepBall(b, dt) {
     b.y = py - r;
     killTweens(paddle); paddle.sx = 1.15; paddle.sy = 0.75; tween(paddle, { sx: 1, sy: 1 }, 0.4, 'outElastic');
     combo = 0;
-    KG.note(440 + Math.random() * 60, 0.14, 'sine', 0.2, 0, 700);
+    sfx('cb_paddle', { pitch: 1 + off * 0.12, vol: clamp(Math.hypot(b.vx, b.vy) / 380, 0.6, 1.1), pan: panF(b.x) });
     fx.burst(b.x, py, { n: 5, shape: 'circle', colors: ['#fff', '#ffd1e3'], speed: 120, dir: -Math.PI / 2, spread: 2, g: 300, size: 4, life: 0.4 });
   }
   for (const k of bricks) {
@@ -851,13 +934,15 @@ function levelClear() {
   Save.setStars(lvIdx, st);
   const after = Save.total();
   const newSkin = SKINS.find(s => s.need > before && s.need <= after);
+  const prevBest = KG.best('candy-breakout-' + lvIdx) || 0;
   const best = KG.best('candy-breakout-' + lvIdx, score);
+  sfx('levelup');
   fx.burst(FW / 2, FH / 2, { n: 40, shape: 'confetti', speed: 380, g: 500, size: 10 });
   setTimeout(() => {
     if (scene !== 'play') return;
-    Music.stop();
+    if (MUS) MUS.stop(0.3);
     Result.show({
-      stars: st, title: st === 3 ? '完美！糖果全清光！' : '過關了！好棒！', color: '#f45f93',
+      stars: st, record: score > prevBest && score > 0, title: st === 3 ? '完美！糖果全清光！' : '過關了！好棒！', color: '#f45f93',
       lines: ['得到 ' + score + ' 分', '最高 ' + best + ' 分'],
       unlock: newSkin ? '解鎖新板子：' + newSkin.name + '！' : '',
       onNext: lvIdx < LEVELS.length - 1 ? () => startLevel(lvIdx + 1) : null,
@@ -867,7 +952,8 @@ function levelClear() {
 }
 function failLevel() {
   sub = 'fail';
-  Music.stop();
+  musicMood();
+  if (MUS) MUS.stop(0.3);
   Result.show({
     stars: 0, title: '再試一次！', color: '#9b6ff2',
     lines: ['還剩 ' + bricks.length + ' 塊糖果', '休息一下，再來一次！'],
@@ -909,7 +995,7 @@ Game.update = (dt, rdt) => {
   balls = balls.filter(b => b.y < FH + 30);
   if (balls.length === 0 && before > 0) {
     lives--; lost++; combo = 0;
-    KG.sound('wrong'); KG.vibrate(60); shake(6, 0.3);
+    sfx('cb_lost'); KG.vibrate(60); shake(6, 0.3);
     setMood('sad', 1.5);
     if (lives <= 0) { failLevel(); return; }
     ui.text(W / 2, H * 0.45, '沒關係，再來一次！', { color: '#fff', size: 28 * U, stroke: '#9b6ff2', vy: -30, life: 1.3 });
@@ -917,7 +1003,8 @@ Game.update = (dt, rdt) => {
     newBall();
   }
   bricks = bricks.filter(k => !k.dead);
-  if (bricks.length === 0) { levelClear(); return; }
+  musicMood();
+  if (bricks.length === 0) { sub = 'clear'; musicMood(); levelClear(); return; }
   drops.forEach(d => {
     d.y += d.vy * dt; d.ph += dt;
     const px = paddle.x - paddle.w / 2;
@@ -1231,7 +1318,12 @@ function drawTitle() {
   drawPaddleChar(0, 0, 120, 24, { sx: 2 - squash, sy: squash, blink: paddle.blink > 0, mood: t > 0.4 && t < 0.6 ? 'happy' : 'idle' });
   ctx.restore();
   const bw = 210 * U, bh = 74 * U;
-  button('start', W / 2 - bw / 2, Math.min(H - bh - 40, H * 0.76), bw, bh, { label: '開始', icon: 'play', color: 'pink', pulse: true, onClick: goMap });
+  const sy = Math.min(H - bh - 40, H * 0.76);
+  button('start', W / 2 - bw / 2, sy, bw, bh, { label: '開始', icon: 'play', color: 'pink', pulse: true, onClick: goMap });
+  // 音樂／音效開關：直式放在開始按鈕下面，矮的橫式放右下角
+  const tw = Math.min(W - 40, 260 * U), th = 42 * U;
+  if (sy + bh + 16 * U + th < H - 8) soundToggles(W / 2 - tw / 2, sy + bh + 16 * U, tw, th, false);
+  else soundToggles(W - 124 * U - 12, H - 12 - (th * 2 + 10 * U), 124 * U, th * 2 + 10 * U, true);
 }
 function drawMap() {
   drawBackground();
@@ -1239,7 +1331,7 @@ function drawMap() {
     levels: LEVELS, title: '選擇關卡', color: '#f45f93', cardColors: ['pink', 'orange', 'purple', 'blue', 'green', 'yellow'],
     onPick: (i) => startLevel(i),
     skins: SKINS.map((s, i) => ({ name: s.name, need: s.need, draw: (x, y, sz) => { ctx.save(); ctx.translate(x, y + sz * 0.15); ctx.scale(sz / 70, sz / 70); drawPaddleChar(0, 0, 120, 24, { skin: i }); ctx.restore(); } })),
-    skin, onSkin: (i) => { skin = i; Save.set('skin', i); KG.sound('sparkle'); ui.burst(W / 2, H - 100 * U, { n: 16, speed: 200, g: 200 }); }
+    skin, onSkin: (i) => { skin = i; Save.set('skin', i); sfx('sparkle'); ui.burst(W / 2, H - 100 * U, { n: 16, speed: 200, g: 200 }); }
   });
 }
 
@@ -1266,13 +1358,23 @@ Game.draw = () => {
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     drawHud();
+    drawPauseBtn();
   }
   ui.draw();
   Result.draw();
+  drawPause();
 };
 
 bootGame();
 goTitle();
+window.__cb = {
+  state: () => ({ scene, sub, lives, combo, bricks: bricks.length, balls: balls.length, paused, score }),
+  ball: () => balls[0] ? { x: ox + balls[0].x * sc, y: oy + balls[0].y * sc, stuck: balls[0].stuck } : null,
+  paddleY: () => oy + paddle.y * sc,
+  fail: () => { lives = 1; balls.forEach(b => { b.y = FH + 100; b.stuck = false; }); },
+  clear: () => { bricks.forEach(k => { k.dead = true; }); },
+  songs: { SONG_TITLE, SONG_PLAY }
+};
 </script>
 </body>
 </html>

@@ -7,6 +7,16 @@
 (function () {
   'use strict';
 
+  // Android 安裝成 App（Chrome 135 以後）遇到 viewport-fit=cover 會把畫面延伸到底下的
+  // 返回／主畫面導覽列後面，按鈕就被蓋住。遊戲都是撐滿視窗的版面，所以一律不用 cover，
+  // 讓瀏覽器把畫面留在導覽列和瀏海之內（新遊戲不小心寫了也會在這裡拿掉）。
+  try {
+    var vp = document.querySelector('meta[name="viewport"]');
+    if (vp && /viewport-fit\s*=\s*cover/i.test(vp.content)) {
+      vp.setAttribute('content', vp.content.replace(/,?\s*viewport-fit\s*=\s*cover/ig, ''));
+    }
+  } catch (e) {}
+
   var KG = {};
   var store = {
     get: function (k, d) {

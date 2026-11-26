@@ -47,6 +47,8 @@
 
   /* 遮罩與卡片 */
   .ov { position: fixed; inset: 0; z-index: 9200; display: flex; align-items: center; justify-content: center; padding: 14px; background: rgba(4, 8, 6, .7); animation: kg-fade .25s ease; }
+  /* 窄螢幕：卡片橫跨整個寬度時往下讓開左上 🏠、右上 🔊 */
+  @media (max-width: 720px) { .ov:not(#title) { padding-top: 66px; } }
   .card { background: rgba(12, 18, 15, .96) !important; width: min(460px, 100%); max-height: calc(100% - 4px); overflow: auto; border-radius: 14px; padding: 18px 18px 16px; text-align: center; color: var(--ink); }
   .card h2 { margin: 0 0 6px; font-size: 24px; letter-spacing: 6px; color: var(--gold); font-weight: 900; font-family: var(--sf); }
   .card p { margin: 0 0 10px; font-size: 14px; line-height: 1.6; color: var(--mut); }
@@ -98,6 +100,12 @@
   body.short .pcard { width: min(600px, 100%); }
   body.short .pcard .acts2 { flex-direction: row; }
   body.short .pcard .acts2 .gbtn { min-width: 0; padding: 9px 6px; font-size: 14px; letter-spacing: 1px; }
+  /* 矮的橫向畫面：暫停選單的勾選框排三欄、戰績排成三組，「繼續」不用捲動就看得到 */
+  body.short .pcard { padding: 10px 14px; }
+  body.short .pcard h2 { font-size: 19px; margin: 0 0 2px; }
+  body.short .pcard .chks { grid-template-columns: repeat(3, 1fr); gap: 5px; margin: 4px 0 6px; }
+  body.short .pcard .chk { padding: 6px 8px; font-size: 13px; }
+  body.short .pcard .stat { grid-template-columns: 1fr auto 1fr auto 1fr auto; max-width: none; font-size: 12.5px; gap: 2px 12px; margin: 4px 0 4px; }
 
   /* 結算 */
   .rcard { width: min(620px, 100%); padding: 14px 16px; }
@@ -152,6 +160,7 @@
     <div class="frow"><label>局制</label><div class="seg" id="segMode"><button data-v="full">一將（四圈）</button><button data-v="east">東風圈</button></div></div>
     <div class="frow"><label>底 / 台</label><div class="seg" id="segStake"><button data-v="0">100 / 20</button><button data-v="1">300 / 100</button></div></div>
     <div class="frow"><label>速度</label><div class="seg" id="segSpeed"><button data-v="normal">標準</button><button data-v="fast">快速</button></div></div>
+    <div class="frow"><label>聲音</label><div class="seg" id="tSnd"><button data-k="m">音樂 開</button><button data-k="s">音效 開</button></div></div>
     <button class="gbtn pri" id="tStart">開始新牌局</button>
     <button class="gbtn hide" id="tCont">繼續上次牌局</button>
     <div class="tlinks"><button class="gbtn" id="tStats">戰績</button><button class="gbtn" id="tRules">規則與台數</button></div>
@@ -215,6 +224,7 @@
   </div>
 </div>
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
 <script>
 (function () {
 'use strict';
@@ -1283,7 +1293,7 @@ function buildBg() {
 
 /* ================= 狀態 ================= */
 const SKEY = 'twmj:settings', STKEY = 'twmj:stats', SVKEY = 'twmj:save';
-const settings = Object.assign({ oneTap: false, autoPass: false, autoWin: false, speed: 'normal', assist: true, music: true, mode: 'full', stake: 0 }, KG.store.get(SKEY, {}));
+const settings = Object.assign({ oneTap: false, autoPass: false, autoWin: false, speed: 'normal', assist: true, mode: 'full', stake: 0 }, KG.store.get(SKEY, {}));
 const stats = Object.assign({ hands: 0, wins: 0, zimo: 0, dealin: 0, maxTai: 0, matches: 0, firsts: 0, bestPts: 0 }, KG.store.get(STKEY, {}));
 function saveSettings() { KG.store.set(SKEY, settings); }
 function saveStats() { KG.store.set(STKEY, stats); }
@@ -1779,29 +1789,161 @@ function burst(x, y, n) {
   }
 }
 
-/* ================= 音效與音樂 ================= */
+/* ================= 音效與音樂（共用引擎 kg-music.js） ================= */
+const MU = KG.music, SN = KG.sfx;
+let sfxOn = KG.store.get('twmj:sfx', true) !== false;
+const sfxLast = Object.create(null);
+const panX = x => clamp(x / Math.max(1, W) * 2 - 1, -1, 1) * 0.6;
+/** 播放音效：同一種 40 ms 內只播一次、音高隨機 ±4%（exact 時不變，跟音樂同調）、依畫面位置左右聲道 */
+function sfx(name, pitch, vol, pan, exact) {
+  if (!sfxOn || !SN) return;
+  const t = performance.now();
+  if (t - (sfxLast[name] || 0) < 40) return;
+  sfxLast[name] = t;
+  const p = (pitch || 1) * (exact ? 1 : 0.96 + Math.random() * 0.08);
+  if (vol == null && !pan) SN.play(name, { pitch: p }); else SN.play(name, { pitch: p, vol: vol == null ? 1 : vol, pan: pan || 0 });
+}
+function jingle(def) { if (sfxOn && MU) MU.jingle(def); }
+function seatPan(s) { try { return panX(seatAnchor(s).x); } catch (e) { return 0; } }
+if (MU && MU.INST && !MU.INST.twPipa) {
+  const I = MU.INST;
+  // 南管琵琶：撥弦＋短亮的泛音
+  I.twPipa = (f, t, d, v, out) => { I.pluck(f, t, Math.min(d, 0.3), v * 0.8, out); I.kalimba(f, t, d, v * 0.35, out); };
+  // 洞簫：低一點、氣多一點的笛聲
+  I.twXiao = (f, t, d, v, out) => { I.flute(f, t, d, v * 0.9, out); I.pad(f, t, d, v * 0.25, out); };
+  // 辦桌樂隊的嗩吶：主奏＋銅管，音頭比較亮
+  I.twSuona = (f, t, d, v, out) => { I.lead(f, t, d, v * 0.7, out); I.brass(f * 2, t, d, v * 0.18, out); I.organ(f, t, d, v * 0.25, out); };
+  // 鑼：低鼓＋不和諧泛音
+  I.twGong = (f, t, d, v, out) => { I.tom(f * 0.6, t, d, v * 0.6, out); I.bell(f * 1.5, t, d, v * 0.3, out); I.bell(f * 2.3, t, d, v * 0.16, out); I.crash(0, t, d, v * 0.2, out); };
+}
+if (SN) {
+  // 打牌：牌敲在桌上「喀」一聲（清脆的頭＋木頭的低音）
+  SN.define('tw_clack', (p, s) => { s.noise(0.03, { vol: 0.24, freq: 2700 * p, q: 2.5 }); s.tone(1050 * p, 0.06, { type: 'triangle', vol: 0.13, slide: 720 * p }); s.tone(210 * p, 0.07, { vol: 0.16, slide: 120 * p }); });
+  // 摸牌：從牌牆滑出來
+  SN.define('tw_draw', (p, s) => { s.noise(0.07, { vol: 0.1, freq: 1400 * p, sweep: 2600 * p, q: 1.4 }); s.noise(0.02, { vol: 0.12, freq: 3000 * p, q: 4, delay: 0.06 }); s.tone(1500 * p, 0.03, { type: 'triangle', vol: 0.05, delay: 0.06 }); });
+  // 選牌：輕輕敲一下
+  SN.define('tw_sel', (p, s) => { s.noise(0.018, { vol: 0.1, freq: 3400 * p, q: 4 }); s.tone(1180 * p, 0.035, { type: 'triangle', vol: 0.06 }); });
+  // 洗牌（砌牌牆）：一大串此起彼落的牌聲
+  SN.define('tw_shuffle', (p, s) => {
+    for (let i = 0; i < 18; i++) {
+      const d = i * 0.045 + Math.random() * 0.03;
+      s.noise(0.03, { vol: 0.08 + Math.random() * 0.07, freq: (1700 + Math.random() * 1600) * p, q: 2.2, delay: d });
+      if (i % 3 === 0) s.tone((180 + Math.random() * 60) * p, 0.05, { vol: 0.08, delay: d });
+    }
+    s.noise(0.5, { vol: 0.05, freq: 900 * p, q: 0.8, delay: 0.1 });
+  });
+  // 吃：兩聲往上的木琴（F 大調）
+  SN.define('tw_chi', (p, s) => { s.noise(0.02, { vol: 0.12, freq: 1600, q: 6 }); s.tone(698 * p, 0.14, { type: 'triangle', vol: 0.12 }); s.tone(880 * p, 0.2, { type: 'triangle', vol: 0.12, delay: 0.08 }); });
+  // 碰：短促有力的和弦＋梆子
+  SN.define('tw_peng', (p, s) => { s.noise(0.03, { vol: 0.16, freq: 1500, q: 6 }); s.tone(523 * p, 0.22, { type: 'triangle', vol: 0.13 }); s.tone(698 * p, 0.22, { type: 'triangle', vol: 0.1 }); s.tone(175 * p, 0.18, { vol: 0.2, slide: 120 * p }); });
+  // 槓：一聲小鑼＋上行三和弦
+  SN.define('tw_gang', (p, s) => {
+    s.tone(110 * p, 0.6, { vol: 0.2, slide: 80 * p }); s.tone(330 * p, 0.9, { vol: 0.05 }); s.tone(494 * p, 0.7, { vol: 0.035 });
+    [523, 659, 784].forEach((f, i) => s.tone(f * p, 0.22, { type: 'triangle', vol: 0.08, delay: 0.08 + i * 0.06 }));
+  });
+  // 補花：鈴聲
+  SN.define('tw_flower', (p, s) => { [1047, 1175, 1397].forEach((f, i) => s.tone(f * p, 0.18, { vol: 0.06, delay: i * 0.05 })); });
+  // 胡牌（別人）：鼓＋鑼
+  SN.define('tw_hu', (p, s) => { s.tone(98 * p, 0.7, { vol: 0.28, slide: 60 }); s.noise(0.25, { vol: 0.14, freq: 500, type: 'lowpass' }); s.tone(392 * p, 1.1, { vol: 0.05, delay: 0.02 }); s.tone(587 * p, 0.9, { vol: 0.03, delay: 0.02 }); });
+  // 聽牌：輕輕的提示
+  SN.define('tw_ting', (p, s) => { s.tone(880 * p, 0.2, { vol: 0.05 }); s.tone(1319 * p, 0.3, { vol: 0.04, delay: 0.09 }); });
+  SN.define('tw_exhaust', (p, s) => { s.tone(330 * p, 0.45, { type: 'triangle', vol: 0.09 }); s.tone(247 * p, 0.6, { type: 'triangle', vol: 0.08, delay: 0.2 }); });
+}
 const SFX = {
-  clack() { KG.note(2300, 0.03, 'square', 0.04); KG.note(950, 0.07, 'triangle', 0.16, 0.004, 700); },
-  draw() { KG.note(1500, 0.035, 'sine', 0.07); },
-  sel() { KG.note(1100, 0.04, 'triangle', 0.08); },
-  call() { KG.note(196, 0.45, 'triangle', 0.22); KG.note(294, 0.35, 'sine', 0.12, 0.03); KG.note(392, 0.25, 'sine', 0.08, 0.06); },
-  flower() { [1319, 1760, 2093].forEach((f, i) => KG.note(f, 0.14, 'sine', 0.07, i * 0.05)); },
-  hu() { [523, 659, 784, 1047, 1319].forEach((f, i) => KG.note(f, 0.28, 'triangle', 0.18, i * 0.09)); KG.note(130, 0.8, 'sine', 0.2); },
-  lose() { [392, 330, 262].forEach((f, i) => KG.note(f, 0.3, 'triangle', 0.16, i * 0.16)); },
-  draw0() { KG.note(330, 0.5, 'sine', 0.12); KG.note(247, 0.6, 'sine', 0.1, 0.2); }
+  clack(s) { sfx('tw_clack', 1, null, seatPan(s)); },
+  draw() { sfx('tw_draw'); },
+  sel() { sfx('tw_sel'); },
+  shuffle() { sfx('tw_shuffle'); },
+  call(k, s) { sfx(k === 'chi' ? 'tw_chi' : k === 'peng' ? 'tw_peng' : 'tw_gang', 1, null, seatPan(s), true); },
+  flower(s) { sfx('tw_flower', 1, null, seatPan(s), true); },
+  ting() { sfx('tw_ting', 1, null, 0, true); },
+  huOther(s) { sfx('tw_hu', 1, 1, seatPan(s)); },
+  click() { sfx('click'); },
+  start() { jingle({ bpm: 200, inst: 'marimba', vol: 0.3, notes: [['C5', 1], ['F5', 1], ['A5', 1], ['C6', 3]], bass: [['F3', 6, 0]], bassVol: 0.2 }); },
+  hu() {
+    jingle({ bpm: 150, inst: 'bell', vol: 0.3, notes: [['C5', 1], ['D5', 1], ['F5', 1], ['G5', 1], ['A5', 2], ['C6', 1], ['A5', 1], ['F5+A5+C6', 4]], bass: [['F2', 4, 0], ['C3', 2, 4], ['F2', 6, 6]], bassVol: 0.26 });
+    jingle({ bpm: 150, inst: 'brass', vol: 0.2, notes: [['A4', 2], ['C5', 2], ['D5', 2], ['F5', 6]] });
+  },
+  lose() { jingle({ bpm: 110, inst: 'marimba', vol: 0.32, notes: [['A4', 1], ['G4', 1], ['F4', 1], ['D4', 1], ['C4', 3]], bass: [['F2', 7, 0]], bassVol: 0.18 }); },
+  draw0() { sfx('tw_exhaust', 1, null, 0, true); },
+  first() {
+    jingle({ bpm: 140, inst: 'bell', vol: 0.3, notes: [['F5', 1], ['G5', 1], ['A5', 1], ['C6', 2], ['D6', 1], ['C6', 1], ['F6+A5+C6', 5]], bass: [['F2', 3, 0], ['C3', 3, 3], ['F2', 6, 6]], bassVol: 0.26 });
+  },
+  place() { jingle({ bpm: 120, inst: 'marimba', vol: 0.3, notes: [['C5', 1], ['D5', 1], ['F5', 2], ['A4', 1], ['C5', 3]], bass: [['F2', 8, 0]], bassVol: 0.18 }); }
 };
-const SCALE = [196, 220, 261.6, 293.7, 329.6, 392, 440, 523.3, 587.3, 659.3];
-const MEL = [7, -1, 6, 5, 4, -1, 5, -1, 6, -1, 4, 3, 2, -1, -1, -1, 4, -1, 5, 6, 7, -1, 8, 7, 6, -1, 5, 4, 5, -1, -1, -1];
-let musT = 0.5, musStep = 0;
-function musicTick(dt) {
-  if (!settings.music || KG.isMuted() || paused || mode !== 'play' || document.hidden) return;
-  musT -= dt;
-  while (musT <= 0) {
-    const n = MEL[musStep % MEL.length];
-    if (n >= 0) KG.note(SCALE[n], 0.8, 'triangle', 0.022);
-    if (musStep % 8 === 0) KG.note(SCALE[(musStep / 8 | 0) % 4 === 3 ? 1 : 0] / 2, 1.8, 'sine', 0.035);
-    musStep++; musT += 0.42;
+
+/* ---------- 背景音樂 ---------- */
+// 標題：〈茶亭南管〉A 宮調五聲（A B C# E F#）80 bpm，沒有鼓：洞簫慢慢吹、琵琶分解和弦、拍板標小節、低音長音
+const MEL_T = [
+  'E5 - - F#5 E5 - C#5 -', 'B4 - C#5 - A4 - - -', 'F#4 - A4 B4 - - C#5 -', 'B4 - - - E4 - - -',
+  'A4 - C#5 E5 F#5 - E5 -', 'C#5 - B4 A4 F#4 - - -', 'E4 - F#4 A4 B4 - C#5 B4', 'A4 - - - - - . .'
+];
+const SONG_TITLE = {
+  bpm: 80, steps: 16,
+  chords: ['A6', 'F#m7', 'Bm7', 'Esus4', 'A6', 'F#m7', 'Esus4', 'A'],
+  tracks: [
+    { inst: 'rim', pat: ['X.......o.......', 'X...............'], vol: 0.34 },
+    { inst: 'sub', chord: 'R.......5.......', vol: 0.45 },
+    { inst: 'pad', chord: 'hold', vol: 0.3 },
+    { inst: 'twPipa', arp: 'updown', rate: 2, oct: 4, vol: 0.32 },
+    { inst: 'twXiao', seq: MEL_T, vol: 0.8 }
+  ]
+};
+// 對局：〈辦桌〉F 大調 114 bpm，喜宴樂隊：嗩吶主旋律、風琴反拍和弦、兩拍子大鼓小鼓、走路低音、開頭一聲鑼；聽牌時加通鼓、開鈸、銅管
+const MEL_P = [
+  'C5 - A4 C5 D5 - C5 A4', 'D5 - F5 - D5 C5 A4 -', 'F4 G4 A4 - Bb4 - D5 -', 'C5 - - - G4 - - .',
+  'A4 C5 D5 - F5 - D5 C5', 'E5 - C5 - A4 - C5 .', 'D5 - Bb4 - G4 A4 Bb4 -', 'C5 - - - - . . .',
+  'F5 - E5 D5 - - A4 -', 'C5 - E5 - D5 C5 A4 -', 'D5 - F5 - D5 - Bb4 -', 'C5 - A4 - F4 - - .',
+  'G4 - Bb4 D5 F5 - D5 -', 'E5 - D5 C5 G4 - C5 -', 'A4 - C5 - D5 - C5 A4', 'F4 - - - . . . .'
+];
+const SONG_PLAY = {
+  bpm: 114, steps: 16,
+  chords: ['F', 'Dm', 'Bb', 'C', 'F', 'Am', 'Gm7', 'C', 'Dm', 'Am', 'Bb', 'F', 'Gm7', 'C', 'F', 'F'],
+  layers: { tension: false },
+  tracks: [
+    { inst: 'twGong', seq: ['F3 . . . . . . .', '', '', '', '', '', '', '', 'F3 . . . . . . .', '', '', '', '', '', '', ''], vol: 0.45 },
+    { inst: 'kick', pat: 'x.......x.....x.', vol: 0.55 },
+    { inst: 'snare', pat: '....x.......x...', vol: 0.42 },
+    { inst: 'rim', pat: 'x..x..x.x.x..x..', vol: 0.22 },
+    { inst: 'bass', chord: 'R...3...5...3...', vol: 0.5 },
+    { inst: 'organ', chord: '..R...R...R...R.', oct: 4, vol: 0.35 },
+    { inst: 'organ', chord: '..3...3...3...3.', oct: 4, vol: 0.3 },
+    { inst: 'organ', chord: '..5...5...5...5.', oct: 4, vol: 0.3 },
+    { inst: 'twSuona', seq: MEL_P, vol: 0.62 },
+    { inst: 'tom', pat: 'x.....x...x.x...', pitch: 150, layer: 'tension', vol: 0.4 },
+    { inst: 'ohat', pat: '..x...x...x...x.', layer: 'tension', vol: 0.26 },
+    { inst: 'brass', chord: 'R...........R...', oct: 4, layer: 'tension', vol: 0.45 },
+    { inst: 'brass', chord: '5...........5...', oct: 4, layer: 'tension', vol: 0.38 }
+  ]
+};
+let mood = -1, wasTing = false;
+function musicTitle() { if (MU) { MU.play(SONG_TITLE); MU.setVolume(0.52); mood = -1; } }
+function musicPlay() { if (MU) { if (MU.current() !== SONG_PLAY) { MU.play(SONG_PLAY, { restart: true }); MU.setVolume(0.42); } mood = -1; wasTing = false; musicMood(); } }
+/** 你聽牌時加緊張層；牌牆快摸完（剩 12 張以內）再加快 */
+function musicMood() {
+  if (!MU || !G || G.allAI || mode !== 'play' || MU.current() !== SONG_PLAY) return;
+  if (G.phase === 'end') { if (mood !== 0) { mood = 0; MU.setLayer('tension', false); MU.setTempo(1); } return; }
+  let ting = wasTing;
+  if (G.P[0].hand.length % 3 === 1) ting = tingNow();
+  if (ting && !wasTing) SFX.ting();
+  wasTing = ting;
+  const late = E.remain(G) <= 12;
+  const m = (ting ? 1 : 0) + (late ? 2 : 0);
+  if (m === mood) return;
+  mood = m;
+  MU.setLayer('tension', ting);
+  MU.setTempo(late ? 1.06 : 1);
+}
+function renderSnd() {
+  for (const b of $('tSnd').children) {
+    const mus = b.dataset.k === 'm', on = mus ? (MU ? MU.isEnabled() : false) : sfxOn;
+    b.classList.toggle('on', on); b.textContent = (mus ? '音樂 ' : '音效 ') + (on ? '開' : '關'); b.setAttribute('aria-pressed', on ? 'true' : 'false');
   }
+}
+function toggleSnd(k) {
+  if (k === 'm') { if (MU) MU.setEnabled(!MU.isEnabled()); }
+  else { sfxOn = !sfxOn; KG.store.set('twmj:sfx', sfxOn); }
+  SFX.click();
 }
 
 /* ================= 引擎推進 ================= */
@@ -1814,18 +1956,18 @@ function processEvents() {
 function handleEvent(e) {
   const sp = SPD();
   const ffx = !instant;
-  if (e.e === 'deal') { if (ffx) { KG.sound('whoosh'); busy = Math.max(busy, 0.5 * sp); } }
-  else if (e.e === 'flower') { if (ffx) { SFX.flower(); callout('補花', e.s, '#3a9a6e', clamp(Math.min(W, H) * 0.07, 24, 44)); busy = Math.max(busy, 0.4 * sp); } }
+  if (e.e === 'deal') { if (ffx) { SFX.shuffle(); busy = Math.max(busy, 0.5 * sp); } }
+  else if (e.e === 'flower') { if (ffx) { SFX.flower(e.s); callout('補花', e.s, '#3a9a6e', clamp(Math.min(W, H) * 0.07, 24, 44)); busy = Math.max(busy, 0.4 * sp); } }
   else if (e.e === 'draw') {
     if (e.s === 0 && !G.allAI) { drawAnim = 1; sel = -1; if (ffx) SFX.draw(); busy = Math.max(busy, 0.05); }
-    else busy = Math.max(busy, (settings.speed === 'fast' ? 0.22 : 0.42));
+    else { if (ffx && !G.allAI) sfx('tw_draw', 0.9, 0.55, seatPan(e.s)); busy = Math.max(busy, (settings.speed === 'fast' ? 0.22 : 0.42)); }
   } else if (e.e === 'discard') {
-    if (ffx) SFX.clack();
+    if (ffx) { SFX.clack(e.s); musicMood(); }
     if (e.s !== 0 || G.allAI) { L = L || computeLayout(); const c = seatHandCenter(e.s); fly = { s: e.s, x: c.x, y: c.y, k: 0 }; }
     busy = Math.max(busy, 0.38 * sp);
   } else if (e.e === 'claim') {
     const txt = { chi: '吃', peng: '碰', gang: '槓', angang: '暗槓', jiagang: '加槓' }[e.k];
-    if (ffx) { SFX.call(); callout(txt, e.s, e.k === 'chi' ? '#3fae75' : e.k === 'peng' ? '#4a9be0' : '#a476e0'); KG.vibrate(20); }
+    if (ffx) { SFX.call(e.k, e.s); musicMood(); callout(txt, e.s, e.k === 'chi' ? '#3fae75' : e.k === 'peng' ? '#4a9be0' : '#a476e0'); KG.vibrate(20); }
     fly = null; sel = -1;
     busy = Math.max(busy, 0.75 * sp);
   } else if (e.e === 'win') {
@@ -1834,11 +1976,12 @@ function handleEvent(e) {
       callout(txt, e.s, '#e2483f', clamp(Math.min(W, H) * 0.16, 48, 104));
       shakeT = 0.6; KG.vibrate(60);
       const a = seatAnchor(e.s); burst(a.x, a.y, 40);
-      if (e.s === 0) SFX.hu(); else SFX.call();
+      musicMood();
+      if (e.s === 0) SFX.hu(); else SFX.huOther(e.s);
     }
     busy = Math.max(busy, 1.5 * sp);
   } else if (e.e === 'exhaust') {
-    if (ffx) { callout('流局', 0, '#d9b56a'); SFX.draw0(); }
+    if (ffx) { callout('流局', 0, '#d9b56a'); musicMood(); SFX.draw0(); }
     busy = Math.max(busy, 1.2 * sp);
   }
 }
@@ -1869,7 +2012,7 @@ function clearActs() { actsEl.innerHTML = ''; chiPick = false; }
 function addAct(label, cls, fn, sub) {
   const b = document.createElement('button');
   b.className = 'ab ' + cls; b.innerHTML = label + (sub ? '<small>' + sub + '</small>' : '');
-  b.addEventListener('click', e => { e.stopPropagation(); if (paused) return; KG.sound('click'); fn(); });
+  b.addEventListener('click', e => { e.stopPropagation(); if (paused) return; SFX.click(); fn(); });
   actsEl.appendChild(b); return b;
 }
 function tilesCanvas(tiles, hi, w) {
@@ -2070,7 +2213,7 @@ function showResult() {
     }
     $('rPay').innerHTML = ph;
     drawResultHand(r);
-    if (w === 0) { KG.confetti(); setTimeout(() => KG.sound('win'), 150); } else if (r.from === 0) SFX.lose();
+    if (w === 0) KG.confetti(); else if (r.from === 0) SFX.lose();
   }
   $('resOv').classList.remove('hide');
   $('reopen').classList.add('hide');
@@ -2100,8 +2243,8 @@ function drawResultHand(r) {
   if (h.flowers.length) { x += tw * 0.6; for (const f of h.flowers) put(f); }
 }
 $('rLook').addEventListener('click', () => { $('resOv').classList.add('hide'); $('reopen').classList.remove('hide'); resultHidden = true; dirty = true; });
-$('reopen').addEventListener('click', () => { KG.sound('click'); $('resOv').classList.remove('hide'); $('reopen').classList.add('hide'); resultHidden = false; });
-$('rNext').addEventListener('click', () => { KG.sound('click'); nextHand(); });
+$('reopen').addEventListener('click', () => { SFX.click(); $('resOv').classList.remove('hide'); $('reopen').classList.add('hide'); resultHidden = false; });
+$('rNext').addEventListener('click', () => { SFX.click(); nextHand(); });
 function nextHand() {
   $('resOv').classList.add('hide'); $('reopen').classList.add('hide');
   const res = E.advanceMatch(G);
@@ -2118,6 +2261,7 @@ function startHand(M) {
   L = computeLayout(); placeHud();
   processEvents();
   autosave();
+  musicPlay();
 }
 function matchOver() {
   const M = G.M;
@@ -2131,30 +2275,37 @@ function matchOver() {
   $('oRank').innerHTML = order.map((s, i) => '<span>' + (i + 1) + '. ' + M.names[s] + (M.refills[s] ? '（補點 ' + M.refills[s] + ' 次）' : '') + '</span><span>' + fmt(M.pts[s]) + '</span>').join('');
   $('oMsg').textContent = (M.mode === 'east' ? '東風圈' : '一將四圈') + '結束，共 ' + M.handNo + ' 局。' + (place === 1 ? '恭喜奪得頭名！' : '再接再厲！');
   $('overOv').classList.remove('hide');
-  if (place === 1) { KG.confetti(); KG.sound('win'); } else KG.sound('correct');
   mode = 'over';
+  if (MU) MU.stop(0.3);
+  if (place === 1) { KG.confetti(); SFX.first(); } else SFX.place();
 }
-$('oAgain').addEventListener('click', () => { $('overOv').classList.add('hide'); startMatch({}); });
-$('oTitle').addEventListener('click', () => { $('overOv').classList.add('hide'); toTitle(); });
+$('oAgain').addEventListener('click', () => { SFX.start(); $('overOv').classList.add('hide'); startMatch({}); });
+$('oTitle').addEventListener('click', () => { SFX.click(); $('overOv').classList.add('hide'); toTitle(); });
 
 /* ================= 標題、暫停、設定 ================= */
 function seg(id, key, cb) {
   const el = $(id);
   const sync = () => el.querySelectorAll('button').forEach(b => b.classList.toggle('on', String(settings[key]) === b.dataset.v));
-  el.querySelectorAll('button').forEach(b => b.addEventListener('click', () => { settings[key] = /^\d+$/.test(b.dataset.v) ? +b.dataset.v : b.dataset.v; saveSettings(); KG.sound('click'); syncAll(); if (cb) cb(); }));
+  el.querySelectorAll('button').forEach(b => b.addEventListener('click', () => { settings[key] = /^\d+$/.test(b.dataset.v) ? +b.dataset.v : b.dataset.v; saveSettings(); SFX.click(); syncAll(); if (cb) cb(); }));
   syncs.push(sync);
 }
 const syncs = [];
-function syncAll() { syncs.forEach(f => f()); updateTools(); }
+function syncAll() { syncs.forEach(f => f()); updateTools(); renderSnd(); }
+for (const b of $('tSnd').children) b.addEventListener('click', () => { toggleSnd(b.dataset.k); syncAll(); });
 seg('segMode', 'mode'); seg('segStake', 'stake'); seg('segSpeed', 'speed'); seg('pSpeed', 'speed');
-const CHKS = [['oneTap', '一點即打出'], ['autoPass', '自動略過吃碰'], ['autoWin', '自動胡牌'], ['assist', '聽牌提示'], ['music', '背景音樂']];
+const CHKS = [['oneTap', '一點即打出'], ['autoPass', '自動略過吃碰'], ['autoWin', '自動胡牌'], ['assist', '聽牌提示'], ['music', '音樂'], ['sfx', '音效']];
 (function () {
   const box = $('pChks');
   CHKS.forEach(([k, label]) => {
     const b = document.createElement('button'); b.className = 'chk'; b.innerHTML = '<i></i><span>' + label + '</span>';
-    b.addEventListener('click', () => { settings[k] = !settings[k]; saveSettings(); KG.sound('click'); syncAll(); dirty = true; human = null; });
+    const snd = k === 'music' || k === 'sfx';
+    b.addEventListener('click', () => {
+      if (snd) { toggleSnd(k === 'music' ? 'm' : 's'); syncAll(); return; }
+      settings[k] = !settings[k]; saveSettings(); SFX.click(); syncAll(); dirty = true; human = null;
+    });
     box.appendChild(b);
-    syncs.push(() => b.classList.toggle('on', !!settings[k]));
+    syncs.push(snd ? () => { const on = k === 'music' ? (MU ? MU.isEnabled() : false) : sfxOn; b.classList.toggle('on', on); b.lastChild.textContent = label + (on ? ' 開' : ' 關'); }
+      : () => b.classList.toggle('on', !!settings[k]));
   });
 })();
 function statRows() {
@@ -2174,6 +2325,7 @@ function toTitle() {
   updateTitle(); syncAll();
   $('title').classList.remove('hide');
   dirty = true;
+  musicTitle();
 }
 function startMatch(o) {
   const st = STAKES[settings.stake] || STAKES[0];
@@ -2181,6 +2333,7 @@ function startMatch(o) {
   mode = 'play'; paused = false;
   $('title').classList.add('hide'); $('hud').classList.remove('hide');
   startHand(M);
+  musicPlay();
   rotTip();
 }
 function resumeSaved() {
@@ -2191,26 +2344,28 @@ function resumeSaved() {
   $('title').classList.add('hide'); $('hud').classList.remove('hide');
   L = computeLayout(); placeHud();
   dirty = true; rotTip();
+  musicPlay();
 }
-$('tStart').addEventListener('click', () => { KG.sound('click'); startMatch({}); });
-$('tCont').addEventListener('click', () => { KG.sound('click'); resumeSaved(); });
-$('tStats').addEventListener('click', () => { KG.sound('click'); $('sList').innerHTML = statRows(); $('statsOv').classList.remove('hide'); });
-$('sClose').addEventListener('click', () => { KG.sound('click'); $('statsOv').classList.add('hide'); });
+$('tStart').addEventListener('click', () => { SFX.start(); startMatch({}); });
+$('tCont').addEventListener('click', () => { SFX.start(); resumeSaved(); });
+$('tStats').addEventListener('click', () => { SFX.click(); $('sList').innerHTML = statRows(); $('statsOv').classList.remove('hide'); });
+$('sClose').addEventListener('click', () => { SFX.click(); $('statsOv').classList.add('hide'); });
 const TAI_TABLE = [['莊家', 1], ['連莊拉莊', '2n'], ['門清', 1], ['自摸', 1], ['門清自摸', 3], ['平胡', 2], ['碰碰胡', 4], ['混一色', 4], ['清一色', 8], ['字一色', 16], ['三元牌（每組）', 1], ['小三元', 4], ['大三元', 8], ['小四喜', 8], ['大四喜', 16], ['圈風／門風', 1], ['正花（每張）', 1], ['花槓', 2], ['搶槓', 1], ['槓上開花', 1], ['海底撈月', 1], ['河底撈魚', 1], ['全求人', 2], ['三暗刻', 2], ['四暗刻', 5], ['五暗刻', 8], ['獨聽（邊・嵌・單吊）', 1], ['天胡', 24], ['地胡', 16], ['人胡', 16], ['八仙過海', 8], ['七搶一', 8]];
 $('taiTable').innerHTML = TAI_TABLE.map(r => '<span>' + r[0] + '</span><b>' + r[1] + '</b>').join('');
-function openRules() { KG.sound('click'); $('rulesOv').classList.remove('hide'); }
+function openRules() { SFX.click(); $('rulesOv').classList.remove('hide'); }
 $('tRules').addEventListener('click', openRules); $('pRules').addEventListener('click', openRules);
-$('ruClose').addEventListener('click', () => { KG.sound('click'); $('rulesOv').classList.add('hide'); });
+$('ruClose').addEventListener('click', () => { SFX.click(); $('rulesOv').classList.add('hide'); });
 function togglePause(v) {
   if (mode !== 'play') return;
   paused = v != null ? v : !paused;
   if (paused) { $('pStats').innerHTML = statRows(); syncAll(); }
   $('pauseOv').classList.toggle('hide', !paused);
+  if (MU) { if (paused) MU.pause(); else MU.resume(); }
   dirty = true; updateTools();
 }
-$('bPause').addEventListener('click', () => { KG.sound('click'); togglePause(true); });
-$('pResume').addEventListener('click', () => { KG.sound('click'); togglePause(false); human = null; });
-$('pQuit').addEventListener('click', () => { KG.sound('click'); if (G && G.phase !== 'end') autosaveForce(); toTitle(); });
+$('bPause').addEventListener('click', () => { SFX.click(); togglePause(true); });
+$('pResume').addEventListener('click', () => { SFX.click(); togglePause(false); human = null; });
+$('pQuit').addEventListener('click', () => { SFX.click(); if (G && G.phase !== 'end') autosaveForce(); toTitle(); });
 function autosaveForce() { lastSaveSeq = -1; autosave(); }
 document.addEventListener('visibilitychange', () => { if (document.hidden && mode === 'play' && !paused) { autosaveForce(); togglePause(true); } });
 let rotShown = false;
@@ -2244,7 +2399,6 @@ function frame(now) {
   const dt = Math.min(0.05, (now - lastT) / 1000); lastT = now;
   try {
     tick(dt);
-    musicTick(dt);
     let anim = false;
     if (fly) { fly.k += dt / 0.2; anim = true; if (fly.k >= 1) { fly = null; } }
     if (drawAnim > 0) { drawAnim = Math.max(0, drawAnim - dt / 0.16); anim = true; }

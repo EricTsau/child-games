@@ -18,6 +18,7 @@
 <body>
 <canvas id="game" aria-label="坦克大作戰"></canvas>
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
 <script>
 'use strict';
 /* =====================================================================
@@ -289,119 +290,209 @@ function hitBtn(x, y, snap) {
   return best;
 }
 
-/* ---------- 音效（自己的雜訊產生器 + KG.note） ---------- */
+/* ---------- 音效（kg-music.js）：依畫面位置 pan、離鏡頭越遠越小聲 ---------- */
 const Sfx = (() => {
-  let ac = null, nbuf = null;
-  const last = {};
-  function A() {
-    if (!ac) {
-      const AC = window.AudioContext || window.webkitAudioContext;
-      if (!AC) return null;
-      try { ac = new AC(); } catch (e) { return null; }
-      const len = Math.floor(ac.sampleRate * 1.5);
-      nbuf = ac.createBuffer(1, len, ac.sampleRate);
-      const d = nbuf.getChannelData(0);
-      for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
-    }
-    if (ac.state === 'suspended') ac.resume();
-    return ac;
-  }
-  function noise(dur, vol, freq, type, slideTo, delay, q) {
-    if (KG.isMuted() || document.hidden) return;
-    const a = A(); if (!a) return;
-    const t = a.currentTime + (delay || 0);
-    const src = a.createBufferSource(); src.buffer = nbuf;
-    const f = a.createBiquadFilter(); f.type = type || 'lowpass';
-    f.frequency.setValueAtTime(freq, t);
-    if (slideTo) f.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
-    f.Q.value = q || 0.8;
-    const g = a.createGain();
-    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
-    src.connect(f); f.connect(g); g.connect(a.destination);
-    src.start(t, Math.random() * 0.4); src.stop(t + dur + 0.05);
-  }
+  let on = KG.store.get(SLUG + ':sfx', true) !== false;
+  const last = {}, O = { vol: 1, pitch: 1, pan: 0 };
+  const S = KG.sfx;
   function can(name, gap) { const n = performance.now(); if (last[name] && n - last[name] < gap) return false; last[name] = n; return true; }
-  const n = (f, d, t, v, dl, sl) => { if (!document.hidden) KG.note(f, d, t, v, dl, sl); };
+  /** name, 間隔 ms, 世界座標 x/y（可省略）, 音量, 音高, 不要隨機音高 */
+  function play(name, gap, x, y, vol, pitch, exact) {
+    if (!on || !S || document.hidden) return;
+    if (gap && !can(name, gap)) return;
+    let v = vol == null ? 1 : vol, pn = 0;
+    if (x != null && W > 1 && typeof cam !== 'undefined') {
+      const sx = (x - cam.x) * cam.s, sy = ((y == null ? cam.y : y) - cam.y) * cam.s;
+      pn = clamp(sx / (W * 0.5), -1, 1) * 0.6;
+      v *= clamp(1.3 - Math.hypot(sx, sy) / Math.max(W, H) * 1.1, 0.3, 1);
+    }
+    O.vol = v; O.pan = pn; O.pitch = (pitch || 1) * (exact ? 1 : 0.95 + Math.random() * 0.1);
+    S.play(name, O);
+  }
+  if (S) {
+    const D = (n, f) => S.define('tb_' + n, f);
+    // 我方主砲：低沉的「碰」＋砲口氣爆；三連發多一層
+    D('shot', (p, s) => { s.noise(0.16, { vol: 0.2, freq: 1700 * p, sweep: 260, type: 'lowpass' }); s.tone(165 * p, 0.12, { vol: 0.2, slide: 60 }); s.tone(330 * p, 0.04, { type: 'square', vol: 0.025, slide: 120 }); });
+    D('triple', (p, s) => { s.noise(0.2, { vol: 0.22, freq: 1900 * p, sweep: 240, type: 'lowpass' }); s.tone(150 * p, 0.14, { vol: 0.2, slide: 55 }); s.noise(0.06, { vol: 0.07, freq: 2600 * p, q: 1.2, delay: 0.03 }); s.noise(0.06, { vol: 0.06, freq: 2300 * p, q: 1.2, delay: 0.06 }); });
+    // 敵人開砲（比較悶）、狙擊（尖銳）
+    D('eshot', (p, s) => { s.noise(0.14, { vol: 0.15, freq: 1300 * p, sweep: 230, type: 'lowpass' }); s.tone(120 * p, 0.1, { vol: 0.12, slide: 50 }); });
+    D('snipe', (p, s) => { s.noise(0.22, { vol: 0.14, freq: 3600 * p, sweep: 900, q: 1.1 }); s.tone(1250 * p, 0.16, { type: 'sawtooth', vol: 0.035, slide: 220 }); s.tone(140 * p, 0.1, { vol: 0.12, slide: 60 }); });
+    D('boss', (p, s) => { s.noise(0.3, { vol: 0.24, freq: 1000 * p, sweep: 120, type: 'lowpass' }); s.tone(80 * p, 0.3, { vol: 0.26, slide: 36 }); s.tone(160 * p, 0.12, { type: 'square', vol: 0.03, slide: 60 }); });
+    // 砲彈打到鋼板：鏘；在鋼牆反彈：咻～
+    D('clang', (p, s) => { s.tone(1400 * p, 0.07, { type: 'square', vol: 0.035, slide: 700 * p }); s.tone(2350 * p, 0.12, { type: 'triangle', vol: 0.05 }); s.noise(0.05, { vol: 0.12, freq: 3500 * p, q: 2 }); });
+    D('ric', (p, s) => { s.tone(2000 * p, 0.16, { vol: 0.07, slide: 3400 * p }); s.tone(1000 * p, 0.05, { type: 'triangle', vol: 0.05 }); s.noise(0.04, { vol: 0.08, freq: 4200 * p, q: 3 }); });
+    // 磚牆：裂開、碎掉；木箱
+    D('crack', (p, s) => { s.noise(0.08, { vol: 0.17, freq: 1800 * p, q: 1.5 }); s.noise(0.05, { vol: 0.08, freq: 900 * p, q: 2, delay: 0.03 }); });
+    D('brick', (p, s) => { s.noise(0.26, { vol: 0.26, freq: 850 * p, sweep: 180, type: 'lowpass' }); for (let i = 0; i < 4; i++) s.noise(0.04, { vol: 0.12, freq: (1400 + i * 350) * p, q: 3, delay: 0.04 + i * 0.045 }); s.tone(95 * p, 0.12, { vol: 0.14, slide: 50 }); });
+    D('wood', (p, s) => { s.noise(0.16, { vol: 0.24, freq: 1500 * p, sweep: 500, q: 1.4 }); s.tone(240 * p, 0.08, { type: 'triangle', vol: 0.12 }); s.tone(180 * p, 0.08, { type: 'triangle', vol: 0.08, delay: 0.05 }); });
+    // 爆炸：小／大
+    D('boom', (p, s) => { s.noise(0.55, { vol: 0.34, freq: 1400 * p, sweep: 60, type: 'lowpass' }); s.tone(120 * p, 0.38, { vol: 0.3, slide: 30 }); });
+    D('boomL', (p, s) => { s.noise(1.0, { vol: 0.42, freq: 1000 * p, sweep: 50, type: 'lowpass' }); s.tone(85 * p, 0.7, { vol: 0.34, slide: 28 }); s.noise(0.35, { vol: 0.1, freq: 2400 * p, sweep: 500, q: 0.8, delay: 0.06 }); });
+    // 我方被打到
+    D('hurt', (p, s) => { s.tone(220 * p, 0.18, { type: 'square', vol: 0.06, slide: 90 }); s.noise(0.15, { vol: 0.22, freq: 900, q: 0.8 }); s.tone(1500 * p, 0.06, { type: 'triangle', vol: 0.04 }); });
+    // 道具
+    D('power', (p, s) => { [660, 880, 1175].forEach((f, i) => s.tone(f * p, 0.12, { type: 'triangle', vol: 0.1, delay: i * 0.06 })); s.tone(1760 * p, 0.2, { vol: 0.05, delay: 0.18 }); });
+    D('shieldup', (p, s) => { s.tone(420 * p, 0.35, { vol: 0.11, slide: 1300 * p }); s.noise(0.3, { vol: 0.05, freq: 3000 * p, q: 3, delay: 0.05 }); });
+    D('repair', (p, s) => { for (let i = 0; i < 3; i++) s.noise(0.04, { vol: 0.12, freq: 2600, q: 4, delay: i * 0.08 }); [523, 659, 784].forEach((f, i) => s.tone(f * p, 0.14, { type: 'triangle', vol: 0.1, delay: 0.24 + i * 0.06 })); });
+    D('speed', (p, s) => { s.tone(200 * p, 0.35, { type: 'sawtooth', vol: 0.05, slide: 700 * p }); s.noise(0.3, { vol: 0.08, freq: 600, sweep: 2400, q: 1.5 }); });
+    // 空襲：飛機呼嘯、炸彈下墜哨音
+    D('plane', (p, s) => { s.noise(1.8, { vol: 0.2, freq: 400, sweep: 1500, q: 1.2 }); s.tone(110, 1.6, { type: 'sawtooth', vol: 0.035, slide: 160 }); s.tone(165, 1.6, { type: 'triangle', vol: 0.05, slide: 240 }); });
+    D('whistle', (p, s) => { s.tone(1500 * p, 0.8, { vol: 0.035, slide: 500 * p }); });
+    D('mine', (p, s) => { s.tone(520 * p, 0.07, { type: 'square', vol: 0.06 }); s.tone(760 * p, 0.07, { type: 'square', vol: 0.06, delay: 0.08 }); s.noise(0.05, { vol: 0.08, freq: 700, type: 'lowpass', delay: 0.02 }); });
+    D('beep', (p, s) => { s.tone(330, 0.08, { type: 'square', vol: 0.05 }); s.tone(262, 0.12, { type: 'square', vol: 0.05, delay: 0.08 }); });
+    D('spawn', (p, s) => { s.tone(260 * p, 0.35, { vol: 0.08, slide: 900 * p }); s.noise(0.3, { vol: 0.05, freq: 1200 * p, sweep: 3600, q: 3 }); });
+    D('respawn', (p, s) => { s.tone(330, 0.3, { type: 'triangle', vol: 0.09, slide: 990 }); s.tone(660, 0.25, { vol: 0.06, delay: 0.15, slide: 1320 }); });
+    D('coin', (p, s) => { s.tone(988 * p, 0.07, { type: 'square', vol: 0.06 }); s.tone(1319 * p, 0.18, { type: 'square', vol: 0.06, delay: 0.07 }); });
+    D('capture', (p, s) => { [523, 659, 784, 1047].forEach((f, i) => s.tone(f, 0.18, { type: 'triangle', vol: 0.13, delay: i * 0.09 })); s.noise(0.3, { vol: 0.06, freq: 3000, q: 2, delay: 0.3 }); });
+    D('click', (p, s) => { s.tone(880 * p, 0.06, { type: 'triangle', vol: 0.15 }); s.noise(0.02, { vol: 0.08, freq: 2400, q: 3 }); });
+    D('deny', (p, s) => { s.tone(300, 0.12, { type: 'square', vol: 0.06, slide: 240 }); s.tone(225, 0.18, { type: 'square', vol: 0.06, delay: 0.11, slide: 180 }); });
+    // 號角：旗堡被攻擊、新的一波
+    D('alarm', (p, s) => { s.tone(440, 0.22, { type: 'sawtooth', vol: 0.04 }); s.tone(440, 0.22, { type: 'triangle', vol: 0.08 }); s.tone(587, 0.4, { type: 'sawtooth', vol: 0.04, delay: 0.2 }); s.tone(587, 0.4, { type: 'triangle', vol: 0.08, delay: 0.2 }); });
+    // 頭目出現：三聲警報＋低音
+    D('bosswarn', (p, s) => { for (let i = 0; i < 3; i++) { s.tone(392, 0.26, { type: 'square', vol: 0.045, slide: 523, delay: i * 0.36 }); s.tone(98, 0.3, { type: 'triangle', vol: 0.14, delay: i * 0.36 }); } });
+    D('star', (p, s) => { s.tone(784 * p, 0.22, { type: 'triangle', vol: 0.13 }); s.tone(1568 * p, 0.3, { vol: 0.05, delay: 0.03 }); });
+  }
+  // 持續的聲音：引擎、砲塔轉動
+  let eng = null, tur = null, setT = 0, lastTang = 0;
+  function stopLoops() { if (eng) { eng.stop(); eng = null; } if (tur) { tur.stop(); tur = null; } }
   return {
-    unlock() { A(); },
-    shoot() { if (!can('shoot', 45)) return; noise(0.14, 0.32, 2200, 'lowpass', 280); n(170, 0.1, 'square', 0.07, 0, 60); },
-    eshoot(d) { if (!can('eshoot', 70)) return; noise(0.12, 0.16 * (d || 1), 1500, 'lowpass', 250); },
-    snipe() { if (!can('snipe', 80)) return; noise(0.3, 0.3, 4000, 'highpass', 900); n(1200, 0.18, 'sawtooth', 0.05, 0, 200); },
-    hitMetal() { if (!can('hm', 50)) return; n(1400, 0.06, 'square', 0.05, 0, 700); noise(0.06, 0.15, 3500, 'bandpass', 0, 0, 2); },
-    hurt() { if (!can('hurt', 80)) return; n(220, 0.18, 'square', 0.1, 0, 90); noise(0.15, 0.3, 900); },
-    brick() { if (!can('br', 50)) return; noise(0.22, 0.32, 800, 'lowpass', 180); },
-    crack() { if (!can('cr', 50)) return; noise(0.08, 0.2, 1800, 'bandpass', 0, 0, 1.5); },
-    wood() { if (!can('wd', 60)) return; noise(0.16, 0.3, 1500, 'bandpass', 500, 0, 1.4); n(240, 0.08, 'triangle', 0.1); },
-    boom(big) { if (!can('boom', 60)) return; noise(big ? 1.0 : 0.55, big ? 0.6 : 0.42, big ? 1000 : 1400, 'lowpass', 60); n(big ? 85 : 120, big ? 0.7 : 0.38, 'sine', 0.32, 0, 30); },
-    ric() { if (!can('ric', 60)) return; n(2100, 0.14, 'sine', 0.07, 0, 3400); },
-    power() { KG.sound('sparkle'); n(660, 0.1, 'triangle', 0.12); n(990, 0.16, 'triangle', 0.12, 0.08); },
-    whistle() { if (!can('wh', 120)) return; n(1500, 0.8, 'sine', 0.035, 0, 500); },
-    plane() { noise(1.8, 0.22, 400, 'bandpass', 1500, 0, 1.2); n(110, 1.6, 'sawtooth', 0.04, 0, 160); },
-    mine() { n(520, 0.07, 'square', 0.07); n(760, 0.07, 'square', 0.07, 0.08); },
-    beep() { if (!can('beep', 150)) return; n(1600, 0.05, 'square', 0.04); },
-    spawn() { if (!can('sp', 200)) return; n(260, 0.35, 'sine', 0.09, 0, 900); },
-    coin() { if (!can('coin', 60)) return; n(988, 0.07, 'square', 0.07); n(1319, 0.18, 'square', 0.07, 0.07); },
-    capture() { [523, 659, 784, 1047].forEach((f, i) => n(f, 0.18, 'triangle', 0.16, i * 0.09)); },
-    click() { n(880, 0.06, 'sine', 0.14); },
-    alarm() { if (!can('al', 900)) return; n(880, 0.15, 'square', 0.05); n(660, 0.15, 'square', 0.05, 0.16); }
+    on: () => on, setOn(v) { on = !!v; KG.store.set(SLUG + ':sfx', on); if (!on) stopLoops(); },
+    unlock() {},
+    play,
+    /** 每格呼叫：玩家坦克在場上時開引擎和砲塔聲，依速度、轉速調整 */
+    loops(active, dt) {
+      if (!active || !on || !S || !player.alive) { stopLoops(); lastTang = player ? player.tang : 0; return; }
+      if (!eng) { eng = S.loop('engine'); setT = 0; }
+      if (!tur) tur = S.loop('hum');
+      const ts = Math.abs(angDiff(player.tang, lastTang)) / Math.max(0.001, dt); lastTang = player.tang;
+      setT -= dt; if (setT > 0) return; setT = 0.08;
+      const sp = clamp(Math.hypot(player.vx || 0, player.vy || 0) / (player.speed * 1.45), 0, 1);
+      eng.set(0.08 + sp * 0.55, 0.06 + sp * 0.05);
+      const tk = clamp(ts / 6, 0, 1);
+      tur.set(0.55 + tk * 0.35, tk > 0.05 ? 0.035 * tk : 0.0001);
+    },
+    stopLoops,
+    shoot(x, y, triple) { play(triple ? 'tb_triple' : 'tb_shot', 90, x, y); },
+    eshoot(d, x, y) { play((d || 1) >= 1.6 ? 'tb_boss' : 'tb_eshot', 70, x, y, 0.75 * Math.min(1.3, d || 1), (d || 1) > 1.2 ? 0.85 : 1); },
+    snipe(x, y) { play('tb_snipe', 80, x, y); },
+    hitMetal(x, y) { play('tb_clang', 50, x, y); },
+    hurt() { play('tb_hurt', 80); },
+    brick(x, y) { play('tb_brick', 50, x, y); },
+    crack(x, y) { play('tb_crack', 50, x, y); },
+    wood(x, y) { play('tb_wood', 60, x, y); },
+    boom(big, x, y) { play(big ? 'tb_boomL' : 'tb_boom', 60, x, y); },
+    ric(x, y) { play('tb_ric', 60, x, y); },
+    power(k) { play(k === 'shield' ? 'tb_shieldup' : k === 'repair' ? 'tb_repair' : k === 'speed' ? 'tb_speed' : 'tb_power', 60, null, null, 1, k === 'air' ? 0.8 : k === 'mines' ? 0.9 : 1); },
+    whistle(x, y) { play('tb_whistle', 120, x, y); },
+    plane() { play('tb_plane', 300); },
+    mine() { play('tb_mine', 80); },
+    beep() { play('tb_beep', 150); },
+    spawn(x, y) { play('tb_spawn', 200, x, y); },
+    respawn() { play('tb_respawn', 200); },
+    coin() { play('tb_coin', 60); },
+    capture() { play('tb_capture', 300); },
+    click() { play('tb_click', 40); },
+    deny() { play('tb_deny', 120); },
+    alarm() { play('tb_alarm', 900); },
+    bossWarn() { play('tb_bosswarn', 1500); },
+    star(i) { play('tb_star', 0, null, null, 1, [1, 1.26, 1.5][i] || 1, true); }
   };
 })();
 
-/* ---------- 背景音樂（用 KG.note 合成） ---------- */
-let userActed = false;
-window.addEventListener('pointerdown', () => { userActed = true; Sfx.unlock(); }, { capture: true });
-window.addEventListener('keydown', () => { userActed = true; Sfx.unlock(); }, { capture: true });
-const NOTE_IDX = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
-function nf(name) {
-  const m = /^([A-G])(#|b)?(\d)$/.exec(name);
-  if (!m) return 0;
-  const n = NOTE_IDX[m[1]] + (m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0) + (parseInt(m[3], 10) + 1) * 12;
-  return 440 * Math.pow(2, (n - 69) / 12);
-}
+/* ---------- 背景音樂（kg-music.js）：標題＝閱兵進行曲（Bb 大調 112）、戰鬥＝鼓號隊放克（F# 小調 100） ---------- */
+//SONGS
+const MENU_MEL = [
+  'Bb4 - - F4 Bb4 - D5 -', 'C5 - - A4 F4 - C5 -', 'D5 - - Bb4 D5 - F5 -', 'G5 - F5 - Eb5 - D5 -',
+  'F5 - - D5 Bb4 - D5 -', 'G5 - F5 - D5 - Bb4 -', 'C5 - E5 - G5 - Bb4 -', 'A4 - C5 - F5 - - .'
+];
+const SONG_MENU = {
+  bpm: 112, vol: 0.37,
+  chords: ['Bb', 'F', 'Bb', 'Eb', 'Bb', 'Gm', 'C7', 'F'],
+  tracks: [
+    { inst: 'kick', pat: 'x.......x.......', vol: 0.55 },
+    { inst: 'snare', pat: ['x..xx.x.x..xx.x.', 'x..xx.x.x.xxxxxx'], vol: 0.3 },
+    { inst: 'crash', pat: ['x...............', '................', '................', '................'], vol: 0.3 },
+    { inst: 'sub', chord: 'R...5...R...5...', vol: 0.6 },
+    { inst: 'strings', chord: 'hold', vol: 0.35 },
+    { inst: 'brass', seq: MENU_MEL, vol: 0.62 },
+    { inst: 'bell', seq: MENU_MEL, vol: 0.45 }
+  ]
+};
+const BATTLE_MEL = [
+  'F#4 . . A4 . . C#5 . B4 . A4 . F#4 . . .', 'A4 . . C#5 . . E5 . C#5 . B4 . A4 . . .',
+  'D5 . . F#5 . . A5 . F#5 . E5 . D5 . . .', 'E5 . . G#4 . . B4 . E5 . . . D5 . C#5 .',
+  'C#5 . . F#5 . . E5 . C#5 . A4 . F#4 . . .', 'B4 . . D5 . . F#5 . E5 . D5 . B4 . . .',
+  'A4 . . D5 . . F#5 . A5 . F#5 . D5 . . .', 'G#4 . . C#5 . . F5 . G#4 . . . C#5 . . .'
+];
+const HEAVY_MEL = ['C#5 - - - A4 - - -', 'C#5 - - - E5 - - -', 'D5 - - - F#5 - - -', 'E5 - - - B4 - - -',
+  'C#5 - - - A4 - - -', 'D5 - - - B4 - - -', 'F#5 - - - D5 - - -', 'F5 - - - C#5 - - -'];
+const ALARM_MEL = ['F#5 . C#5 . F#5 . C#5 .', 'F#5 . C#5 . F#5 . C#5 .', 'D5 . A4 . D5 . A4 .', 'E5 . B4 . E5 . B4 .',
+  'F#5 . C#5 . F#5 . C#5 .', 'D5 . B4 . D5 . B4 .', 'D5 . A4 . D5 . A4 .', 'C#5 . G#4 . C#5 . G#4 .'];
+const SONG_BATTLE = {
+  bpm: 100, vol: 0.24,
+  chords: ['F#m', 'F#m', 'D', 'E', 'F#m', 'Bm', 'D', 'C#'],
+  layers: { heavy: false, danger: false },
+  tracks: [
+    { inst: 'kick', pat: 'x..x..x...x..x..', vol: 0.6 },
+    { inst: 'snare', pat: '....x.......x...', vol: 0.45 },
+    { inst: 'clap', pat: '....x.......x...', vol: 0.22 },
+    { inst: 'rim', pat: 'x.xx.x.xx.x.x.x.', vol: 0.25 },
+    { inst: 'tom', pat: ['................', '..........x.x...', '................', '........x.x.xxxx'], pitch: 150, vol: 0.45 },
+    { inst: 'bass', chord: 'R..R..R.5..5.8..', vol: 0.5 },
+    { inst: 'organ', chord: '....R.......R...', oct: 4, vol: 0.3 },
+    { inst: 'organ', chord: '....3.......3...', oct: 4, vol: 0.25 },
+    { inst: 'organ', chord: '....5.......5...', oct: 4, vol: 0.25 },
+    { inst: 'brass', seq: BATTLE_MEL, vol: 0.62 },
+    { inst: 'pluck', seq: BATTLE_MEL, vol: 0.4 },
+    { inst: 'brass', seq: HEAVY_MEL, layer: 'heavy', vol: 0.4 },
+    { inst: 'crash', pat: ['x...............', '................'], layer: 'heavy', vol: 0.35 },
+    { inst: 'ohat', pat: '..x...x...x...x.', layer: 'heavy', vol: 0.3 },
+    { inst: 'strings', chord: 'hold', layer: 'danger', vol: 0.45 },
+    { inst: 'bell', seq: ALARM_MEL, layer: 'danger', vol: 0.3 }
+  ]
+};
+//END SONGS
 const Music = {
-  on: false, song: null, step: 0, next: 0,
+  next: 0, cur: null, chk: 0, heavy: false, danger: false, fast: false,
   start(song) {
-    if (this.song && this.song.src === song && this.on) return;
-    this.song = { src: song, bpm: song.bpm, mel: song.mel.trim().split(/\s+/), bass: (song.bass || '').trim().split(/\s+/), vol: song.vol || 1, wave: song.wave || 'triangle' };
-    this.on = true; this.step = 0; this.next = 0.15;
+    const M = KG.music; if (!M) return;
+    if (this.cur === song && M.current() === song && M.isPlaying()) return;
+    this.cur = song; M.play(song); M.setVolume(song.vol || 0.24);
+    this.heavy = this.danger = this.fast = false; M.setLayer('heavy', false); M.setLayer('danger', false); M.setTempo(1);
   },
-  stop() { this.on = false; },
+  stop(f) { this.cur = null; if (KG.music) KG.music.stop(f || 0.3); },
+  /** 戰鬥中：頭目或很多敵人 → heavy；血少、旗堡／補給車危險 → danger；任務快完成 → 加快 */
   update(dt) {
-    if (!this.on || !this.song || !userActed) return;
-    this.next -= dt;
-    if (this.next < -0.3) this.next = 0;
-    const s = this.song, beat = 60 / s.bpm / 2;
-    while (this.next <= 0) {
-      if (!KG.isMuted() && !document.hidden) {
-        const i = this.step % s.mel.length, tok = s.mel[i];
-        if (tok !== '-' && tok !== '.') {
-          let len = 1;
-          while (s.mel[(i + len) % s.mel.length] === '-' && len < 8) len++;
-          const f = nf(tok);
-          KG.note(f, beat * len * 0.9, s.wave, 0.045 * s.vol);
-          KG.note(f * 2, beat * len * 0.4, 'sine', 0.012 * s.vol);
-        }
-        if (s.bass.length > 1) {
-          const bi = this.step % s.bass.length, bt = s.bass[bi];
-          if (bt !== '-' && bt !== '.') KG.note(nf(bt), beat * 1.6, 'triangle', 0.065 * s.vol);
-        }
-        if (this.step % 4 === 2) KG.note(90, 0.06, 'square', 0.025 * s.vol, 0, 50);
-      }
-      this.step++;
-      this.next += beat;
-    }
+    if (this.cur !== SONG_BATTLE || scene !== 'play' || !gst || !LV || !KG.music) return;
+    this.chk -= dt; if (this.chk > 0) return; this.chk = 0.4;
+    const M = KG.music;
+    let n = 0, boss = false; for (const e of enemies) if (e.alive) { n++; if (e.kind === 'boss') boss = true; }
+    const hv = !gst.over && (boss || n >= 5);
+    const dg = !gst.over && ((player.alive && player.hp <= Math.max(1, player.maxHp * 0.34)) || (hq && hq.alive && hq.hp <= hq.maxHp * 0.4) || (convoy && convoy.alive && convoy.hp <= convoy.maxHp * 0.4) || gst.lives <= 1);
+    const fs = !gst.over && objProgress().p >= 0.85;
+    if (hv !== this.heavy) { this.heavy = hv; M.setLayer('heavy', hv); }
+    if (dg !== this.danger) { this.danger = dg; M.setLayer('danger', dg); }
+    if (fs !== this.fast) { this.fast = fs; M.setTempo(fs ? 1.06 : 1); }
   }
 };
-const SONG_MENU = {
-  bpm: 112, wave: 'triangle',
-  mel: 'G4 . C5 - E5 - G5 - E5 . C5 . D5 - - . F5 . D5 - B4 - G4 - A4 . B4 . C5 - - . G4 . C5 - E5 - G5 - A5 . G5 . E5 - - . F5 . E5 - D5 - B4 - C5 - - - . . . .',
-  bass: 'C3 . G2 . C3 . G2 . G2 . D3 . G2 . D3 . C3 . G2 . C3 . G2 . F2 . C3 . G2 . C3 . G2 .'
-};
-const SONG_BATTLE = {
-  bpm: 136, wave: 'square', vol: 0.75,
-  mel: 'C5 . C5 G4 C5 - Eb5 - D5 . C5 . Bb4 - G4 - C5 . C5 G4 C5 - Eb5 - F5 . Eb5 . D5 - - . Eb5 . Eb5 D5 Eb5 - G5 - F5 . Eb5 . D5 - Bb4 - C5 . D5 . Eb5 . D5 . C5 - - - . . . .',
-  bass: 'C3 C3 G2 G2 C3 C3 G2 G2 Ab2 Ab2 Eb2 Eb2 G2 G2 D3 D3 C3 C3 G2 G2 C3 C3 G2 G2 Ab2 Ab2 Bb2 Bb2 C3 C3 G2 G2'
-};
+/** 結算短樂句（音效關掉時不播） */
+function playJingle(kind) {
+  const M = KG.music;
+  if (!M || !Sfx.on()) return;
+  if (kind === 'win') {
+    const n = [['F4', 1], ['Bb4', 1], ['D5', 1], ['F5', 2], ['D5', 1], ['F5', 1], ['Bb5+D5', 4]];
+    M.jingle({ bpm: 150, inst: 'brass', vol: 0.34, notes: n, bass: [['Bb2', 4, 0], ['F2', 2, 4], ['Bb2', 5, 6]], bassVol: 0.18 });
+    M.jingle({ bpm: 150, inst: 'bell', vol: 0.3, notes: n });
+  } else if (kind === 'record') {
+    const n = [['Bb4', 1], ['D5', 1], ['F5', 1], ['Bb5', 2], ['A5', 1], ['Bb5+F5', 4]];
+    M.jingle({ bpm: 160, inst: 'brass', vol: 0.34, notes: n, bass: [['Bb2', 6, 0], ['Bb2', 4, 6]], bassVol: 0.18 });
+    M.jingle({ bpm: 160, inst: 'bell', vol: 0.32, notes: n });
+  } else {
+    const n = [['C#5', 1], ['A4', 1], ['F#4', 2], ['E#4', 1], ['G#4', 1], ['F#4', 4]];
+    M.jingle({ bpm: 110, inst: 'brass', vol: 0.28, notes: n, bass: [['F#2', 4, 0], ['C#2', 2, 4], ['F#2', 4, 6]], bassVol: 0.18 });
+    M.jingle({ bpm: 110, inst: 'pluck', vol: 0.24, notes: n });
+  }
+}
 
 /* =====================================================================
  * 資料：坦克種類、關卡、升級
@@ -1363,14 +1454,14 @@ function damageTile(idx, dmg, team) {
     const hp = LV.thp[idx] - Math.max(1, Math.round(dmg));
     if (hp <= 0) {
       LV.tiles[idx] = GR; LV.thp[idx] = 0;
-      if (t === BR) { debris(cx, cy, 12, ['#d8693a', '#b9532c', '#ecd7b4', '#8a3a18'], 120, 4); puff(cx, cy, 5, 26, false, 30); Sfx.brick(); }
-      else { debris(cx, cy, 12, ['#e3b06c', '#b07a3a', '#7a4d1e'], 130, 4); puff(cx, cy, 3, 20, false, 25); Sfx.wood(); if (LV.crate[idx]) dropPower(cx, cy); }
+      if (t === BR) { debris(cx, cy, 12, ['#d8693a', '#b9532c', '#ecd7b4', '#8a3a18'], 120, 4); puff(cx, cy, 5, 26, false, 30); Sfx.brick(cx, cy); }
+      else { debris(cx, cy, 12, ['#e3b06c', '#b07a3a', '#7a4d1e'], 130, 4); puff(cx, cy, 3, 20, false, 25); Sfx.wood(cx, cy); if (LV.crate[idx]) dropPower(cx, cy); }
       addShake(0.12);
       repaintTile(tx, ty);
       if (AS) AS.gen++;
     } else {
       LV.thp[idx] = hp; repaintTile(tx, ty);
-      debris(cx, cy, 4, t === BR ? ['#d8693a', '#ecd7b4'] : ['#e3b06c', '#7a4d1e'], 80, 3); Sfx.crack();
+      debris(cx, cy, 4, t === BR ? ['#d8693a', '#ecd7b4'] : ['#e3b06c', '#7a4d1e'], 80, 3); Sfx.crack(cx, cy);
     }
     return true;
   }
@@ -1382,10 +1473,10 @@ function damageHQ(dmg) {
   if (godMode === 'all') return;
   hq.hp -= dmg; hq.hitT = 0.2;
   sparks(hq.x, hq.y, 6, null, 0, 160);
-  Sfx.hitMetal();
+  Sfx.hitMetal(hq.x, hq.y);
   if (gst.hqWarnT <= 0) { gst.hqWarnT = 4; flashMsg('旗堡遭受攻擊！'); Sfx.alarm(); }
   if (hq.hp <= 0) {
-    hq.alive = false; explosion(hq.x, hq.y, true); explosion(hq.x + 10, hq.y - 8, false); addShake(0.7); Sfx.boom(true);
+    hq.alive = false; explosion(hq.x, hq.y, true); explosion(hq.x + 10, hq.y - 8, false); addShake(0.7); Sfx.boom(true, hq.x, hq.y);
     endGame(false, '旗堡被攻破了！');
   }
 }
@@ -1393,17 +1484,17 @@ function damageTank(t, dmg, srcX, srcY, team) {
   if (!t.alive || t.spawnT > 0) return;
   if (t.isTruck) {
     if (godMode === 'all') return;
-    t.hp -= dmg; t.hitT = 0.15; Sfx.hitMetal(); sparks(t.x, t.y, 5, null, 0, 140);
-    if (t.hp <= 0) { t.alive = false; explosion(t.x, t.y, true); addShake(0.6); Sfx.boom(true); endGame(false, '補給車被摧毀了！'); }
+    t.hp -= dmg; t.hitT = 0.15; Sfx.hitMetal(t.x, t.y); sparks(t.x, t.y, 5, null, 0, 140);
+    if (t.hp <= 0) { t.alive = false; explosion(t.x, t.y, true); addShake(0.6); Sfx.boom(true, t.x, t.y); endGame(false, '補給車被摧毀了！'); }
     return;
   }
-  if (t.shieldT > 0) { sparks(t.x, t.y, 6, Math.atan2(t.y - srcY, t.x - srcX), 1.6, 160, '#bff0ff'); Sfx.ric(); return; }
+  if (t.shieldT > 0) { sparks(t.x, t.y, 6, Math.atan2(t.y - srcY, t.x - srcX), 1.6, 160, '#bff0ff'); Sfx.ric(t.x, t.y); return; }
   if (t === player && godMode) { t.hitT = 0.08; return; }
   t.hp -= dmg; t.hitT = 0.14;
   const a = Math.atan2(t.y - srcY, t.x - srcX);
   sparks(t.x - Math.cos(a) * t.r * 0.6, t.y - Math.sin(a) * t.r * 0.6, 7, a + Math.PI, 1.8, 200);
   if (t === player) { addShake(0.28); Sfx.hurt(); KG.vibrate(30); }
-  else Sfx.hitMetal();
+  else Sfx.hitMetal(t.x, t.y);
   if (t.hp <= 0) killTank(t);
 }
 function killTank(t) {
@@ -1412,7 +1503,7 @@ function killTank(t) {
   debris(t.x, t.y, t.kind === 'boss' ? 24 : 12, [KIND[t.kind].col[1], KIND[t.kind].col[2], '#2a2e33', '#59616a'], 170, 4.5);
   decalScorch(t.x, t.y, t.r * 2.2);
   addShake(t.kind === 'boss' ? 0.8 : t === player ? 0.6 : 0.3);
-  Sfx.boom(t.kind === 'boss' || t === player);
+  Sfx.boom(t.kind === 'boss' || t.kind === 'heavy' || t === player, t.x, t.y);
   if (t === player) {
     gst.deaths++; gst.lives--;
     if (godMode) { gst.lives++; }
@@ -1449,7 +1540,7 @@ function applyPower(p) {
   else if (k === 'repair') player.hp = Math.min(player.maxHp, player.hp + Math.ceil(player.maxHp * 0.5));
   else if (k === 'mines') player.mines = Math.min(9, player.mines + 3);
   else if (k === 'air') player.air = Math.min(5, player.air + 1);
-  Sfx.power();
+  Sfx.power(k);
   floatText(p.x, p.y - 12, PWR[k].name + '！', '#ffffff', 15);
   addP(4, p.x, p.y, 0, 0, 0.4, 6, { col: PWR[k].col, grow: 80 });
   sparks(p.x, p.y, 10, null, 0, 140, '#fff6c0');
@@ -1486,7 +1577,7 @@ function blast(x, y, rad, dmg, team, big) {
   explosion(x, y, big || rad > 60);
   decalScorch(x, y, rad * 0.9);
   addShake(big ? 0.45 : 0.3);
-  Sfx.boom(big);
+  Sfx.boom(big, x, y);
   allTanks(t => {
     if (t.team === team && !t.isTruck) return;
     if (t.isTruck && team === 0) return;
@@ -1517,7 +1608,7 @@ function updateShells(dt) {
     const p = Math.min(1, s.t / s.dur);
     s.x = lerp(s.x0, s.x1, p); s.y = lerp(s.y0, s.y1, p);
     s.h = s.kind === 1 ? (1 - p) * 120 : Math.sin(p * Math.PI) * (40 + Math.hypot(s.x1 - s.x0, s.y1 - s.y0) * 0.35);
-    if (!s.whistled && p > 0.45) { s.whistled = true; if (s.kind === 0) Sfx.whistle(); }
+    if (!s.whistled && p > 0.45) { s.whistled = true; if (s.kind === 0) Sfx.whistle(s.x, s.y); }
     if (p >= 1) { shells.splice(i, 1); blast(s.x1, s.y1, s.rad, s.dmg, s.team, s.kind === 1); }
   }
 }
@@ -1608,7 +1699,7 @@ function playerFire(ang) {
   p.firedT = 1.0; gst.shots = (gst.shots || 0) + 1;
   fireFx(p, mx, my, false);
   addShake(0.06);
-  Sfx.shoot();
+  Sfx.shoot(mx, my, p.tripleT > 0);
 }
 function nearestVisibleEnemy(maxD) {
   let best = null, bd = maxD;
@@ -1627,7 +1718,7 @@ function updatePlayer(dt) {
     if (p.respawnT <= 0 && gst.lives > 0) {
       p.alive = true; p.hp = p.maxHp; p.x = LV.P[0] * T + T / 2; p.y = LV.P[1] * T + T / 2; p.mvx = p.mvy = 0;
       p.shieldT = 3; p.ang = p.tang = -Math.PI / 2; resolveTiles(p);
-      addP(4, p.x, p.y, 0, 0, 0.5, 8, { col: '#bff0ff', grow: 90 }); Sfx.spawn();
+      addP(4, p.x, p.y, 0, 0, 0.5, 8, { col: '#bff0ff', grow: 90 }); Sfx.respawn();
     }
     return;
   }
@@ -1664,7 +1755,8 @@ function addEnemy(kind, x, y, anim) {
   if (obj === 'defend') e.focus = (kind === 'heavy' || kind === 'boss' || Math.random() < 0.5) ? 'hq' : 'player';
   else if (obj === 'escort') e.focus = Math.random() < 0.45 ? 'convoy' : 'player';
   else e.focus = 'player';
-  if (anim) { Sfx.spawn(); addP(4, x, y, 0, 0, 0.9, 30, { col: '#ff8a6a', grow: -30 }); }
+  if (anim) { Sfx.spawn(x, y); addP(4, x, y, 0, 0, 0.9, 30, { col: '#ff8a6a', grow: -30 }); }
+  if (kind === 'boss' && anim && gst) { Sfx.bossWarn(); flashMsg('頭目坦克出現了！'); }
   enemies.push(e);
   return e;
 }
@@ -1756,13 +1848,13 @@ function enemyFire(e, ang) {
       for (let i = 0; i < (enraged ? 4 : 3); i++) addShell(e.x, e.y, tg.x + (Math.random() - 0.5) * T * 3, tg.y + (Math.random() - 0.5) * T * 3, 1.3, 1, 2, 44, 0, i * 0.25);
     }
     e.cd = e.reload * (enraged ? 0.75 : 1);
-    const [mx, my] = muzzle(e); fireFx(e, mx, my, true); Sfx.eshoot(1.6);
+    const [mx, my] = muzzle(e); fireFx(e, mx, my, true); Sfx.eshoot(1.6, e.x, e.y);
     return;
   }
   const [mx, my] = muzzle(e);
   const sp = (Math.random() - 0.5) * 2 * e.spread;
-  if (e.kind === 'sniper') { addBullet(mx, my, ang + sp * 0.3, K.bs, 1, K.dmg, 2, e); Sfx.snipe(); }
-  else { addBullet(mx, my, ang + sp, K.bs, 1, K.dmg, 1, e); Sfx.eshoot(e.kind === 'heavy' ? 1.4 : 1); }
+  if (e.kind === 'sniper') { addBullet(mx, my, ang + sp * 0.3, K.bs, 1, K.dmg, 2, e); Sfx.snipe(e.x, e.y); }
+  else { addBullet(mx, my, ang + sp, K.bs, 1, K.dmg, 1, e); Sfx.eshoot(e.kind === 'heavy' ? 1.4 : 1, e.x, e.y); }
   e.cd = e.reload * (0.85 + Math.random() * 0.3);
   fireFx(e, mx, my, e.kind === 'heavy');
 }
@@ -1827,7 +1919,7 @@ function updateEnemy(e, dt) {
         const [mx2, my2] = muzzle(e);
         addShell(mx2, my2, lx, ly, fl, 1, 2, 46, 0, 0);
         e.cd = e.reload * (0.85 + Math.random() * 0.3);
-        fireFx(e, mx2, my2, true); Sfx.eshoot(1.5);
+        fireFx(e, mx2, my2, true); Sfx.eshoot(1.5, e.x, e.y);
       }
     }
   } else if (shootT) {
@@ -2121,10 +2213,10 @@ function updateBullets(dt) {
           if (fx) b.vx = -b.vx; if (fy) b.vy = -b.vy;
           if (!fx && !fy) { b.vx = -b.vx; b.vy = -b.vy; }
           b.x = px; b.y = py; b.bounce--;
-          sparks(px, py, 5, Math.atan2(b.vy, b.vx), 1.2, 150, '#e8f6ff'); Sfx.ric();
+          sparks(px, py, 5, Math.atan2(b.vy, b.vx), 1.2, 150, '#e8f6ff'); Sfx.ric(px, py);
           continue;
         }
-        if (t === ST) { sparks(px, py, 5, Math.atan2(-b.vy, -b.vx), 1.4, 150, '#e8f6ff'); Sfx.hitMetal(); }
+        if (t === ST) { sparks(px, py, 5, Math.atan2(-b.vy, -b.vx), 1.4, 150, '#e8f6ff'); Sfx.hitMetal(px, py); }
         else if (t === HQT && b.team === 0) { sparks(px, py, 3, null, 0, 90); }
         else { damageTile(idx, b.dmg, b.team); sparks(px, py, 4, Math.atan2(-b.vy, -b.vx), 1.4, 120, '#ffcf8a'); }
         dead = true; break;
@@ -2800,9 +2892,12 @@ function drawTitle() {
   if (landscape) {
     const w2 = Math.min(220 * U, (W - 80) / 3), y = Math.min(H - bh - 30, ly + 80 * U);
     items.forEach((it, i) => button(it.id, W / 2 - (w2 * 1.5 + 12) + i * (w2 + 12), y, w2, bh, { label: it.label, icon: it.icon, color: it.color, sub: it.sub, onClick: it.cb, pulse: it.pulse, size: 22 * U }));
+    const tw = Math.min(300 * U, W - 60);
+    audioToggles(W / 2 - tw / 2, Math.min(H - 46 * U - 52 * U, y + bh + 22 * U), tw, 40 * U);
   } else {
     const y0 = Math.max(ly + 90 * U, H * 0.5);
     items.forEach((it, i) => button(it.id, W / 2 - bw / 2, y0 + i * (bh + 18 * U), bw, bh, { label: it.label, icon: it.icon, color: it.color, sub: it.sub, onClick: it.cb, pulse: it.pulse, size: 24 * U }));
+    audioToggles(W / 2 - bw / 2, Math.min(H - 46 * U - 52 * U, y0 + 3 * (bh + 18 * U) + 4 * U), bw, 42 * U);
   }
   coinPanel(W / 2, H - 46 * U);
 }
@@ -2871,9 +2966,9 @@ function buyUpg(k) {
   const lv = upg[k];
   if (lv >= UPG_MAX) return;
   const cost = UPG_COST[lv];
-  if (coins < cost) { KG.sound('wrong'); KG.toast('金幣不夠喔！去打幾關再來～'); return; }
+  if (coins < cost) { Sfx.deny(); KG.toast('金幣不夠喔！去打幾關再來～'); return; }
   addCoins(-cost); upg[k]++; Save.set('upg', upg);
-  KG.sound('correct'); Sfx.coin(); garageFx = 0.6;
+  Sfx.coin(); Sfx.power('repair'); garageFx = 0.6;
 }
 function drawGarage() {
   drawMenuBg(false);
@@ -2920,7 +3015,13 @@ let garageFrom = 'title';
 /* ---------- 結算畫面 ---------- */
 const Result = {
   on: false, t: 0, o: null, shown: 0, s: 0,
-  show(o) { this.on = true; this.t = 0; this.o = o; this.shown = 0; this.s = 0; tween(this, { s: 1 }, 0.5, 'outBack'); if (o.won) { KG.sound('win'); KG.confetti(); } else KG.sound('lose'); },
+  show(o) {
+    this.on = true; this.t = 0; this.o = o; this.shown = 0; this.s = 0; tween(this, { s: 1 }, 0.5, 'outBack');
+    Music.stop(0.3); Sfx.stopLoops();
+    playJingle((o.newBest || (o.surv && o.score > 0 && o.score >= o.best)) ? 'record' : o.won ? 'win' : 'lose');
+    if (o.won) KG.confetti();
+    setTimeout(() => { if (this.on) Music.start(SONG_MENU); }, 3200);
+  },
   geom() { const pw = Math.min(W - 28, 420 * U), ph = Math.min(H - 60, 400 * U); return { x: (W - pw) / 2, y: (H - ph) / 2 + 14 * U, w: pw, h: ph }; },
   starPos(i) { const g = this.geom(); return [W / 2 + (i - 1) * g.w * 0.22, g.y + g.h * 0.24 - (i === 1 ? 10 * U : 0)]; },
   update(dt) {
@@ -2928,7 +3029,7 @@ const Result = {
     this.t += dt;
     while (this.shown < 3 && this.t > 0.6 + this.shown * 0.35) {
       if (this.shown < this.o.stars) {
-        KG.note(660 * Math.pow(1.26, this.shown), 0.25, 'triangle', 0.2);
+        Sfx.star(this.shown);
         const p = this.starPos(this.shown);
         uiBurst(p[0], p[1]);
       }
@@ -2998,7 +3099,7 @@ function updDrawUi(dt) {
 }
 function drawPause() {
   ctx.fillStyle = 'rgba(20,20,10,0.55)'; ctx.fillRect(0, 0, W, H);
-  const pw = Math.min(W - 28, 380 * U), ph = Math.min(H - 40, 330 * U), x = (W - pw) / 2, y = (H - ph) / 2;
+  const pw = Math.min(W - 28, 380 * U), ph = Math.min(H - 40, 390 * U), x = (W - pw) / 2, y = (H - ph) / 2;
   panel(x, y, pw, ph, '#5b3b20', 22 * U);
   txt('暫停', W / 2, y + 34 * U, 28 * U, '#3a2a14', { shadow: false });
   const d = (mode === 'survival' ? '' : '第 ' + (lvIdx + 1) + ' 關・') + OBJ_DESC[LV.def.obj];
@@ -3006,10 +3107,17 @@ function drawPause() {
   const help = usedTouch ? '左邊拖曳移動・右邊拖曳瞄準並連發・輕點右邊自動瞄準' : 'WASD 移動・滑鼠瞄準射擊・Q 地雷・E 空襲';
   txt(help, W / 2, y + 90 * U, fitSize(help, 12 * U, pw - 30, '700'), '#7a6a50', { shadow: false, weight: '700' });
   const bw = Math.min(220 * U, pw - 40), bh = 46 * U;
-  const by = y + 110 * U, sp = (ph - 120 * U - bh * 3) / 3 + bh;
+  const th = 40 * U, by = y + 110 * U, sp = (ph - 120 * U - bh * 3 - th) / 4 + bh;
   button('presume', W / 2 - bw / 2, by, bw, bh, { label: '繼續', icon: 'play', color: 'green', onClick: resumeGame });
   button('pretry', W / 2 - bw / 2, by + sp, bw, bh, { label: '重新開始', icon: 'replay', color: 'yellow', onClick: () => { paused = false; mode === 'survival' ? startSurvival() : startLevel(lvIdx); } });
   button('pquit', W / 2 - bw / 2, by + sp * 2, bw, bh, { label: mode === 'survival' ? '回主選單' : '選擇關卡', icon: 'menu', color: 'blue', onClick: () => { paused = false; mode === 'survival' ? goTitle() : goLevels(); } });
+  audioToggles(W / 2 - bw / 2, by + sp * 3, bw, th);
+}
+/** 音樂／音效開關（標題和暫停都有） */
+function audioToggles(x, y, w, h) {
+  const mOn = KG.music ? KG.music.isEnabled() : false, sOn = Sfx.on(), g = 10 * U, bw = (w - g) / 2, fs = Math.min(17 * U, bw / 5);
+  button('amus', x, y, bw, h, { label: '音樂 ' + (mOn ? '開' : '關'), color: mOn ? 'blue' : 'gray', size: fs, onClick: () => { if (KG.music) KG.music.setEnabled(!KG.music.isEnabled()); } });
+  button('asfx', x + bw + g, y, bw, h, { label: '音效 ' + (sOn ? '開' : '關'), color: sOn ? 'blue' : 'gray', size: fs, onClick: () => { Sfx.setOn(!Sfx.on()); Sfx.click(); } });
 }
 
 /* ---------- 流程 ---------- */
@@ -3025,11 +3133,12 @@ function enterPlay() {
   mouse.down = false; tapQueued = false; edgeAir = edgeMine = false;
   bot.path = null; bot.think = 0;
   Music.start(SONG_BATTLE);
+  if (enemies.some(e => e.kind === 'boss')) setTimeout(() => { if (scene === 'play' && !paused) Sfx.bossWarn(); }, 700);
 }
 function startLevel(i) { mode = 'campaign'; lvIdx = clamp(i, 0, LEVELS.length - 1); loadLevel(LEVELS[lvIdx]); enterPlay(); }
 function startSurvival() { mode = 'survival'; lvIdx = 0; loadLevel(SURV_MAP); enterPlay(); }
-function pauseGame() { if (scene !== 'play' || Result.on || !gst || gst.over) return; paused = true; for (const k in sticks) sticks[k].id = null; mouse.down = false; }
-function resumeGame() { paused = false; }
+function pauseGame() { if (scene !== 'play' || Result.on || !gst || gst.over) return; paused = true; for (const k in sticks) sticks[k].id = null; mouse.down = false; Sfx.stopLoops(); if (KG.music) KG.music.pause(); }
+function resumeGame() { paused = false; if (KG.music) KG.music.resume(); }
 function showResult() { const o = computeResult(); lastResult = o; Result.show(o); }
 let lastResult = null;
 document.addEventListener('visibilitychange', () => { if (document.hidden) { pauseGame(); Music.next = 0.2; } });
@@ -3068,6 +3177,7 @@ function frame(now) {
   if (frameN % 30 === 0) { const r = cv.getBoundingClientRect(); if (Math.abs(r.width - rectW) > 1 || Math.abs(r.height - rectH) > 1) resizeCanvas(); }
   governor(rdt);
   updateTweens(rdt); Music.update(rdt); updateShake(rdt);
+  Sfx.loops(scene === 'play' && !paused && !Result.on && gst && !gst.over, rdt);
   if (scene === 'play') {
     if (!paused && !Result.on) {
       acc += rdt; let n = 0;

@@ -113,6 +113,14 @@
   .newstk { display: flex; gap: 4px; justify-content: center; flex-wrap: wrap; margin: 4px 0; }
   .newstk canvas { width: 44px; height: 44px; }
   h3 { margin: 10px 0 6px; font-size: 18px; }
+  /* 音樂／音效開關 */
+  #tAudio { display: contents; }
+  .au-tg { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  .au-tg button { font-family: var(--kg-font); font-weight: 900; font-size: 15px; display: inline-flex; align-items: center; gap: 4px; min-height: 36px; padding: 4px 12px 4px 9px; border-radius: 999px; border: 3px solid #fff; background: #e6e1ea; color: #7d7484; box-shadow: 0 3px 0 rgba(74,59,82,0.15); cursor: pointer; white-space: nowrap; }
+  .au-tg button svg { width: 18px; height: 18px; flex: 0 0 auto; }
+  .au-tg button.on { background: #46b864; color: #fff; box-shadow: 0 3px 0 #2f8a48; }
+  .au-tg button:active { transform: translateY(2px); }
+  #pAudio .au-tg { margin: 0 0 12px; }
 </style>
 </head>
 <body data-screen="title">
@@ -127,7 +135,7 @@
     <button class="act" data-act="explore"><canvas data-ico="act_book"></canvas><span><b>認識縣市</b><small>美食、景點、特產</small><span class="st"></span></span></button>
     <button class="act" data-act="quiz"><canvas data-ico="act_quiz"></canvas><span><b>小測驗</b><small>地理考考你</small><span class="st"></span></span></button>
   </div>
-  <div class="trow"><button id="btnStickers" class="kg-btn yellow sm">貼紙簿</button><span class="pill" id="starTotal"></span></div>
+  <div class="trow"><button id="btnStickers" class="kg-btn yellow sm">貼紙簿</button><span class="pill" id="starTotal"></span><span id="tAudio"></span></div>
 </div>
 
 <div id="hud" class="ui s-game"><span class="pill" id="hudA"></span><span class="pill" id="hudB"></span></div>
@@ -168,6 +176,7 @@
 <div id="pauseOv" class="ov"><div class="card">
   <h2>休息一下</h2>
   <p>準備好再繼續喔！</p>
+  <div id="pAudio"></div>
   <div class="btns" style="flex-direction:column;align-items:center">
     <button class="kg-btn green" id="pResume">繼續</button>
     <button class="kg-btn yellow sm" id="pRestart">重新開始</button>
@@ -193,6 +202,7 @@
 </div></div>
 
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
 <script>
 'use strict';
 const SLUG = 'taiwan-map';
@@ -925,32 +935,160 @@ let shakeT = 0, shakeA = 0;
 function shake(a, t) { shakeA = a; shakeT = t; }
 
 /* ---------- 聲音、語音、音樂 ---------- */
-let audioOk = false;
-function say(text) {
-  if (!KG.isMuted() && window.speechSynthesis && window.SpeechSynthesisUtterance) KG.say(text, 0.9);
-  else KG.sound('sparkle'); // 沒有語音時用音效提示，名字一直顯示在畫面上
-}
-const NOTE = n => 440 * Math.pow(2, (n - 69) / 12);
-const Music = {
-  t: 0, i: 0, bpm: 104,
-  mel: [76, 79, 81, 79, 76, 74, 72, 74, 76, 76, 79, 76, 74, 72, 69, 0, 72, 74, 76, 79, 81, 79, 76, 74, 72, 74, 76, 74, 72, 69, 72, 0],
-  bass: [48, 45, 41, 43],
-  update(dt) {
-    if (!audioOk || KG.isMuted() || state.paused || document.hidden) return;
-    this.t += dt; const step = 60 / this.bpm / 2;
-    if (this.t > 1) this.t = step;
-    while (this.t >= step) {
-      this.t -= step;
-      const i = this.i++ % 32, n = this.mel[i];
-      if (n) KG.note(NOTE(n), step * 1.6, 'triangle', 0.045);
-      if (i % 8 === 0) KG.note(NOTE(this.bass[(i / 8) | 0]), step * 7, 'sine', 0.05);
-      if (i % 4 === 2) KG.note(NOTE(this.bass[(i / 8) | 0] + 19), step * 1.5, 'sine', 0.022);
-    }
+/* ===================== 聲音：KG.music 背景音樂 + KG.sfx 音效 ===================== */
+const AU = (function () {
+  const M = KG.music, S = KG.sfx;
+  const KEY = 'taiwan-map:sfx';
+  let sfxOn = KG.store.get(KEY, true) !== false;
+  const last = Object.create(null);
+  const PO = { vol: 1, pitch: 1, pan: 0 };
+  let base = 0.3, ducked = false, duckIv = 0, sayAt = 0;
+  function applyVol() { if (M) M.setVolume(ducked ? base * 0.3 : base); }
+  function can(name, gap) {
+    if (!sfxOn || !S || KG.isMuted()) return false;
+    const now = performance.now();
+    if (now - (last[name] || -1e9) < (gap == null ? 40 : gap)) return false;
+    last[name] = now;
+    return true;
+  }
+  /** 播放音效：40 ms 內同一種只播一次，音高隨機 ±4%（exact:true 不加隨機） */
+  function sfx(name, o, gap) {
+    if (!can(name, gap)) return;
+    PO.vol = o && o.vol != null ? o.vol : 1;
+    PO.pitch = (o && o.pitch || 1) * (o && o.exact ? 1 : 0.96 + Math.random() * 0.08);
+    PO.pan = o && o.pan || 0;
+    S.play(name, PO);
+  }
+  /** 依畫面 x 座標算左右聲道 */
+  function pan(x) { const w = innerWidth || 1; return Math.max(-0.6, Math.min(0.6, (x / w) * 1.2 - 0.6)); }
+  function panEl(el) { if (!el || !el.getBoundingClientRect) return 0; const r = el.getBoundingClientRect(); return pan(r.left + r.width / 2); }
+  /** 連續答對：大調音階一階一階往上 */
+  const DEG = [0, 2, 4, 5, 7, 9, 11, 12];
+  function streakPitch(n) { return Math.pow(2, DEG[Math.max(0, Math.min(DEG.length - 1, (n || 1) - 1))] / 12); }
+  /** 講話時把音樂調小，講完再恢復（KG.say 自動處理；自己呼叫 speechSynthesis 的地方呼叫 AU.duck()） */
+  function duck() {
+    if (KG.isMuted() || !window.speechSynthesis) return;
+    sayAt = performance.now();
+    if (!ducked) { ducked = true; applyVol(); }
+    if (!duckIv) duckIv = setInterval(checkDuck, 150);
+  }
+  const rawSay = KG.say;
+  KG.say = function (text, rate) { rawSay(text, rate); duck(); };
+  function checkDuck() {
+    const ss = window.speechSynthesis, el = performance.now() - sayAt;
+    if (el < 450 || (ss && (ss.speaking || ss.pending) && el < 15000)) return;
+    clearInterval(duckIv); duckIv = 0; ducked = false; applyVol();
+  }
+  function music(song) { if (!M || !song) return; base = song.mv || 0.3; applyVol(); M.play(song); }
+  function jingle(def) { if (M && sfxOn) return M.jingle(def); return 0; }
+  /** 「音樂 開/關」「音效 開/關」兩顆按鈕 */
+  function paintOne(el) {
+    const m = el.querySelector('.au-m'), s = el.querySelector('.au-s');
+    const mo = !M || M.isEnabled();
+    m.classList.toggle('on', mo); m.lastChild.textContent = '音樂 ' + (mo ? '開' : '關');
+    s.classList.toggle('on', sfxOn); s.lastChild.textContent = '音效 ' + (sfxOn ? '開' : '關');
+    m.setAttribute('aria-pressed', mo); s.setAttribute('aria-pressed', sfxOn);
+  }
+  function paint() { document.querySelectorAll('.au-tg').forEach(paintOne); }
+  const IC_M = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 17.5V5.5l11-2.5v12" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linejoin="round"/><ellipse cx="6.2" cy="17.6" rx="3.3" ry="2.6" fill="currentColor"/><ellipse cx="17.2" cy="15.1" rx="3.3" ry="2.6" fill="currentColor"/></svg>';
+  const IC_S = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9.5h4l5-4.5v14l-5-4.5H3z" fill="currentColor"/><path d="M15.5 8.5q2.2 3.5 0 7M18.5 6q4 6 0 12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>';
+  function toggles(cls) {
+    const el = document.createElement('div');
+    el.className = 'au-tg' + (cls ? ' ' + cls : '');
+    el.innerHTML = '<button type="button" class="au-m">' + IC_M + '<span></span></button><button type="button" class="au-s">' + IC_S + '<span></span></button>';
+    el.querySelector('.au-m').addEventListener('click', e => { e.stopPropagation(); if (M) M.setEnabled(!M.isEnabled()); sfx('ui'); paint(); });
+    el.querySelector('.au-s').addEventListener('click', e => { e.stopPropagation(); sfxOn = !sfxOn; KG.store.set(KEY, sfxOn); sfx('ui'); paint(); });
+    paintOne(el);
+    return el;
+  }
+  /* 自己做的音效（短而清脆；雜音一律用 bandpass/lowpass，不用 highpass，避免突波） */
+  if (S) {
+    S.define('au_correct', (p, s) => { s.tone(784 * p, 0.12, { type: 'triangle', vol: 0.19 }); s.tone(1175 * p, 0.26, { type: 'triangle', vol: 0.17, delay: 0.08 }); s.tone(1568 * p, 0.22, { type: 'sine', vol: 0.05, delay: 0.13 }); });
+    S.define('au_soft', (p, s) => { s.tone(440 * p, 0.15, { type: 'sine', vol: 0.13, slide: 400 * p }); s.tone(349 * p, 0.26, { type: 'sine', vol: 0.12, delay: 0.14, slide: 330 * p }); });
+    S.define('au_star', (p, s) => { s.tone(1047 * p, 0.45, { type: 'sine', vol: 0.15 }); s.tone(1047 * 2.76 * p, 0.12, { type: 'sine', vol: 0.03 }); s.tone(1568 * p, 0.3, { type: 'triangle', vol: 0.05, delay: 0.06 }); });
+    S.define('au_chime', (p, s) => { s.tone(698 * p, 0.14, { type: 'triangle', vol: 0.18 }); s.tone(1047 * p, 0.3, { type: 'sine', vol: 0.12, delay: 0.07 }); s.tone(1397 * p, 0.26, { type: 'sine', vol: 0.04, delay: 0.13 }); });
+    S.define('au_flip', (p, s) => { s.noise(0.08, { vol: 0.16, freq: 1800 * p, sweep: 4200 * p, q: 0.9 }); s.tone(620 * p, 0.05, { type: 'sine', vol: 0.05, delay: 0.03 }); });
+    S.define('au_snap', (p, s) => { s.noise(0.03, { vol: 0.2, freq: 3200 * p, q: 2 }); s.tone(1400 * p, 0.06, { type: 'triangle', vol: 0.1 }); s.tone(2100 * p, 0.08, { type: 'sine', vol: 0.05, delay: 0.02 }); });
+    S.define('au_scratch', (p, s) => { s.noise(0.035, { vol: 0.07, freq: 2600 * p, q: 1.6 }); });
+    S.define('au_pen', (p, s) => { s.tone(880 * p, 0.045, { type: 'sine', vol: 0.07 }); s.noise(0.025, { vol: 0.05, freq: 3000 * p, q: 2 }); });
+    S.define('au_stamp', (p, s) => { s.tone(150 * p, 0.16, { type: 'sine', vol: 0.3, slide: 60 }); s.noise(0.09, { vol: 0.2, freq: 650 * p, type: 'lowpass' }); s.tone(230 * p, 0.05, { type: 'triangle', vol: 0.07 }); });
+    S.define('au_pick', (p, s) => { s.tone(523 * p, 0.09, { type: 'triangle', vol: 0.14, slide: 784 * p }); });
+    S.define('au_hover', (p, s) => { s.tone(1046 * p, 0.035, { type: 'sine', vol: 0.045 }); });
+    S.define('au_page', (p, s) => { s.noise(0.22, { vol: 0.12, freq: 900 * p, sweep: 2600 * p, q: 0.8 }); });
+  }
+  return {
+    sfx, pan, panEl, streakPitch, music, jingle, toggles, paint, duck,
+    get on() { return sfxOn; },
+    setSfx(v) { sfxOn = !!v; KG.store.set(KEY, sfxOn); paint(); },
+    tone(f, d, o) { if (sfxOn && S) S.tone(f, d, o); },
+    layer(n, on) { if (M) M.setLayer(n, on); },
+    tempo(x) { if (M) M.setTempo(x); },
+    stop(f) { if (M) M.stop(f); },
+    pause() { if (M) M.pause(); },
+    resume() { if (M) M.resume(); },
+    current() { return M ? M.current() : null; }
+  };
+})();
+/* SONGS-BEGIN */
+const MUSIC = {
+  // 標題：客家山歌風的微風（有轉音裝飾的五聲音階笛子、吉他分解、弦樂、輕沙鈴）D 大調五聲音階，沒有爵士鼓
+  title: {
+    key: 'D', scale: ['D', 'E', 'F#', 'A', 'B'], bpm: 84, steps: 16, mv: 0.42,
+    chords: ['D', 'Bm', 'G', 'A', 'D', 'Bm', 'Em', 'A'],
+    tracks: [
+      { inst: 'flute', vol: 0.85, seq: [
+        'A4 - B4 - D5 - - - E5 D5 B4 - A4 - - -', 'B4 - - - D5 - E5 - F#5 - E5 D5 B4 - - -',
+        'D5 - - - B4 - A4 - B4 - D5 - E5 - - -', 'E5 F#5 E5 D5 B4 - A4 - - - - - . . . .',
+        'A4 - D5 - E5 - F#5 - A5 - F#5 E5 D5 - - -', 'F#5 - E5 - D5 - B4 - D5 - E5 - F#5 - - -',
+        'E5 - - - B4 - D5 E5 B4 - A4 - B4 - - -', 'A4 - B4 A4 F#4 - E4 - - - - - . . . .'] },
+      { inst: 'pluck', arp: 'updown', rate: 2, oct: 3, vol: 0.4 },
+      { inst: 'strings', chord: 'hold', oct: 3, vol: 0.42 },
+      { inst: 'shaker', pat: '..o...o...o...o.', vol: 0.5 },
+      { inst: 'sub', chord: 'R.......5.......', vol: 0.5 }
+    ]
+  },
+  // 遊戲中：環島火車民謠流行（沙鈴火車節奏、輕大鼓／邊擊、吉他刷弦、笛子和木琴一問一答、木鼓過門、彈跳貝斯）E 大調
+  play: {
+    key: 'E', bpm: 114, steps: 16, swing: 0.04, mv: 0.42,
+    chords: ['E', 'C#m', 'A', 'B', 'E', 'G#m', 'A', 'B'],
+    layers: { streak: false, progress: false, hurry: false },
+    tracks: [
+      { inst: 'flute', vol: 0.8, seq: ['B4 - E5 - G#5 - F#5 E5', 'C#5 - E5 - G#5 - - .', '', '', 'B4 - E5 - B5 - G#5 F#5', 'G#5 - F#5 - D#5 - - .', '', ''] },
+      { inst: 'marimba', vol: 0.8, seq: ['', '', 'A4 - C#5 - E5 - C#5 B4', 'F#4 - A4 B4 D#5 - - .', '', '', 'C#5 - E5 - A5 - G#5 F#5', 'D#5 - B4 - F#5 - E5 .'] },
+      { inst: 'pluck', chord: '..3...5...3...5.', oct: 4, vol: 0.35 },
+      { inst: 'bass', chord: 'R..R..5.R...8...', vol: 0.55 },
+      { inst: 'kick', pat: 'x.......x.......', vol: 0.45 },
+      { inst: 'rim', pat: '....x.......x...', vol: 0.4 },
+      { inst: 'shaker', pat: 'x.oox.oox.oox.oo', vol: 0.4 },
+      { inst: 'tom', pat: ['................', '................', '................', '........x...x.x.', '................', '................', '................', '........x.x.x.x.'], vol: 0.4 },
+      { inst: 'bell', arp: 'up', rate: 4, oct: 5, vol: 0.26, layer: 'streak' },
+      { inst: 'kalimba', arp: 'updown', rate: 2, oct: 4, vol: 0.35, layer: 'progress' },
+      { inst: 'ohat', pat: '..x...x...x...x.', vol: 0.3, layer: 'progress' },
+      { inst: 'tom', pat: '....x.......x...', vol: 0.3, pitch: 120, layer: 'hurry' },
+      { inst: 'strings', chord: 'hold', oct: 3, vol: 0.38, layer: 'hurry' }
+    ]
   }
 };
-function unlockAudio() { audioOk = true; }
-window.addEventListener('pointerdown', unlockAudio, { capture: true });
-window.addEventListener('keydown', unlockAudio, { capture: true });
+/* SONGS-END */
+const JINGLES = {
+  win: { bpm: 150, inst: 'marimba', vol: 0.34, notes: [['B4', 1], ['E5', 1], ['G#5', 1], ['B5', 1], ['G#5', 1], ['B5', 1], ['E5+G#5+B5', 4]], bass: [['E3', 3, 0], ['B2', 3, 3], ['E3', 4, 6]], bassVol: 0.28 },
+  win2: { bpm: 150, inst: 'flute', vol: 0.18, notes: [['.', 6], ['E5', 4]] },
+  lose: { bpm: 120, inst: 'kalimba', vol: 0.3, notes: [['G#5', 1], ['F#5', 1], ['E5', 1], ['C#5', 1], ['E5', 3]], bass: [['A2', 3, 0], ['E3', 3, 4]], bassVol: 0.22 }
+};
+// 音樂跟著遊戲狀態：連續答對、進度過半、計時挑戰、最後幾片
+const MS = { streak: false, progress: false, hurry: false, tempo: 1 };
+function musicState(o) {
+  const st = !!o.streak, pr = !!o.progress, hu = !!o.hurry, te = o.tempo || 1;
+  if (st !== MS.streak) { MS.streak = st; AU.layer('streak', st); }
+  if (pr !== MS.progress) { MS.progress = pr; AU.layer('progress', pr); }
+  if (hu !== MS.hurry) { MS.hurry = hu; AU.layer('hurry', hu); }
+  if (te !== MS.tempo) { MS.tempo = te; AU.tempo(te); }
+}
+function playMusic() { AU.music(MUSIC.play); MS.streak = MS.progress = MS.hurry = false; MS.tempo = 1; AU.layer('streak', false); AU.layer('progress', false); AU.layer('hurry', false); AU.tempo(1); }
+function say(text) {
+  if (!KG.isMuted() && window.speechSynthesis && window.SpeechSynthesisUtterance) KG.say(text, 0.9);
+  else AU.sfx('sparkle'); // 沒有語音時用音效提示，名字一直顯示在畫面上
+}
 
 /* ---------- 存檔 ---------- */
 const SK = k => SLUG + ':' + k;
@@ -960,7 +1098,9 @@ function getStickers() { return new Set(KG.store.get(SK('stickers'), []) || []);
 let sessionNew = [];
 function addSticker(id) {
   const s = getStickers(); if (s.has(id)) return false;
-  s.add(id); KG.store.set(SK('stickers'), Array.from(s)); sessionNew.push(id); return true;
+  s.add(id); KG.store.set(SK('stickers'), Array.from(s)); sessionNew.push(id);
+  setTimeout(() => AU.sfx('au_stamp', { vol: 0.7 }), 260);
+  return true;
 }
 function bestTime(level, t) { return KG.best(SLUG + '-time' + level, t == null ? null : Math.round(t * 10) / 10, true); }
 const BADGES = [['pz1', '拼圖：看輪廓'], ['pz2', '拼圖：部分輪廓'], ['pz3', '拼圖：沒有輪廓'], ['pz4', '拼圖：計時挑戰'], ['find', '找找看全對'], ['quiz', '小測驗滿分'], ['explore', '22 縣市都認識']];
@@ -992,6 +1132,7 @@ function hideOv(id) { $(id).classList.remove('show'); }
 
 function goTitle() {
   state.act = null;
+  AU.resume(); AU.music(MUSIC.title);
   setScreen('title');
   setLand({ labels: () => 1, seaNames: true });
   refreshTitle();
@@ -1019,7 +1160,8 @@ function restart() { start(state.act, state.level); }
 
 /* ---------- 拼圖 ---------- */
 function startPuzzle(level) {
-  pz.level = level; pz.mistakes = 0; pz.hints = 0; pz.elapsed = 0; pz.done = false; pz.drag = null; pz.hintId = null; pz.kbSel = 0; pz.celebrateT = -1;
+  pz.level = level; pz.mistakes = 0; pz.hints = 0; pz.elapsed = 0; pz.done = false; pz.drag = null; pz.hintId = null; pz.kbSel = 0; pz.celebrateT = -1; pz.streak = 0;
+  playMusic(); AU.sfx('pickup', { vol: 0.8 });
   pz.pieces = {};
   for (const id of IDS) pz.pieces[id] = { id, st: 'queue', x: 0, y: 0, s: 1, slot: -1, wrong: 0 };
   // 先放大縣市、離島放後面，小朋友比較好上手
@@ -1091,15 +1233,23 @@ function pickPiece(id, px, py, type) {
   const s = pz.slots[p.slot]; if (s) s.id = null;
   p.st = 'drag'; p.slot = -1;
   killTweens(p);
-  pz.drag = { id, lift: lift(type), px, py };
+  pz.drag = { id, lift: lift(type), px, py, near: false };
   tween(p, { s: 1, x: px, y: py + pz.drag.lift }, 0.18, 'outCubic');
-  KG.sound('pop'); KG.vibrate(10);
+  AU.sfx('au_pick', { pan: AU.pan(px + cvL) }); KG.vibrate(10);
   return true;
 }
 function movePiece(px, py) {
   if (!pz.drag) return;
   pz.drag.px = px; pz.drag.py = py;
   const p = pz.pieces[pz.drag.id];
+  // 拖到正確位置附近：輕輕「叮」一下（只在剛靠近時響）
+  if (pz.level <= 2) {
+    const [tx, ty] = pieceTarget(pz.drag.id), k = C[pz.drag.id];
+    const tol = Math.max(30, Math.max(k.bx[2] - k.bx[0], k.bx[3] - k.bx[1]) * S * 0.3) * LV[pz.level - 1].tol;
+    const near = Math.hypot(px - tx, py + pz.drag.lift - ty) <= tol;
+    if (near && !pz.drag.near) AU.sfx('au_hover', { pitch: 1.2, vol: 1.4, pan: AU.pan(px + cvL) }, 120);
+    pz.drag.near = near;
+  }
   if (!tweens.some(t => t.obj === p)) { p.x = px; p.y = py + pz.drag.lift; }
 }
 /** 放下拼圖片：中心在 (x,y)。對了就吸附，回傳 true */
@@ -1123,10 +1273,11 @@ function dropPiece(id, x, y) {
   // 放錯了
   const overMap = x > M.x && x < M.x + M.w && y > M.y && y < M.y + M.h && !(LY.tray && x > LY.tray.x && y > LY.tray.y && x < LY.tray.x + LY.tray.w && y < LY.tray.y + LY.tray.h);
   if (overMap) {
-    pz.mistakes++; p.wrong++;
-    KG.sound('wrong'); shake(5, 0.25); KG.vibrate(30);
+    pz.mistakes++; p.wrong++; pz.streak = 0;
+    AU.sfx('au_soft', { pan: AU.pan(x + cvL) }); shake(5, 0.25); KG.vibrate(30);
     if (p.wrong >= 2 && pz.level <= 2) { pz.hintId = id; pz.hintT = 2.2; }
-  } else KG.sound('boing');
+    puzzleMusic();
+  } else AU.sfx('drop', { vol: 0.5, pitch: 0.8, pan: AU.pan(x + cvL) });
   returnToTray(p);
   return false;
 }
@@ -1142,17 +1293,24 @@ function placeDone(id) {
   updatePuzzleLand();
   const [tx, ty] = pieceTarget(id);
   burst(tx, ty, 18, [C[id].color, '#ffffff', '#ffd65c'], 170);
-  KG.sound('correct'); KG.vibrate(15);
+  pz.streak = p.wrong ? 0 : pz.streak + 1;
+  AU.sfx('au_snap', { pan: AU.pan(tx + cvL) });
+  AU.sfx('au_correct', { pitch: AU.streakPitch(Math.max(1, pz.streak)), exact: true, pan: AU.pan(tx + cvL), vol: 0.85 });
+  KG.vibrate(15);
   say(C[id].name);
   addSticker(id);
   if (pz.hintId === id) pz.hintId = null;
   fillTray(false);
   updateHud();
-  if (remainingCount() === 0) finishPuzzle();
+  if (remainingCount() === 0) finishPuzzle(); else puzzleMusic();
+}
+function puzzleMusic() {
+  const left = remainingCount();
+  musicState({ streak: pz.streak >= 2, progress: left <= IDS.length / 2, hurry: pz.level === 4 && pz.elapsed >= 120, tempo: left <= 3 ? 1.05 : 1 });
 }
 function finishPuzzle() {
   pz.done = true; pz.celebrateT = 0;
-  KG.sound('win');
+  winMusic(true);
   KG.confetti(cvL + OX + MW * S / 2, cvT + OY + MH * S * 0.4, 140);
   say('完成了！你好棒！');
   const L = pz.level;
@@ -1175,7 +1333,8 @@ function fmtTime(t) { t = Math.max(0, Math.round(t * 10) / 10); const m = Math.f
 
 /* ---------- 找找看 ---------- */
 function startFind() {
-  fd.list = KG.shuffle(IDS).slice(0, 10); fd.idx = 0; fd.first = 0; fd.wrong = 0; fd.flash = null; fd.done = false; fd.found = new Set(); fd.hintOn = false; fd.results = [];
+  fd.list = KG.shuffle(IDS).slice(0, 10); fd.idx = 0; fd.first = 0; fd.wrong = 0; fd.flash = null; fd.done = false; fd.found = new Set(); fd.hintOn = false; fd.results = []; fd.streak = 0;
+  playMusic(); AU.sfx('pickup', { vol: 0.8 });
   setScreen('find');
   findLand();
   nextFind(true);
@@ -1187,6 +1346,8 @@ function nextFind(first) {
   $('findName').textContent = C[id].name;
   $('findName').classList.remove('pulse'); void $('findName').offsetWidth; $('findName').classList.add('pulse');
   renderDots();
+  if (!first) AU.sfx('au_flip', { vol: 0.8 });
+  musicState({ streak: fd.streak >= 2, progress: fd.idx >= fd.list.length / 2, tempo: fd.idx === fd.list.length - 1 ? 1.05 : 1 });
   setTimeout(() => say(C[id].name + '在哪裡？'), first ? 300 : 500);
 }
 function renderDots() {
@@ -1214,7 +1375,7 @@ function findTap(x, y) {
   if (fd.done || fd.flash && fd.flash.lock) return null;
   const target = fd.list[fd.idx];
   const id = resolveTap(x, y, target);
-  if (!id) { KG.sound('splash'); burst(x, y, 6, ['#ffffff', '#bfeaff'], 80); return null; }
+  if (!id) { AU.sfx('splash', { vol: 0.45, pan: AU.pan(x + cvL) }); burst(x, y, 6, ['#ffffff', '#bfeaff'], 80); return null; }
   if (id === target) {
     const firstTry = fd.wrong === 0;
     if (firstTry) fd.first++;
@@ -1224,7 +1385,10 @@ function findTap(x, y) {
     fd.flash = { id, ok: true, t: 0, lock: true };
     const [tx, ty] = toScr(C[id].lab[0], C[id].lab[1]);
     burst(tx, ty, 22, [C[id].color, '#ffffff', '#ffd65c'], 190);
-    KG.sound('correct'); KG.vibrate(15);
+    fd.streak = firstTry ? fd.streak + 1 : 0;
+    AU.sfx('au_pick', { pan: AU.pan(tx + cvL) });
+    AU.sfx('au_correct', { pitch: AU.streakPitch(Math.max(1, fd.streak)), exact: true, pan: AU.pan(tx + cvL) });
+    KG.vibrate(15);
     say(firstTry ? '答對了！' + C[id].name : C[id].name);
     setTimeout(() => {
       fd.flash = null; fd.idx++;
@@ -1234,7 +1398,8 @@ function findTap(x, y) {
   }
   fd.wrong++;
   fd.flash = { id, ok: false, t: 0 };
-  KG.sound('wrong'); shake(4, 0.2); KG.vibrate(30);
+  fd.streak = 0; musicState({ streak: false, progress: MS.progress, tempo: MS.tempo });
+  AU.sfx('au_soft', { pan: AU.pan(x + cvL) }); shake(4, 0.2); KG.vibrate(30);
   say('這是' + C[id].name);
   if (fd.wrong >= 2) fd.hintOn = true;
   return false;
@@ -1245,13 +1410,15 @@ function finishFind() {
   const stars = fd.first >= 9 ? 3 : fd.first >= 6 ? 2 : 1;
   setStars('find', stars);
   if (fd.first === 10) addSticker('find');
-  KG.sound('win'); KG.confetti();
+  winMusic(stars > 0); KG.confetti();
   showResult({ title: fd.first === 10 ? '全部一次就找到！' : '找完了！', stars, msg: '一次就找到 ' + fd.first + ' / 10 個縣市' });
 }
 
 /* ---------- 認識縣市 ---------- */
 function startExplore() {
   ex.sel = null; ex.seen = getSeen();
+  playMusic(); AU.sfx('pickup', { vol: 0.8 });
+  musicState({ progress: ex.seen.size >= IDS.length / 2 });
   setScreen('explore');
   setLand({ labels: () => 1, seaNames: true });
   showInfo(null);
@@ -1261,11 +1428,11 @@ function selectCounty(id) {
   if (!id) return;
   ex.sel = id; ex.selT = 0;
   showInfo(id);
-  KG.sound('pop');
+  { const [sx] = toScr(C[id].lab[0], C[id].lab[1]); AU.sfx('au_pick', { pan: AU.pan(sx + cvL) }); }
   say(C[id].name + '。' + META[id].sum);
   const [x, y] = toScr(C[id].lab[0], C[id].lab[1]);
   burst(x, y, 12, [C[id].color, '#ffffff'], 140);
-  if (!ex.seen.has(id)) { ex.seen.add(id); KG.store.set(SK('seen'), Array.from(ex.seen)); addSticker(id); updateHud(); if (ex.seen.size === 22 && addSticker('explore')) { KG.toast('22 縣市都認識了！'); KG.confetti(); } }
+  if (!ex.seen.has(id)) { ex.seen.add(id); KG.store.set(SK('seen'), Array.from(ex.seen)); addSticker(id); updateHud(); musicState({ progress: ex.seen.size >= IDS.length / 2 }); if (ex.seen.size === 22 && addSticker('explore')) { KG.toast('22 縣市都認識了！'); KG.confetti(); AU.sfx('levelup'); } }
 }
 function showInfo(id) {
   $('ihint').style.display = id ? 'none' : '';
@@ -1325,7 +1492,8 @@ function startQuiz() {
   const kinds = KG.shuffle(['shape', 'shape', 'shape', 'shape', 'adj', 'adj', 'adj', 'type', 'type', 'type']);
   const used = new Set();
   qz.list = kinds.map(k => { let q, n = 0; do { q = makeQuestion(k); } while (used.has(k + q.ans + q.text) && n++ < 20); used.add(k + q.ans + q.text); return q; });
-  qz.idx = 0; qz.score = 0;
+  qz.idx = 0; qz.score = 0; qz.streak = 0;
+  playMusic(); AU.sfx('pickup', { vol: 0.8 });
   setScreen('quiz');
   showQuestion();
 }
@@ -1342,6 +1510,8 @@ function showQuestion() {
     b.addEventListener('click', () => answerQuiz(i)); o.appendChild(b);
   });
   quizLand();
+  if (qz.idx) AU.sfx('au_flip', { vol: 0.8 });
+  musicState({ streak: qz.streak >= 2, progress: qz.idx >= qz.list.length / 2, tempo: qz.idx === qz.list.length - 1 ? 1.05 : 1 });
   say(q.text);
 }
 function quizLand() {
@@ -1358,8 +1528,11 @@ function answerQuiz(i) {
   for (const b of btns) b.disabled = true;
   const ok = i === q.answer;
   btns[q.answer].classList.add('ok');
-  if (ok) { qz.score++; KG.sound('correct'); $('qfeed').textContent = '答對了！'; say('答對了！' + C[q.ans].name); const r = btns[i].getBoundingClientRect(); burst(r.left + r.width / 2 - cvL, r.top - cvT, 16, ['#7bd88f', '#ffd65c', '#fff'], 160); }
-  else { btns[i].classList.add('bad'); KG.sound('wrong'); $('qfeed').innerHTML = '<span style="color:#c24444">答案是「' + C[q.ans].name + '」</span>'; say('答案是' + C[q.ans].name); }
+  qz.streak = ok ? qz.streak + 1 : 0;
+  { const r = btns[i].getBoundingClientRect(); AU.sfx(ok ? 'au_correct' : 'au_soft', { pitch: ok ? AU.streakPitch(qz.streak) : 1, exact: ok, pan: AU.pan(r.left + r.width / 2) }); }
+  if (!ok) musicState({ streak: false, progress: MS.progress, tempo: MS.tempo });
+  if (ok) { qz.score++; $('qfeed').textContent = '答對了！'; say('答對了！' + C[q.ans].name); const r = btns[i].getBoundingClientRect(); burst(r.left + r.width / 2 - cvL, r.top - cvT, 16, ['#7bd88f', '#ffd65c', '#fff'], 160); }
+  else { btns[i].classList.add('bad'); $('qfeed').innerHTML = '<span style="color:#c24444">答案是「' + C[q.ans].name + '」</span>'; say('答案是' + C[q.ans].name); }
   $('qscore').textContent = '答對 ' + qz.score;
   quizLand();
   qz.timer = setTimeout(nextQuestion, ok ? 1500 : 2600);
@@ -1373,7 +1546,7 @@ function nextQuestion() {
     const stars = qz.score >= 9 ? 3 : qz.score >= 7 ? 2 : qz.score >= 4 ? 1 : 0;
     setStars('quiz', stars);
     if (qz.score === 10) addSticker('quiz');
-    if (stars) { KG.sound('win'); KG.confetti(); } else KG.sound('lose');
+    winMusic(stars > 0); if (stars) KG.confetti();
     showResult({ title: qz.score === 10 ? '滿分！地理小博士！' : '測驗結束！', stars, msg: '答對 ' + qz.score + ' / 10 題' });
   } else showQuestion();
 }
@@ -1384,7 +1557,15 @@ function starSvg(on, i) {
     Array.from({ length: 10 }, (_, k) => { const a = k * Math.PI / 5 - Math.PI / 2, r = k % 2 ? 21 : 45; return (Math.cos(a) * r).toFixed(1) + ',' + (Math.sin(a) * r).toFixed(1); }).join(' ') +
     '" fill="' + (on ? '#ffd65c' : '#e4dde9') + '" stroke="' + (on ? '#d98a0c' : '#c4bacb') + '" stroke-width="6" stroke-linejoin="round"/></svg>';
 }
+function winMusic(ok) {
+  musicState({});
+  const d = AU.jingle(ok ? JINGLES.win : JINGLES.lose);
+  if (ok) AU.jingle(JINGLES.win2);
+  const scr = state.screen;
+  setTimeout(() => { if (state.screen === scr && $('resultOv').classList.contains('show')) AU.music(MUSIC.title); }, d * 1000 + 2400);
+}
 function showResult(o) {
+  for (let i = 0; i < o.stars; i++) setTimeout(() => AU.sfx('au_star', { pitch: [1, 1.26, 1.5][i], exact: true }), 250 + i * 170);
   $('rTitle').textContent = o.title;
   let h = ''; for (let i = 0; i < 3; i++) h += starSvg(i < o.stars, i);
   $('rStars').innerHTML = h;
@@ -1430,10 +1611,11 @@ function pause() {
   if (state.screen === 'title' || state.paused) return;
   if ($('resultOv').classList.contains('show')) return;
   state.paused = true; showOv('pauseOv');
+  AU.pause(); AU.paint();
   if (window.speechSynthesis) window.speechSynthesis.cancel();
   if (pz.drag) { const p = pz.pieces[pz.drag.id]; pz.drag = null; returnToTray(p); }
 }
-function resume() { state.paused = false; hideOv('pauseOv'); }
+function resume() { state.paused = false; hideOv('pauseOv'); AU.resume(); }
 
 /* ---------- HUD ---------- */
 function updateHud() {
@@ -1455,7 +1637,6 @@ let last = performance.now(), hudT = 0;
 function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   if (!state.paused) update(dt);
-  Music.update(dt);
   draw();
   requestAnimationFrame(frame);
 }
@@ -1465,7 +1646,7 @@ function update(dt) {
   updateParts(dt);
   if (shakeT > 0) shakeT -= dt;
   if (state.screen === 'puzzle') {
-    if (!pz.done) pz.elapsed += dt;
+    if (!pz.done) { pz.elapsed += dt; if (pz.level === 4 && !MS.hurry && pz.elapsed >= 120) puzzleMusic(); }
     if (pz.hintT > 0) { pz.hintT -= dt; if (pz.hintT <= 0) pz.hintId = null; }
     if (pz.celebrateT >= 0) pz.celebrateT += dt;
     hudT += dt; if (hudT > 0.25) { hudT = 0; updateHud(); }
@@ -1650,6 +1831,15 @@ cv.addEventListener('pointermove', e => {
   e.preventDefault();
   const [x, y] = cpos(e); movePiece(x, y);
 });
+let hovT = 0, hovId = null;
+cv.addEventListener('pointermove', e => {
+  if (e.pointerType !== 'mouse' || state.paused || pz.drag) return;
+  const s = state.screen; if (s !== 'explore' && s !== 'find') return;
+  const now = performance.now(); if (now - hovT < 90) return; hovT = now;
+  const [x, y] = cpos(e); const id = resolveTap(x, y, null);
+  if (id && id !== hovId) AU.sfx('au_hover', { pan: AU.pan(e.clientX) });
+  hovId = id;
+});
 function endDrag(e, cancel) {
   if (pz.drag && state.screen === 'puzzle' && (pz.drag.pid == null || e.pointerId === pz.drag.pid)) {
     const [x, y] = cpos(e); const id = pz.drag.id, l = pz.drag.lift;
@@ -1692,8 +1882,8 @@ window.addEventListener('keydown', e => {
       return;
     }
     const n = pz.slots.length;
-    if (k === 'ArrowLeft' || k === 'ArrowUp') { e.preventDefault(); pz.kbSel = (pz.kbSel - 1 + n) % n; KG.sound('tick'); }
-    else if (k === 'ArrowRight' || k === 'ArrowDown') { e.preventDefault(); pz.kbSel = (pz.kbSel + 1) % n; KG.sound('tick'); }
+    if (k === 'ArrowLeft' || k === 'ArrowUp') { e.preventDefault(); pz.kbSel = (pz.kbSel - 1 + n) % n; AU.sfx('tick'); }
+    else if (k === 'ArrowRight' || k === 'ArrowDown') { e.preventDefault(); pz.kbSel = (pz.kbSel + 1) % n; AU.sfx('tick'); }
     else if (k === 'Enter' || k === ' ') {
       e.preventDefault();
       const sl = pz.slots[pz.kbSel];
@@ -1703,8 +1893,8 @@ window.addEventListener('keydown', e => {
   }
   if (s === 'find' || s === 'explore') {
     const order = navOrder();
-    if (k === 'ArrowRight' || k === 'ArrowDown') { e.preventDefault(); kbMode = true; kbCursor = (kbCursor + 1) % order.length; KG.sound('tick'); }
-    else if (k === 'ArrowLeft' || k === 'ArrowUp') { e.preventDefault(); kbMode = true; kbCursor = (kbCursor - 1 + order.length) % order.length; KG.sound('tick'); }
+    if (k === 'ArrowRight' || k === 'ArrowDown') { e.preventDefault(); kbMode = true; kbCursor = (kbCursor + 1) % order.length; AU.sfx('au_hover'); }
+    else if (k === 'ArrowLeft' || k === 'ArrowUp') { e.preventDefault(); kbMode = true; kbCursor = (kbCursor - 1 + order.length) % order.length; AU.sfx('au_hover'); }
     else if ((k === 'Enter' || k === ' ') && kbCursor >= 0) {
       e.preventDefault();
       const id = order[kbCursor];
@@ -1722,7 +1912,7 @@ window.addEventListener('keydown', e => {
 
 /* ---------- 按鈕 ---------- */
 function openAct(a) {
-  KG.sound('click');
+  AU.sfx('select');
   if (a === 'puzzle') openLevels(); else start(a, 1);
 }
 document.querySelectorAll('.act').forEach(b => b.addEventListener('click', () => openAct(b.dataset.act)));
@@ -1733,29 +1923,29 @@ function openLevels() {
     const n = st['puzzle' + (i + 1)] || 0, bt = bestTime(i + 1);
     let stars = ''; for (let j = 0; j < 3; j++) stars += '<span style="display:inline-block;width:18px;height:18px">' + starSvg(j < n, j).replace('<svg ', '<svg style="width:18px;height:18px;animation:none" ') + '</span>';
     b.innerHTML = '<b>' + (i + 1) + '. ' + lv.name + '</b><small>' + lv.desc + '</small><span class="st">' + stars + '</span><span class="bt">' + (bt != null ? '最佳 ' + fmtTime(bt) : '') + '</span>';
-    b.addEventListener('click', () => { KG.sound('click'); hideOv('levels'); start('puzzle', i + 1); });
+    b.addEventListener('click', () => { AU.sfx('select'); hideOv('levels'); start('puzzle', i + 1); });
     box.appendChild(b);
   });
   showOv('levels');
 }
-$('lvBack').addEventListener('click', () => { KG.sound('click'); hideOv('levels'); });
-$('btnStickers').addEventListener('click', () => { KG.sound('click'); openStickers(); });
-$('stkBack').addEventListener('click', () => { KG.sound('click'); hideOv('stickerOv'); });
-$('pauseBtn').addEventListener('click', () => { KG.sound('click'); pause(); });
-$('pResume').addEventListener('click', () => { KG.sound('click'); resume(); });
-$('pRestart').addEventListener('click', () => { KG.sound('click'); hideOv('pauseOv'); restart(); });
-$('pMenu').addEventListener('click', () => { KG.sound('click'); goTitle(); });
-$('rAgain').addEventListener('click', () => { KG.sound('click'); hideOv('resultOv'); restart(); });
-$('rMenu').addEventListener('click', () => { KG.sound('click'); goTitle(); });
-$('sayBtn').addEventListener('click', () => { if (fd.list[fd.idx]) say(C[fd.list[fd.idx]].name + '在哪裡？'); });
+$('lvBack').addEventListener('click', () => { AU.sfx('back'); hideOv('levels'); });
+$('btnStickers').addEventListener('click', () => { AU.sfx('au_page'); openStickers(); });
+$('stkBack').addEventListener('click', () => { AU.sfx('back'); hideOv('stickerOv'); });
+$('pauseBtn').addEventListener('click', () => { AU.sfx('ui'); pause(); });
+$('pResume').addEventListener('click', () => { AU.sfx('ui'); resume(); });
+$('pRestart').addEventListener('click', () => { AU.sfx('ui'); hideOv('pauseOv'); AU.resume(); restart(); });
+$('pMenu').addEventListener('click', () => { AU.sfx('back'); goTitle(); });
+$('rAgain').addEventListener('click', () => { AU.sfx('ui'); hideOv('resultOv'); restart(); });
+$('rMenu').addEventListener('click', () => { AU.sfx('back'); goTitle(); });
+$('sayBtn').addEventListener('click', () => { AU.sfx('click'); if (fd.list[fd.idx]) say(C[fd.list[fd.idx]].name + '在哪裡？'); });
 $('hintBtn').addEventListener('click', () => {
   if (state.screen !== 'puzzle' || pz.done) return;
-  KG.sound('sparkle');
+  AU.sfx('sparkle');
   const id = (pz.drag && pz.drag.id) || (pz.slots.find(s => s.id) || {}).id;
   if (id) { pz.hintId = id; pz.hintT = 2.5; pz.hints++; if (pz.level === 4) pz.elapsed += 5; }
 });
-$('prevC').addEventListener('click', () => cycleCounty(-1));
-$('nextC').addEventListener('click', () => cycleCounty(1));
+$('prevC').addEventListener('click', () => { AU.sfx('au_flip', { pitch: 0.9, pan: -0.3 }); cycleCounty(-1); });
+$('nextC').addEventListener('click', () => { AU.sfx('au_flip', { pan: 0.3 }); cycleCounty(1); });
 document.querySelectorAll('canvas[data-ico]').forEach(c => iconCanvas(c, c.dataset.ico, c.closest('.rbtn') ? 30 : 46));
 
 /* ---------- 視窗事件 ---------- */
@@ -1836,6 +2026,8 @@ window.__tw2 = {
   addTime: s => { pz.elapsed += s; }
 };
 
+$('tAudio').appendChild(AU.toggles());
+$('pAudio').appendChild(AU.toggles());
 goTitle();
 requestAnimationFrame(frame);
 </script>

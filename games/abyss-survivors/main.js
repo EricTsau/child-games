@@ -33,7 +33,7 @@ function loadSave() {
 }
 let save = loadSave();
 function persist() { KG.store.set('abyss:save', save); }
-const settings = Object.assign({ music: true, sfx: true, quality: 'auto', dmgNumbers: true, shake: true, stick: 'full' }, KG.store.get('abyss:settings', {}) || {});
+const settings = Object.assign({ sfx: true, quality: 'auto', dmgNumbers: true, shake: true, stick: 'full' }, KG.store.get('abyss:settings', {}) || {});
 function persistSettings() { KG.store.set('abyss:settings', settings); }
 
 function heroUnlocked(id) {
@@ -151,85 +151,189 @@ function iconSvg(id, opt) {
 function itemIcon(item) { return iconSvg(item.iconId, { rarity: item.rarity }); }
 
 /* =====================================================================
- * Audio
+ * Audio（共用引擎 assets/kg-music.js：音樂、音效都走這裡）
  * ===================================================================== */
-const sfxThrottle = {};
-function sfx(name) {
-  if (!audioUnlocked) return;
+const SF = KG.sfx;
+// 音樂開關改成全站共用（KG.music.setEnabled）；音效開關仍記在 abyss:settings.sfx
+if ('music' in settings) { delete settings.music; persistSettings(); }
+// 每種聲音：[同名最短間隔 ms, 聲部群組, 佔用聲部 ms, 音高隨機幅度]
+// 群組限制同時發聲的數量（武器最多 5 個、命中 4 個…），幾十發子彈也不會變吵
+const GRP = { shot: new Float64Array(5), hit: new Float64Array(3), kill: new Float64Array(3), gem: new Float64Array(3), boom: new Float64Array(3) };
+const SND = {
+  ab_slash: [110, 'shot', 140, 0.06], ab_holy: [120, 'shot', 220, 0.05], ab_bone: [140, 'shot', 80, 0.08],
+  ab_fire: [110, 'shot', 160, 0.06], ab_meteorCast: [300, 'shot', 300, 0.05], ab_bow: [100, 'shot', 110, 0.06],
+  ab_axe: [140, 'shot', 200, 0.06], ab_orb: [400, 'shot', 220, 0.04], ab_zap: [90, 'shot', 110, 0.08],
+  ab_flask: [120, 'shot', 80, 0.06], ab_ghost: [160, 'shot', 260, 0.06], ab_reaper: [220, 'shot', 280, 0.05],
+  ab_knife: [110, 'shot', 60, 0.08], ab_aura: [900, 'shot', 160, 0.06], ab_wind: [700, 'shot', 400, 0.05],
+  ab_dark: [140, 'shot', 120, 0.06],
+  ab_frost: [160, 'boom', 280, 0.05], ab_holyNova: [200, 'boom', 400, 0.04], ab_darkNova: [200, 'boom', 300, 0.05],
+  ab_splat: [120, 'boom', 180, 0.07], ab_boom: [100, 'boom', 350, 0.06], ab_thunder: [120, 'boom', 350, 0.06],
+  ab_hit: [70, 'hit', 70, 0.08], ab_crit: [90, 'hit', 90, 0.06],
+  ab_kill: [60, 'kill', 100, 0.1], ab_eliteKill: [150, 'kill', 400, 0.04],
+  ab_gem: [55, 'gem', 70, 0.012], ab_gold: [60, 'gem', 120, 0.04],
+  ab_hurt: [140, null, 0, 0.05], ab_dash: [120, null, 0, 0.05], ab_heart: [200, null, 0, 0.01],
+  ab_eliteSpawn: [300, null, 0, 0.05], ab_roar: [600, null, 0, 0.03], ab_shrine: [200, null, 0, 0.02],
+  ab_heal: [200, null, 0, 0.03], ab_death: [500, null, 0, 0], ab_evolve: [200, null, 0, 0], ab_chestOpen: [150, null, 0, 0.02]
+};
+const SFX_ALIAS = { click: 'ui', pick: 'select', buy: 'coin', error: 'error', evolve: 'ab_evolve', chest: 'ab_chestOpen', gold: 'ab_gold' };
+const lastT = {};
+const SOPT = { vol: 1, pitch: 1, pan: 0 };
+function sfx(name, vol, pitch, pan) {
   if (!settings.sfx || KG.isMuted()) return;
-  const now = performance.now();
-  const gap = { hit: 70, kill: 55, gem: 45, shoot: 90, slash: 120 }[name] || 0;
-  if (gap && now - (sfxThrottle[name] || 0) < gap) return;
-  sfxThrottle[name] = now;
-  const N = KG.note;
-  switch (name) {
-    case 'hit': N(140 + Math.random() * 40, 0.06, 'square', 0.03, 0, 70); break;
-    case 'kill': N(220 + Math.random() * 80, 0.08, 'triangle', 0.035, 0, 90); break;
-    case 'gem': N(1200 + Math.random() * 400, 0.05, 'sine', 0.04); break;
-    case 'gold': KG.sound('coin'); break;
-    case 'slash': N(600, 0.09, 'sawtooth', 0.025, 0, 180); break;
-    case 'shoot': N(520, 0.06, 'triangle', 0.025, 0, 300); break;
-    case 'boom': N(90, 0.3, 'sawtooth', 0.08, 0, 35); KG.sound('hit'); break;
-    case 'zap': N(1400, 0.08, 'square', 0.03, 0, 300); N(900, 0.1, 'square', 0.025, 0.04, 200); break;
-    case 'frost': N(1800, 0.25, 'sine', 0.04, 0, 600); break;
-    case 'levelup': [392, 523, 659, 784].forEach((f, i) => N(f, 0.16, 'triangle', 0.08, i * 0.07)); break;
-    case 'pick': N(700, 0.07, 'triangle', 0.1); break;
-    case 'hurt': N(110, 0.18, 'sawtooth', 0.09, 0, 60); break;
-    case 'dash': KG.sound('whoosh'); break;
-    case 'chest': [523, 659, 784, 1047, 1319].forEach((f, i) => N(f, 0.22, 'triangle', 0.08, i * 0.09)); break;
-    case 'evolve': [262, 330, 392, 523, 659, 784, 1047].forEach((f, i) => N(f, 0.3, 'sawtooth', 0.04, i * 0.08)); break;
-    case 'boss': N(55, 1.2, 'sawtooth', 0.12, 0, 40); N(82, 1.2, 'square', 0.05, 0.1, 60); break;
-    case 'elite': N(160, 0.5, 'sawtooth', 0.06, 0, 90); break;
-    case 'shrine': [660, 880, 1100].forEach((f, i) => N(f, 0.3, 'sine', 0.08, i * 0.1)); break;
-    case 'heal': N(660, 0.15, 'sine', 0.07, 0, 990); break;
-    case 'death': [220, 185, 147, 110].forEach((f, i) => N(f, 0.5, 'triangle', 0.1, i * 0.22)); break;
-    case 'win': KG.sound('win'); break;
-    case 'click': N(500, 0.05, 'triangle', 0.08); break;
-    case 'buy': KG.sound('coin'); break;
-    case 'error': N(160, 0.15, 'square', 0.06); break;
+  name = SFX_ALIAS[name] || name;
+  const now = performance.now(), d = SND[name];
+  if (now - (lastT[name] || -1e9) < (d ? d[0] : 40)) return;
+  if (d && d[1]) {
+    const g = GRP[d[1]];
+    let ok = false;
+    for (let i = 0; i < g.length; i++) if (g[i] <= now) { g[i] = now + d[2]; ok = true; break; }
+    if (!ok) return;
+  }
+  lastT[name] = now;
+  const j = d ? d[3] : 0.05;
+  SOPT.vol = vol == null ? 1 : vol;
+  SOPT.pitch = (pitch || 1) * (1 - j + Math.random() * j * 2);
+  SOPT.pan = pan || 0;
+  SF.play(name, SOPT);
+}
+function jingle(def) { return settings.sfx && !KG.isMuted() ? KG.music.jingle(def) : 0; }
+
+/* ---------- 音效定義（全部合成） ---------- */
+SF.define('ab_slash', (p, s) => { s.noise(0.12, { vol: 0.13, freq: 1400 * p, sweep: 3600 * p, q: 1.4 }); s.tone(600 * p, 0.08, { type: 'sawtooth', vol: 0.018, slide: 250 * p }); });
+SF.define('ab_holy', (p, s) => { s.noise(0.14, { vol: 0.12, freq: 1600 * p, sweep: 4000 * p, q: 1.4 }); s.tone(1175 * p, 0.3, { vol: 0.035, delay: 0.02 }); s.tone(1760 * p, 0.25, { vol: 0.02, delay: 0.05 }); });
+SF.define('ab_bone', (p, s) => { s.noise(0.04, { vol: 0.07, freq: 2200 * p, q: 4 }); s.noise(0.03, { vol: 0.05, freq: 1500 * p, q: 4, delay: 0.035 }); });
+SF.define('ab_fire', (p, s) => { s.noise(0.16, { vol: 0.11, freq: 600 * p, sweep: 1500 * p, q: 1 }); s.tone(180 * p, 0.12, { type: 'triangle', vol: 0.04, slide: 320 * p }); });
+SF.define('ab_meteorCast', (p, s) => { s.noise(0.55, { vol: 0.12, freq: 500 * p, sweep: 150, q: 1, attack: 0.08 }); s.tone(130 * p, 0.45, { vol: 0.08, slide: 55, attack: 0.05 }); });
+SF.define('ab_bow', (p, s) => { s.tone(230 * p, 0.1, { type: 'triangle', vol: 0.09, slide: 180 * p }); s.noise(0.05, { vol: 0.07, freq: 2500 * p, q: 1.5 }); });
+SF.define('ab_axe', (p, s) => { s.noise(0.22, { vol: 0.09, freq: 700 * p, sweep: 1300 * p, q: 3, attack: 0.03 }); s.tone(260 * p, 0.12, { type: 'triangle', vol: 0.025, slide: 200 * p }); });
+SF.define('ab_orb', (p, s) => { s.tone(880 * p, 0.26, { vol: 0.035, attack: 0.03 }); s.tone(1320 * p, 0.22, { vol: 0.025, delay: 0.04, attack: 0.03 }); });
+SF.define('ab_zap', (p, s) => { s.tone(1400 * p, 0.08, { type: 'square', vol: 0.025, slide: 320 * p }); s.noise(0.07, { vol: 0.08, freq: 3600 * p, q: 1.5 }); });
+SF.define('ab_dark', (p, s) => { s.tone(320 * p, 0.12, { type: 'sawtooth', vol: 0.02, slide: 140 * p }); s.noise(0.1, { vol: 0.06, freq: 700 * p, q: 3 }); });
+SF.define('ab_flask', (p, s) => { s.noise(0.04, { vol: 0.08, freq: 3000 * p, q: 5 }); s.tone(1600 * p, 0.05, { vol: 0.025 }); });
+SF.define('ab_ghost', (p, s) => { s.tone(480 * p, 0.32, { vol: 0.03, slide: 720 * p, attack: 0.08 }); s.noise(0.3, { vol: 0.035, freq: 900 * p, q: 3, attack: 0.08 }); });
+SF.define('ab_reaper', (p, s) => { s.noise(0.32, { vol: 0.11, freq: 400 * p, sweep: 2000 * p, q: 2, attack: 0.04 }); s.tone(95 * p, 0.25, { type: 'sawtooth', vol: 0.03, slide: 60 }); });
+SF.define('ab_knife', (p, s) => { s.noise(0.04, { vol: 0.06, freq: 3500 * p, q: 3 }); s.tone(2000 * p, 0.03, { vol: 0.015, slide: 1200 * p }); });
+SF.define('ab_aura', (p, s) => { s.noise(0.15, { vol: 0.045, freq: 1200 * p, q: 1, attack: 0.03 }); });
+SF.define('ab_wind', (p, s) => { s.noise(0.4, { vol: 0.05, freq: 800 * p, sweep: 1600 * p, q: 1, attack: 0.1 }); });
+SF.define('ab_frost', (p, s) => { s.tone(1800 * p, 0.25, { vol: 0.04, slide: 700 * p }); s.noise(0.3, { vol: 0.06, freq: 5000 * p, q: 2 }); s.noise(0.12, { vol: 0.08, freq: 600 * p, type: 'lowpass' }); });
+SF.define('ab_holyNova', (p, s) => { s.tone(784 * p, 0.4, { vol: 0.05 }); s.tone(1175 * p, 0.45, { vol: 0.04, delay: 0.05 }); s.noise(0.2, { vol: 0.06, freq: 2500 * p, q: 1 }); });
+SF.define('ab_darkNova', (p, s) => { s.tone(110 * p, 0.3, { type: 'sawtooth', vol: 0.05, slide: 55 }); s.noise(0.25, { vol: 0.1, freq: 320 * p, type: 'lowpass' }); });
+SF.define('ab_splat', (p, s) => { s.noise(0.18, { vol: 0.14, freq: 600 * p, type: 'lowpass' }); s.tone(300 * p, 0.12, { vol: 0.05, slide: 120 * p }); s.tone(500 * p, 0.06, { vol: 0.03, slide: 900 * p, delay: 0.08 }); });
+SF.define('ab_boom', (p, s) => { s.noise(0.4, { vol: 0.2, freq: 900 * p, sweep: 80, type: 'lowpass' }); s.tone(90 * p, 0.32, { vol: 0.18, slide: 35 }); });
+SF.define('ab_thunder', (p, s) => { s.noise(0.05, { vol: 0.12, freq: 3000 * p, q: 1 }); s.noise(0.4, { vol: 0.18, freq: 1200 * p, sweep: 120, type: 'lowpass', delay: 0.02 }); s.tone(70 * p, 0.3, { vol: 0.12, slide: 40 }); });
+SF.define('ab_hit', (p, s) => { s.noise(0.05, { vol: 0.09, freq: 900 * p, q: 1 }); s.tone(160 * p, 0.06, { vol: 0.07, slide: 70 }); });
+SF.define('ab_crit', (p, s) => { s.noise(0.05, { vol: 0.11, freq: 1300 * p, q: 1 }); s.tone(200 * p, 0.07, { vol: 0.08, slide: 80 }); s.tone(1500 * p, 0.05, { type: 'square', vol: 0.018 }); });
+SF.define('ab_kill', (p, s) => { s.tone(230 * p, 0.09, { type: 'triangle', vol: 0.08, slide: 90 * p }); s.noise(0.09, { vol: 0.1, freq: 500 * p, type: 'lowpass' }); });
+SF.define('ab_eliteKill', (p, s) => { s.noise(0.5, { vol: 0.2, freq: 800 * p, sweep: 90, type: 'lowpass' }); s.tone(110 * p, 0.45, { vol: 0.18, slide: 40 }); s.tone(660 * p, 0.25, { vol: 0.04, delay: 0.12 }); s.tone(990 * p, 0.3, { vol: 0.035, delay: 0.2 }); });
+SF.define('ab_gem', (p, s) => { s.tone(1180 * p, 0.07, { vol: 0.055 }); s.tone(1770 * p, 0.05, { vol: 0.025, delay: 0.02 }); });
+SF.define('ab_gold', (p, s) => { s.tone(988 * p, 0.06, { type: 'square', vol: 0.04 }); s.tone(1319 * p, 0.14, { type: 'square', vol: 0.04, delay: 0.06 }); });
+SF.define('ab_hurt', (p, s) => { s.tone(250 * p, 0.2, { type: 'sawtooth', vol: 0.09, slide: 90 }); s.noise(0.12, { vol: 0.12, freq: 700 * p, q: 1 }); });
+SF.define('ab_dash', (p, s) => { s.noise(0.25, { vol: 0.13, freq: 600 * p, sweep: 2600 * p, q: 1.4 }); });
+SF.define('ab_heart', (p, s) => { s.tone(56 * p, 0.13, { vol: 0.26 }); s.tone(50 * p, 0.13, { vol: 0.2, delay: 0.16 }); });
+SF.define('ab_eliteSpawn', (p, s) => { s.tone(160 * p, 0.5, { type: 'sawtooth', vol: 0.05, slide: 85, attack: 0.05 }); s.noise(0.45, { vol: 0.1, freq: 320 * p, type: 'lowpass', attack: 0.06 }); });
+SF.define('ab_roar', (p, s) => {
+  s.tone(72 * p, 1.2, { type: 'sawtooth', vol: 0.09, slide: 44, attack: 0.12 });
+  s.tone(108 * p, 1.0, { type: 'square', vol: 0.03, slide: 62, attack: 0.1, delay: 0.05 });
+  s.noise(1.1, { vol: 0.2, freq: 420 * p, sweep: 140, type: 'lowpass', attack: 0.15 });
+  s.noise(0.6, { vol: 0.05, freq: 900 * p, q: 2, attack: 0.1, delay: 0.1 });
+});
+SF.define('ab_shrine', (p, s) => { s.tone(660 * p, 0.3, { vol: 0.06 }); s.tone(880 * p, 0.3, { vol: 0.06, delay: 0.1 }); s.tone(1100 * p, 0.4, { vol: 0.05, delay: 0.2 }); });
+SF.define('ab_heal', (p, s) => { s.tone(660 * p, 0.2, { vol: 0.07, slide: 990 * p }); s.tone(1320 * p, 0.25, { vol: 0.03, delay: 0.1 }); });
+SF.define('ab_death', (p, s) => { s.tone(220 * p, 1.0, { type: 'sawtooth', vol: 0.07, slide: 55 }); s.noise(0.9, { vol: 0.18, freq: 600, sweep: 90, type: 'lowpass' }); });
+SF.define('ab_evolve', (p, s) => { for (let i = 0; i < 6; i++) s.tone([311, 392, 466, 622, 784, 932][i] * p, 0.3, { type: 'triangle', vol: 0.06, delay: i * 0.07 }); s.noise(0.5, { vol: 0.05, freq: 3000, q: 1, delay: 0.1 }); });
+SF.define('ab_chestOpen', (p, s) => { s.noise(0.1, { vol: 0.14, freq: 500 * p, type: 'lowpass' }); s.tone(150 * p, 0.12, { vol: 0.1, slide: 90 }); s.tone(1245 * p, 0.3, { vol: 0.04, delay: 0.08 }); });
+
+/* ---------- 背景音樂 ---------- */
+// 標題：哥德式大教堂管風琴輓歌（升 C 小調，沒有鼓）
+const SONG_TITLE = {
+  bpm: 66,
+  chords: ['C#m', 'A', 'F#m', 'G#', 'C#m', 'E', 'A', 'G#'],
+  tracks: [
+    { inst: 'organ', chord: 'hold', oct: 3, vol: 0.36 },
+    { inst: 'pad', chord: 'hold', oct: 4, vol: 0.36 },
+    { inst: 'sub', chord: 'R-------R-------', vol: 0.5 },
+    { inst: 'strings', vol: 0.62, seq: [
+      'C#5 - - - G#4 - E4 -', 'A4 - - - C#5 - E5 -', 'F#4 - A4 - C#5 - - -', 'B#4 - - - D#5 - - -',
+      'E5 - D#5 - C#5 - G#4 -', 'B4 - - - G#4 - E4 -', 'C#5 - B4 - A4 - E4 -', 'G#4 - - - - - - -'] },
+    { inst: 'bell', vol: 0.55, seq: ['C#4 . . . . . . .', '', '', 'G#3 . . . . . . .', 'C#4 . . . . . . .', '', '', 'G#3 . . . . . . .'] },
+    { inst: 'kalimba', vol: 0.3, seq: ['', 'E5 . . . . . . .', '', '', '', 'G#5 . . . . . . .', '', 'D#5 . . . . . . .'] }
+  ]
+};
+// 遊戲中：暗黑合成器 × 管弦混合（降 E 小調）；精英、大群敵人、首領各有一層
+const SONG_PLAY = {
+  bpm: 132, bars: 16,
+  chords: ['Ebm', 'Cb', 'Gb', 'Db', 'Ebm', 'Cb', 'Abm', 'Bb', 'Ebm', 'Cb', 'Gb', 'Db', 'Ebm', 'Cb', 'Abm', 'Bb'],
+  layers: { elite: false, horde: false, boss: false },
+  tracks: [
+    { inst: 'kick', pat: 'x...x...x...x...', vol: 0.6 },
+    { inst: 'snare', pat: '....x.......x...', vol: 0.4 },
+    { inst: 'hat', pat: '..x...x...x...x.', vol: 0.5 },
+    { inst: 'bass', chord: 'RRR8RRR8RRR5RR8R', vol: 0.36 },
+    { inst: 'strings', chord: 'R.5.8.5.R.5.8.5.', oct: 3, vol: 0.28 },
+    { inst: 'pad', chord: 'hold', oct: 4, vol: 0.3 },
+    { inst: 'lead', vol: 0.5, seq: [
+      'Eb5 - - Bb4 Eb5 - Gb5 -', 'F5 - Eb5 - Gb5 - - .', 'Db5 - - Bb4 Gb4 - Bb4 -', 'Ab4 - - - F4 - - .',
+      'Eb5 - - Bb4 Eb5 - Gb5 Ab5', 'Bb5 - Ab5 - Gb5 - Eb5 -', 'Cb5 - - Eb5 Ab4 - Cb5 -', 'D5 - - - F5 - D5 .',
+      'Gb5 - F5 - Eb5 - Bb4 -', 'Cb5 - - - Eb5 - Gb5 -', 'F5 - Db5 - Bb4 - Db5 -', 'Ab5 - - - F5 - Db5 .',
+      'Eb5 - Gb5 - Bb5 - Ab5 Gb5', 'F5 - Eb5 - Gb5 - - .', 'Eb5 - Cb5 - Ab4 - Bb4 Cb5', 'D5 - - - - - - .'] },
+    { inst: 'brass', chord: '8.....8.....8...', oct: 3, vol: 0.4, layer: 'elite' },
+    { inst: 'tom', pat: '..........x.x.xx', pitch: 120, vol: 0.4, layer: 'elite' },
+    { inst: 'ohat', pat: '..x...x...x...x.', vol: 0.26, layer: 'horde' },
+    { inst: 'pluck', arp: 'up', rate: 1, oct: 5, span: 1, vol: 0.08, layer: 'horde' },
+    { inst: 'crash', pat: ['x...............', '................'], vol: 0.45, layer: 'boss' },
+    { inst: 'tom', pat: 'x..x..x.x..x..x.', pitch: 85, vol: 0.4, layer: 'boss' },
+    { inst: 'strings', chord: 'hold', oct: 5, vol: 0.2, layer: 'boss' }
+  ]
+};
+const J = {
+  level: { bpm: 260, inst: 'bell', vol: 0.3, notes: [['Bb4', 1], ['Db5', 1], ['Gb5', 1], ['Bb5', 3]], bass: [['Gb2', 5, 0]], bassVol: 0.2 },
+  chest: { bpm: 240, inst: 'bell', vol: 0.32, notes: [['Eb5', 1], ['Gb5', 1], ['Bb5', 1], ['Eb6', 1], ['Bb5+Eb6+Gb5', 4]], bass: [['Eb3', 6, 0]], bassVol: 0.18 },
+  evolve: { bpm: 180, inst: 'brass', vol: 0.3, notes: [['Eb4', 1], ['Bb4', 1], ['Eb5', 1], ['Gb5', 1], ['Bb5', 3]], bass: [['Eb2', 7, 0]], bassVol: 0.24 },
+  win: { bpm: 140, inst: 'brass', vol: 0.32, notes: [['Bb4', 1], ['Eb5', 1], ['G5', 1], ['Bb5', 2], ['Ab5', 1], ['G5', 1], ['F5', 1], ['Eb5+G5+Bb5', 5]], bass: [['Eb2', 3, 0], ['Ab2', 2, 3], ['Bb2', 3, 5], ['Eb2', 6, 8]], bassVol: 0.26 },
+  death: { bpm: 96, inst: 'pluck', vol: 0.32, notes: [['Bb4', 1], ['Gb4', 1], ['F4', 1], ['Eb4', 3]], bass: [['Eb2', 6, 0]], bassVol: 0.24 },
+  rec: { bpm: 200, inst: 'bell', vol: 0.34, notes: [['Eb5', 1], ['G5', 1], ['Bb5', 1], ['Eb6', 3]] }
+};
+window.__ab_audio = { SONG_TITLE, SONG_PLAY, J, get mus() { return mus; } };
+let musicT = 0;
+function titleMusic() { clearTimeout(musicT); KG.music.setVolume(0.28); KG.music.play(SONG_TITLE); }
+function playMusic() { clearTimeout(musicT); KG.music.setVolume(0.3); KG.music.play(SONG_PLAY, { restart: true }); mus.elite = mus.horde = mus.boss = null; mus.tempo = 0; mus.t = 0; }
+// 遊戲中每 0.5 秒看一次局勢（不在每一格掃描敵人）
+const mus = { t: 0, elite: null, horde: null, boss: null, tempo: 0 };
+function musicReact(dt) {
+  mus.t -= dt;
+  if (mus.t > 0 || !game) return;
+  mus.t = 0.5;
+  const s = game.state, E = s.enemies;
+  let el = false;
+  for (let i = 0; i < E.length; i++) { const e = E[i]; if (e.elite && !e._dead) { el = true; break; } }
+  const boss = !!s.bossHp, horde = E.length >= 150;
+  if (el !== mus.elite) { mus.elite = el; KG.music.setLayer('elite', el); }
+  if (horde !== mus.horde) { mus.horde = horde; KG.music.setLayer('horde', horde); }
+  if (boss !== mus.boss) { mus.boss = boss; KG.music.setLayer('boss', boss); }
+  const left = s.timeLimit - s.time;
+  const tempo = boss || s.endless ? 1.08 : (!s.bossKilled && left <= 60 ? 1.05 : 1);
+  if (tempo !== mus.tempo) { mus.tempo = tempo; KG.music.setTempo(tempo); }
+}
+// 低血量心跳
+let heartT = 0;
+function heartbeat(dt) {
+  const p = game.state.player;
+  const f = p.maxHp > 0 ? p.hp / p.maxHp : 1;
+  if (!p.alive || f >= 0.3) { heartT = 0; return; }
+  heartT -= dt;
+  if (heartT <= 0) { heartT = 0.5 + f * 2.2; sfx('ab_heart', 0.7 + (0.3 - f) * 1.5); }
+}
+// 沒有發射事件的武器（飛刀、光環、暴風雪）：看武器計時器有沒有歸零
+const SILENT_W = { daggers: 'ab_knife', thousand: 'ab_knife', aura: 'ab_aura', inferno_aura: 'ab_aura', blizzard: 'ab_wind' };
+function weaponSounds() {
+  const W = game.state.weapons;
+  for (let i = 0; i < W.length; i++) {
+    const w = W[i], n = SILENT_W[w.id];
+    if (!n) continue;
+    if (w._sp != null && w._t < w._sp) sfx(n, w.id === 'thousand' ? 0.7 : 1, w.id === 'inferno_aura' ? 0.8 : 1);
+    w._sp = w._t;
   }
 }
-// background music: dark ambient + war drums, scheduled one bar ahead
-const music = { on: false, nextBar: 0, bar: 0, timer: 0, intense: 0 };
-const ROOTS = [73.42, 73.42, 87.31, 65.41, 73.42, 98.0, 87.31, 82.41]; // D2 D2 F2 C2 D2 G2 F2 E2
-function scheduleBar() {
-  const now = performance.now() / 1000;
-  const bpm = music.intense > 1 ? 112 : music.intense > 0 ? 96 : 76;
-  const beat = 60 / bpm, step = beat / 2;
-  const base = Math.max(0, music.nextBar - now);
-  const root = ROOTS[music.bar % ROOTS.length];
-  const v = 1;
-  const N = KG.note;
-  if (music.intense >= 0) {
-    // pad (two long notes)
-    N(root * 2, beat * 4, 'triangle', 0.022 * v, base);
-    N(root * 3, beat * 4, 'sine', 0.014 * v, base + 0.05);
-    N(root * 2.4, beat * 4, 'sine', 0.01 * v, base + 0.1);
-  }
-  if (music.intense > 0) {
-    // drums
-    const kick = [0, 3, 4, 6].concat(music.intense > 1 ? [7] : []);
-    for (const k of kick) N(70, 0.22, 'sine', 0.13 * v, base + k * step, 38);
-    for (const k of [2, 6]) N(180, 0.12, 'triangle', 0.05 * v, base + k * step, 90);
-    // bass
-    for (let s = 0; s < 8; s += 2) N(root, step * 1.6, 'sawtooth', 0.025 * v, base + s * step);
-    if (music.bar % 2 === 1) N(root * 4 * (music.bar % 4 === 1 ? 1.19 : 1.33), beat * 1.5, 'square', 0.012 * v, base + 4 * step);
-  } else {
-    // menu: sparse bell
-    N(root * 6, beat * 2, 'sine', 0.018, base + beat);
-  }
-  music.bar++;
-  music.nextBar = Math.max(music.nextBar, now) + beat * 4;
-}
-let audioUnlocked = false;
-['pointerdown', 'keydown'].forEach(t => addEventListener(t, () => { audioUnlocked = true; }, { once: true, capture: true }));
-function musicTick() {
-  if (!audioUnlocked) return;
-  if (!music.on || !settings.music || KG.isMuted() || document.hidden) { music.nextBar = 0; return; }
-  const now = performance.now() / 1000;
-  if (music.nextBar - now < 0.35) scheduleBar();
-}
-setInterval(musicTick, 120);
 
 /* =====================================================================
  * 2D fallback view (same API as view3d.js)
@@ -608,7 +712,7 @@ function startRun(opts) {
   screen = 'game'; paused = false; acc = 0; prevPhase = ''; buildSig = ''; dmgTexts.length = 0;
   closeMenu();
   $('#hud').classList.add('on');
-  music.on = true; music.intense = 1; music.nextBar = 0;
+  playMusic(); heartT = 0;
   showHint(isTouch ? '在畫面任意處拖曳移動，右下角衝刺' : 'WASD／方向鍵移動 · 空白鍵衝刺 · P 暫停');
   layout();
 }
@@ -617,8 +721,8 @@ function togglePause() {
   if (screen !== 'game' || !game) return;
   if (game.state.phase !== 'play') return;
   paused = !paused;
-  sfx('click');
-  if (paused) showPause(); else closeMenu();
+  sfx(paused ? 'back' : 'select');
+  if (paused) showPause(); else { closeMenu(); KG.music.resume(); }
 }
 document.addEventListener('visibilitychange', () => { if (document.hidden && screen === 'game' && game && game.state.phase === 'play' && !paused) { paused = true; showPause(); } });
 
@@ -632,34 +736,52 @@ function addText(x, z, text, color, size, life) {
   dmgTexts.push({ x, z, text, color, size: size || 14, t: 0, life: life || 0.75, ox: (Math.random() - 0.5) * 0.6 });
 }
 const KCOL = { fire: '#ffa060', frost: '#a8e8ff', light: '#fff07a', poison: '#a6f06a', holy: '#fff3b0', dark: '#d0a8ff', phys: '#ffffff' };
+// 依武器發出的聲音（cast 事件）
+const CAST_SND = { firebolt: 'ab_fire', meteor: 'ab_meteorCast', arrows: 'ab_bow', arrowstorm: 'ab_bow', axes: 'ab_axe', bloodaxes: 'ab_axe',
+  orbs: 'ab_orb', soulring: 'ab_orb', poison: 'ab_flask', plague: 'ab_flask', spirits: 'ab_ghost', reaper: 'ab_reaper' };
+let gemChain = 0, gemLast = 0, viewHW = 13;
+function panOf(x) { const p = game.state.player; return clamp((x - p.x) / Math.max(4, viewHW) * 0.8, -0.8, 0.8); }
 function handleEvents(evs) {
   let shake = 0;
   for (const e of evs) {
     switch (e.type) {
       case 'hit':
         if (e.target === 'p') break;
-        sfx('hit');
+        sfx(e.crit ? 'ab_crit' : 'ab_hit', e.crit ? 0.9 : 0.7, 1, panOf(e.x));
         if (settings.dmgNumbers && (e.crit || dmgTexts.length < 34)) addText(e.x, e.z, String(e.dmg), e.crit ? '#ffd84a' : KCOL[e.kind] || '#fff', e.crit ? 19 : 13, e.crit ? 0.9 : 0.6);
         break;
-      case 'kill': sfx('kill'); if (e.boss) { shake += 1; sfx('boom'); } else if (e.elite) shake += 0.3; break;
-      case 'slash': sfx('slash'); break;
-      case 'cast': if (e.weapon === 'firebolt' || e.weapon === 'arrows' || e.weapon === 'spirits') sfx('shoot'); break;
-      case 'explode': sfx('boom'); shake += e.r > 4 ? 0.25 : 0.04; break;
-      case 'strike': sfx(e.kind === 'light' ? 'zap' : 'boom'); shake += 0.1; break;
-      case 'chain': sfx('zap'); break;
-      case 'nova': sfx('frost'); break;
-      case 'pickup': if (e.kind.startsWith('xp')) sfx('gem'); else if (e.kind === 'gold') sfx('gold'); else if (e.kind === 'chest') sfx('chest'); else sfx('pick'); break;
-      case 'levelup': sfx('levelup'); break;
-      case 'hurt': sfx('hurt'); shake += 0.2; KG.vibrate(25); if (viewKind !== '3d' && view.flash) view.flash('#ff2020', 0.18); break;
-      case 'dash': sfx('dash'); break;
-      case 'evolve': sfx('evolve'); banner(DATA.weapons[e.weapon].name + ' 覺醒！'); if (viewKind !== '3d' && view.flash) view.flash('#ffd890', 0.35); break;
-      case 'spawn': if (DATA.enemies[e.enemy] && DATA.enemies[e.enemy].boss) { sfx('boss'); shake += 0.8; banner(DATA.enemies[e.enemy].name + ' 降臨'); music.intense = 2; } else sfx('elite'); break;
-      case 'bossPhase': sfx('boss'); shake += 0.5; break;
-      case 'shrine': sfx('shrine'); break;
-      case 'heal': sfx('heal'); { const p = game.state.player; addText(p.x, p.z, '+' + e.amount, '#7aff8a', 16, 0.9); } break;
+      case 'kill':
+        if (e.boss) { shake += 1; sfx('ab_eliteKill', 1.3, 0.7); sfx('ab_boom', 1, 0.7); }
+        else if (e.elite) { shake += 0.3; sfx('ab_eliteKill', 1, 1, panOf(e.x)); }
+        else sfx('ab_kill', 0.75, 1, panOf(e.x));
+        break;
+      case 'slash': sfx(e.kind === 'holy' ? 'ab_holy' : e.kind === 'bone' ? 'ab_bone' : 'ab_slash', e.kind === 'bone' ? 0.6 : 1, 1, e.kind === 'bone' ? panOf(e.x) : 0); break;
+      case 'cast': { const n = CAST_SND[e.weapon]; if (n) sfx(n); break; }
+      case 'explode': sfx(e.kind === 'poison' ? 'ab_splat' : 'ab_boom', e.r > 4 ? 1 : 0.6, e.r > 4 ? 0.8 : 1.1, panOf(e.x)); shake += e.r > 4 ? 0.25 : 0.04; break;
+      case 'strike': sfx(e.kind === 'light' ? 'ab_thunder' : 'ab_boom', 0.9, e.kind === 'light' ? 1 : 0.85, panOf(e.x)); shake += 0.1; break;
+      case 'chain': sfx(e.kind === 'dark' ? 'ab_dark' : 'ab_zap'); break;
+      case 'nova': sfx(e.kind === 'holy' ? 'ab_holyNova' : e.kind === 'dark' ? 'ab_darkNova' : 'ab_frost', 1, 1, panOf(e.x)); break;
+      case 'pickup':
+        if (e.kind.startsWith('xp')) {
+          // 連續吃寶石，音高一路往上
+          const t = performance.now();
+          gemChain = t - gemLast < 450 ? Math.min(gemChain + 1, 18) : 0; gemLast = t;
+          sfx('ab_gem', 0.8, Math.pow(2, gemChain / 24), panOf(e.x));
+        } else if (e.kind === 'gold') sfx('ab_gold', 0.8, 1, panOf(e.x));
+        else if (e.kind === 'chest') sfx('ab_chestOpen');
+        else sfx('ab_heal', 0.8);
+        break;
+      case 'levelup': jingle(J.level); break;
+      case 'hurt': sfx('ab_hurt'); shake += 0.2; KG.vibrate(25); if (viewKind !== '3d' && view.flash) view.flash('#ff2020', 0.18); break;
+      case 'dash': sfx('ab_dash'); break;
+      case 'evolve': sfx('ab_evolve'); jingle(J.evolve); banner(DATA.weapons[e.weapon].name + ' 覺醒！'); if (viewKind !== '3d' && view.flash) view.flash('#ffd890', 0.35); break;
+      case 'spawn': if (DATA.enemies[e.enemy] && DATA.enemies[e.enemy].boss) { sfx('ab_roar'); shake += 0.8; banner(DATA.enemies[e.enemy].name + ' 降臨'); } else sfx('ab_eliteSpawn', 1, 1, panOf(e.x)); break;
+      case 'bossPhase': sfx('ab_roar', 1, 0.85); shake += 0.5; break;
+      case 'shrine': sfx('ab_shrine'); break;
+      case 'heal': sfx('ab_heal'); { const p = game.state.player; addText(p.x, p.z, '+' + e.amount, '#7aff8a', 16, 0.9); } break;
       case 'text': addText(e.x, e.z, e.text, e.color, 20, 1.6); break;
-      case 'death': sfx('death'); shake += 0.6; break;
-      case 'win': sfx('win'); break;
+      case 'death': sfx('ab_death'); KG.music.stop(1.2); shake += 0.6; break;
+      case 'win': KG.music.stop(0.6); jingle(J.win); break;
     }
   }
   // the 3D view shakes on these events itself (scaled by view.shakeScale); only the 2D fallback needs shell shake
@@ -770,7 +892,7 @@ function toMenuMode() {
   $('#hud').classList.remove('on');
   stickEl.style.display = 'none'; stick.id = null; stick.active = false;
   if (view) { view.setMode('menu'); view.setStage(save.last.stage); view.setHero(save.last.hero); }
-  music.on = true; music.intense = -1; music.nextBar = 0;
+  titleMusic();
 }
 
 /* ---------- sheet layout: header / scrolling body / pinned footer ---------- */
@@ -985,7 +1107,7 @@ function showEquip(fromRun) {
 function showSettings(back) {
   if (screen !== 'game') setFocus('default');
   const render = () => {
-    const seg = (key, opts) => '<div class="seg">' + opts.map(([v, t]) => '<button class="btn small ' + (String(settings[key]) === String(v) ? 'sel' : 'dark') + '" data-k="' + key + '" data-v="' + v + '">' + t + '</button>').join('') + '</div>';
+    const seg = (key, opts) => '<div class="seg">' + opts.map(([v, t]) => '<button class="btn small ' + (String(key === 'music' ? KG.music.isEnabled() : settings[key]) === String(v) ? 'sel' : 'dark') + '" data-k="' + key + '" data-v="' + v + '">' + t + '</button>').join('') + '</div>';
     keepScroll(() => openMenu(sheet('full', '<h2>設定</h2>',
       '<div class="set"><span>音樂</span>' + seg('music', [[true, '開'], [false, '關']]) + '</div>' +
       '<div class="set"><span>音效</span>' + seg('sfx', [[true, '開'], [false, '關']]) + '</div>' +
@@ -998,9 +1120,9 @@ function showSettings(back) {
     onAll('[data-k]', el => {
       const k = el.dataset.k; let v = el.dataset.v;
       if (v === 'true') v = true; else if (v === 'false') v = false;
-      settings[k] = v; persistSettings(); sfx('click');
+      if (k === 'music') KG.music.setEnabled(!!v); else { settings[k] = v; persistSettings(); }
+      sfx('click');
       if (k === 'quality' || k === 'dmgNumbers' || k === 'shake') applyQuality();
-      if (k === 'music') music.nextBar = 0;
       render();
     });
     on('#b-back', () => { sfx('click'); back(); });
@@ -1047,7 +1169,7 @@ function showLevelUp() {
 function showChest() {
   const ch = game.getChoices();
   phaseShownAt = performance.now();
-  sfx('chest');
+  jingle(J.chest);
   openMenu(sheet('bare', '<h2>寶箱！</h2>', '<div class="cards">' + ch.map((c, i) => choiceCardHtml(c, i, false)).join('') + '</div>',
     '<button class="btn primary grow" id="chestok">全部領取</button>'), true);
   const ok = (el, e) => { if (!freshTap(e || el)) return; game.choose(0); sfx('pick'); afterMenuChoice(); };
@@ -1079,11 +1201,20 @@ function buildHtml(withDmg) {
 }
 function showPause() {
   const s = game.state;
+  KG.music.pause();
+  const tg = (k, on) => '<div class="seg">' + [[true, '開'], [false, '關']].map(([v, t]) => '<button class="btn small ' + (on === v ? 'sel' : 'dark') + '" data-tg="' + k + '" data-v="' + v + '">' + t + '</button>').join('') + '</div>';
   openMenu(sheet('full', '<h2>暫停</h2>',
+    '<div class="sndrow"><div class="set"><span>音樂</span>' + tg('music', KG.music.isEnabled()) + '</div><div class="set"><span>音效</span>' + tg('sfx', !!settings.sfx) + '</div></div>' +
     '<div class="bigstat"><div>時間<b>' + fmtTime(s.time) + '</b></div><div>等級<b>' + s.player.level + '</b></div><div>擊殺<b>' + s.kills + '</b></div><div>金幣<b>' + s.gold + '</b></div></div>' +
     '<h3>目前組合</h3>' + buildHtml(true) + '<h3>屬性</h3>' + statsHtml(),
     '<button class="btn primary grow" id="b-res">繼續</button><button class="btn" id="b-set">設定</button><button class="btn dark" id="b-quit">放棄本局</button>'), true);
-  on('#b-res', () => { paused = false; sfx('click'); closeMenu(); });
+  onAll('[data-tg]', el => {
+    const v = el.dataset.v === 'true';
+    if (el.dataset.tg === 'music') KG.music.setEnabled(v); else { settings.sfx = v; persistSettings(); }
+    sfx('click');
+    keepScroll(showPause);
+  });
+  on('#b-res', () => { paused = false; sfx('select'); closeMenu(); KG.music.resume(); });
   on('#b-set', () => { sfx('click'); showSettings(showPause); });
   on('#b-quit', () => { sfx('click'); paused = false; finishRun(); });
 }
@@ -1093,9 +1224,9 @@ function showWinChoice() {
     '<div class="muted" style="text-align:center;margin-top:6px">可以結算戰利品，或繼續挑戰越來越強的無盡模式（死亡時仍保留勝利獎勵）。</div>',
     '<button class="btn primary grow" id="b-sum">結算戰利品</button><button class="btn grow" id="b-end">繼續・無盡模式</button>'), true);
   on('#b-sum', () => { sfx('click'); finishRun(); });
-  on('#b-end', () => { sfx('click'); game.continueEndless(); closeMenu(); prevPhase = 'play'; music.intense = 2; });
+  on('#b-end', () => { sfx('select'); game.continueEndless(); closeMenu(); prevPhase = 'play'; playMusic(); });
 }
-let lastSummary = null;
+let lastSummary = null, lastRec = false;
 function finishRun() {
   if (!game) return;
   const sum = game.getSummary();
@@ -1103,6 +1234,7 @@ function finishRun() {
   save.gold += sum.gold;
   save.stats.runs++;
   save.stats.kills += sum.kills;
+  lastRec = Math.floor(sum.time) > save.stats.bestTime && save.stats.runs > 1;
   save.stats.bestTime = Math.max(save.stats.bestTime, Math.floor(sum.time));
   save.stats.best[sum.stage] = Math.max(save.stats.best[sum.stage] || 0, Math.floor(sum.time));
   const di = DATA.difficulties[sum.difficulty].idx;
@@ -1122,7 +1254,12 @@ function finishRun() {
 }
 function showSummary(sum, salv) {
   game.state.phase = sum.win ? 'win' : 'dead';
-  music.intense = -1;
+  // 結算：停掉遊戲音樂 → 結束樂句（破紀錄再加一段）→ 回到標題音樂
+  KG.music.stop(0.4);
+  const jd = sum.win ? 0.6 : jingle(J.death) || 0; // 勝利樂句在擊敗首領時已經播過
+  if (lastRec) setTimeout(() => { if (screen === 'summary') jingle(J.rec); }, jd * 1000 + 200);
+  clearTimeout(musicT);
+  musicT = setTimeout(() => { if (screen === 'summary') titleMusic(); }, jd * 1000 + (lastRec ? 1500 : 700));
   const dmgRows = sum.weapons.slice().sort((a, b) => b.dmg - a.dmg).map(w => '<tr><td style="width:30px"><div class="ico" style="width:26px;height:26px">' + iconSvg(DATA.weapons[w.id].iconId) + '</div></td><td>' + esc(DATA.weapons[w.id].name) + '</td><td>' + fmtNum(w.dmg) + '</td></tr>').join('');
   const loot = sum.loot.map((it, i) => '<div class="it ' + it.rarity + '" style="--rc:' + RCOL[it.rarity] + ';animation-delay:' + (0.4 + i * 0.25) + 's" title="' + esc(it.name) + '">' + itemIcon(it) + '</div>').join('');
   openMenu(sheet('full', '<h1 class="logo" style="font-size:clamp(28px,7vh,40px)">' + (sum.win ? '凱旋歸來' : '倒在深淵') + '</h1>',
@@ -1155,11 +1292,12 @@ function frame(now) {
       if (!paused && s.phase === 'play') {
         if (botOn) { const b = botInput(game); game.setInput({ mx: b.mx, mz: b.mz, dash: b.dash }); }
         else { readInput(); game.setInput(inp); inp.dash = false; }
-        const ex = view.getViewExtents(); game.setViewExtents(ex.halfW, ex.halfH);
+        const ex = view.getViewExtents(); game.setViewExtents(ex.halfW, ex.halfH); viewHW = ex.halfW;
         acc += dt;
         let n = 0;
         while (acc >= STEP && n < 6 && game.state.phase === 'play') { game.update(STEP); acc -= STEP; n++; }
         if (n >= 6) acc = 0;
+        weaponSounds(); musicReact(dt); heartbeat(dt);
       } else acc = 0;
       handleEvents(game.events);
       view.render(game.state, game.events, paused ? 0 : dt);

@@ -22,6 +22,7 @@
 <canvas id="gl"></canvas>
 <canvas id="ui" class="menu" aria-label="3D 空氣曲棍球遊戲畫面"></canvas>
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
 <script type="module">
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
@@ -121,12 +122,12 @@ function main() {
     banner = { t: 0, text: '比賽開始', sub: '先得 ' + opts.target + ' 分獲勝', col: '#7fe8ff', all: true };
     drawBoard();
     fitCamera();
-    startMusic();
-    KG.note(523, 0.1, 'square', 0.05); KG.note(784, 0.16, 'square', 0.05, 0.1);
+    playMusic();
+    jingle(J.start);
   }
   function toTitle() {
     demo = true; ui = 'title';
-    stopMusic();
+    titleMusic();
     mallets[0].ai = DIFFS.normal; mallets[1].ai = DIFFS.normal;
     score = [0, 0]; winner = -1;
     resetMallets();
@@ -144,6 +145,7 @@ function main() {
     sideT = 0; sideOf = s; warnSec = -1;
     rally = 0;
     clearTrail();
+    sfx('ah_drop', 1, 1, puck.x, puck.y, 0);
   }
   function onGoal(sc) {
     phase = 'goal'; stateT = 0;
@@ -166,21 +168,21 @@ function main() {
   }
   function finishMatch() {
     phase = 'over'; stateT = 0;
-    stopMusic();
+    KG.music.stop(0.5);
     if (opts.mode === 'ai') {
       const d = opts.diff;
       if (winner === 0) {
         stats.wins[d]++; stats.streak++;
         if (stats.streak > stats.bestStreak) { stats.bestStreak = stats.streak; newRecord = stats.streak > 1; }
-        KG.sound('win'); KG.confetti();
+        jingle(newRecord ? J.record : J.win); KG.confetti();
       } else {
         stats.losses[d]++; stats.streak = 0;
-        KG.sound('lose');
+        jingle(J.lose);
       }
       KG.best('air-hockey', stats.bestStreak);
     } else {
       stats.pvp++;
-      KG.sound('win'); KG.confetti();
+      jingle(J.win); KG.confetti();
     }
     KG.store.set(SKEY, stats);
   }
@@ -416,6 +418,7 @@ function main() {
     goalGlow[1] = Math.max(0, goalGlow[1] - dt * 0.8);
     if (banner) { banner.t += dt; if (banner.t > 2.4) banner = null; }
     updateSparks(dt);
+    audioTick(dt);
     if (ui === 'pause') return;
     puck.rot += puck.spin * dt;
     puck.spin *= Math.exp(-1.5 * dt);
@@ -431,12 +434,12 @@ function main() {
         else if (side !== 0) {
           sideT += dt;
           const left = Math.ceil(STALL - sideT);
-          if (sideT > STALL - 3 && left !== warnSec && left > 0) { warnSec = left; if (!demo) KG.sound('tick'); }
+          if (sideT > STALL - 3 && left !== warnSec && left > 0) { warnSec = left; sfx('ah_tick', 1, left === 1 ? 1.25 : 1, null, null, 0); }
           if (sideT > STALL) {
             const loser = side > 0 ? 0 : 1;
             if (!demo) {
               banner = { t: 0, text: '超過 ' + STALL + ' 秒', sub: '換對方發球', col: '#ffd23a', all: true };
-              KG.note(220, 0.3, 'square', 0.06, 0, 150);
+              sfx('ah_foul', 1, 1, null, null, 0);
             }
             fouls++;
             serve(1 - loser);
@@ -474,18 +477,132 @@ function main() {
   }
 
   /* =========================================================
-   * 音效
+   * 音樂（原創）與音效：都交給共用的 kg-music.js
+   *   標題：E 大調 100 bpm 冰場體育館風琴（風琴樂句與和弦、踏踏拍手節奏、行走低音）
+   *   比賽：A 小調 126 bpm 街機 big-beat 碎拍（切分碎拍鼓、風琴樂句、銅管重音、晶片主奏、八度貝斯）
+   *   圖層：hype＝連續來回 6 次以上、mp＝賽末點（再加速到 1.08 倍）
    * ========================================================= */
-  let lastWall = 0;
+  const SFX_KEY = 'air-hockey:sfx';
+  let sfxOn = KG.store.get(SFX_KEY, true) !== false;
+  const EV = { E: 'G#4+B4+E5', A: 'A4+C#5+E5', B: 'F#4+B4+D#5', 'C#m': 'G#4+C#5+E5' };
+  const E_CH = ['E', 'A', 'E', 'B', 'E', 'A', 'C#m', 'B'];
+  const SONG_TITLE = {
+    bpm: 100, swing: 0.08, chords: E_CH,
+    tracks: [
+      { inst: 'kick', pat: 'X.....X.X.......', vol: 0.66 },
+      { inst: 'clap', pat: '....X.......X...', vol: 0.5 },
+      { inst: 'shaker', pat: 'x.x.x.x.x.x.x.x.', vol: 0.26 },
+      { inst: 'sub', chord: 'R...3...5...3...', vol: 0.6 },
+      { inst: 'organ', vol: 0.32, seq: E_CH.map(c => '. . ' + EV[c] + ' . . . ' + EV[c] + ' .') },
+      { inst: 'organ', vol: 0.62, seq: [
+        'B4 B4 G#4 B4 E5 - - .', 'C#5 C#5 A4 C#5 E5 - - .', 'G#5 - F#5 E5 D#5 - B4 .', 'F#5 - - . D#5 - B4 .',
+        'B4 B4 G#4 B4 E5 - G#5 .', 'A5 - G#5 F#5 E5 - C#5 .', 'E5 - C#5 . G#4 - C#5 .', 'D#5 - - - F#4 - B4 -'] },
+      { inst: 'bell', vol: 0.45, seq: ['', '', '', 'B5 - - - - - - -', '', '', '', 'F#5 - - - - - - -'] }
+    ]
+  };
+  const AV = { Am: 'A4+C5+E5', F: 'A4+C5+F5', G: 'G4+B4+D5', C: 'G4+C5+E5', Dm: 'A4+D5+F5', E: 'G#4+B4+E5' };
+  const A_CH = ['Am', 'Am', 'F', 'G', 'Am', 'C', 'Dm', 'E'];
+  const SONG_PLAY = {
+    bpm: 126, chords: A_CH,
+    layers: { hype: false, mp: false },
+    tracks: [
+      { inst: 'kick', pat: ['X.....X..X..x...', 'X.....X...x.....'], vol: 0.8 },
+      { inst: 'snare', pat: ['....X.......X..o', '....X..o....X...'], vol: 0.6 },
+      { inst: 'hat', pat: 'x.x.x.x.x.x.x.x.', vol: 0.3 },
+      { inst: 'ohat', pat: '..............x.', vol: 0.3 },
+      { inst: 'bass', chord: 'R..R8.R..R8.R.5.', vol: 0.66 },
+      { inst: 'organ', vol: 0.5, seq: [
+        'A4 . C5 A4 . E5 D5 C5', 'A4 . C5 A4 . G4 A4 .', 'A4 . C5 F4 . A4 G4 F4', 'G4 . B4 G4 . D5 B4 .',
+        'A4 . C5 A4 . E5 D5 C5', 'G4 . C5 G4 . E5 D5 C5', 'F4 . A4 D5 . F5 E5 D5', 'E4 . G#4 B4 . E5 - -'] },
+      { inst: 'chip', vol: 0.55, seq: ['', '. . . . E5 D5 C5 D5', '', '. . . . D5 - B4 -', '', '. . . . G5 - E5 -', '', '. . . . B4 - D5 -'] },
+      { inst: 'brass', vol: 0.42, seq: A_CH.map((c, i) => i % 2 ? '' : AV[c] + ' . . . . . ' + AV[c] + ' .') },
+      { inst: 'chip', arp: 'up', rate: 2, oct: 4, span: 2, vol: 0.3, layer: 'hype' },
+      { inst: 'clap', pat: '....x.......x...', vol: 0.4, layer: 'hype' },
+      { inst: 'ohat', pat: '..x...x...x...x.', vol: 0.3, layer: 'hype' },
+      { inst: 'strings', layer: 'mp', vol: 0.5, seq: [
+        'E5 - - - - - - -', 'C5 - - - - - - -', 'C5 - - - - - - -', 'B4 - - - D5 - - -',
+        'E5 - - - - - - -', 'E5 - - - G5 - - -', 'F5 - - - - - - -', 'E5 - - - D5 - B4 -'] },
+      { inst: 'crash', layer: 'mp', vol: 0.4, pat: ['X...............', '................'], every: 2 },
+      { inst: 'tom', layer: 'mp', vol: 0.5, pat: ['................', '............x.xx'] }
+    ]
+  };
+  window.__songs = { SONG_TITLE, SONG_PLAY };
+  const J = {
+    start: { bpm: 200, inst: 'brass', vol: 0.3, notes: [['E4', 1], ['A4', 1], ['C5', 1], ['E5', 3]], bass: [['A2', 6, 0]], bassVol: 0.26 },
+    goalFor: { bpm: 220, inst: 'chip', vol: 0.3, notes: [['C5', 1], ['E5', 1], ['G5', 1], ['C5+E5+A5', 3]], bass: [['A2', 6, 0]], bassVol: 0.24 },
+    goalAgainst: { bpm: 170, inst: 'pluck', vol: 0.3, notes: [['E5', 1], ['C5', 1], ['A4', 2]], bass: [['F2', 4, 0]], bassVol: 0.2 },
+    mp: { bpm: 200, inst: 'brass', vol: 0.28, notes: [['E5', 1], ['E5', 1], ['A5', 2]] },
+    win: { bpm: 160, inst: 'brass', vol: 0.32, notes: [['A4', 1], ['C5', 1], ['E5', 1], ['A5', 2], ['G5', 1], ['A5', 1], ['B5', 1], ['C5+E5+A5', 5]], bass: [['A2', 3, 0], ['E2', 4, 3], ['A2', 6, 7]], bassVol: 0.3 },
+    lose: { bpm: 110, inst: 'pluck', vol: 0.32, notes: [['E5', 1], ['D5', 1], ['C5', 1], ['B4', 2], ['A4', 4]], bass: [['A2', 9, 0]], bassVol: 0.24 },
+    record: { bpm: 180, inst: 'bell', vol: 0.34, notes: [['A4', 1], ['C5', 1], ['E5', 1], ['A5', 2], ['B5', 1], ['C5+E5+A5', 5]], bass: [['A2', 4, 0], ['E2', 7, 4]], bassVol: 0.26 }
+  };
+  window.__jingles = J;
+
+  const SF = KG.sfx;
+  SF.define('ah_mallet', (p, s) => { s.tone(330 * p, 0.08, { type: 'triangle', vol: 0.24, slide: 220 * p }); s.tone(120 * p, 0.09, { vol: 0.26, slide: 60 }); s.noise(0.035, { vol: 0.16, freq: 2400 * p, q: 1.6 }); });
+  SF.define('ah_smash', (p, s) => { s.tone(420 * p, 0.09, { type: 'triangle', vol: 0.26, slide: 260 * p }); s.tone(110 * p, 0.12, { vol: 0.32, slide: 50 }); s.noise(0.06, { vol: 0.26, freq: 2000 * p, q: 1 }); s.noise(0.03, { vol: 0.12, freq: 4200, q: 3 }); });
+  SF.define('ah_wall', (p, s) => { s.tone(820 * p, 0.04, { type: 'square', vol: 0.05 }); s.tone(260 * p, 0.06, { type: 'triangle', vol: 0.16, slide: 180 * p }); s.noise(0.03, { vol: 0.12, freq: 1800 * p, q: 2.5 }); });
+  SF.define('ah_land', (p, s) => { s.tone(320 * p, 0.06, { type: 'triangle', vol: 0.2 }); s.tone(150 * p, 0.1, { vol: 0.24, slide: 70 }); s.noise(0.04, { vol: 0.1, freq: 1500, q: 2 }); });
+  SF.define('ah_drop', (p, s) => { s.noise(0.3, { vol: 0.08, freq: 600 * p, sweep: 2400 * p, q: 1.6 }); s.tone(500 * p, 0.25, { vol: 0.05, slide: 900 * p }); });
+  SF.define('ah_buzzer', (p, s) => {
+    [196, 247, 294].forEach(f => s.tone(f * p, 0.9, { type: 'sawtooth', vol: 0.045, attack: 0.02 }));
+    s.tone(98 * p, 0.9, { type: 'square', vol: 0.035, attack: 0.02 });
+  });
+  SF.define('ah_crowd', (p, s) => {
+    const L = 1.0 + p * 0.8;
+    s.noise(L, { vol: 0.12, freq: 1400, q: 0.5, attack: 0.15 });
+    s.noise(L * 0.8, { vol: 0.09, freq: 700, q: 0.7, attack: 0.12, delay: 0.05 });
+    for (let i = 0; i < 6 + p * 10; i++) s.noise(0.04, { vol: 0.07, freq: 1300 + Math.random() * 1100, q: 1.5, delay: 0.1 + Math.random() * L * 0.7 });
+  });
+  SF.define('ah_groan', (p, s) => { s.noise(0.8, { vol: 0.08, freq: 500, sweep: 300, q: 2, attack: 0.1 }); [262, 311].forEach((f, i) => s.tone(f * p, 0.7, { type: 'triangle', vol: 0.035, slide: f * 0.78 * p, delay: i * 0.03, attack: 0.08 })); });
+  SF.define('ah_foul', (p, s) => { s.tone(220 * p, 0.32, { type: 'square', vol: 0.06, slide: 150 * p }); s.tone(110 * p, 0.32, { type: 'triangle', vol: 0.1 }); });
+  SF.define('ah_tick', (p, s) => { s.tone(1250 * p, 0.05, { type: 'square', vol: 0.05 }); s.tone(625 * p, 0.05, { type: 'triangle', vol: 0.06 }); });
+  SF.define('ah_whistle', (p, s) => { s.tone(2200 * p, 0.12, { vol: 0.07 }); s.tone(2350 * p, 0.2, { vol: 0.07, delay: 0.13 }); });
+
+  const SO = { vol: 1, pitch: 1, pan: 0 };
+  const lastS = {};
+  function panOf(x, y) { const sx = toScreen(x, y, 0)[0]; return clamp((sx / W * 2 - 1) * 0.7, -0.75, 0.75); }
+  // 音效：同一種聲音最多每 40 ms 一次、音高隨機 ±4%、依畫面左右 pan；標題畫面的展示對打不出聲
+  function sfx(name, vol, pitch, x, y, gap) {
+    if (!sfxOn || KG.isMuted() || demo) return;
+    const t = performance.now();
+    if (t - (lastS[name] || 0) < (gap == null ? 40 : gap)) return;
+    lastS[name] = t;
+    SO.vol = vol == null ? 1 : vol; SO.pitch = (pitch || 1) * (1 + (Math.random() - 0.5) * 0.08); SO.pan = x == null ? 0 : panOf(x, y);
+    SF.play(name, SO);
+  }
+  function uiS(name) { if (sfxOn && !KG.isMuted()) SF.play(name); }
+  function jingle(def) { if (sfxOn) KG.music.jingle(def); }
+  // 冰球在氣墊上滑的聲音：速度越快越亮越大聲
+  let slide = null, slideT = 0, moodT = 0;
+  function audioTick(dt) {
+    slideT -= dt;
+    if (slideT <= 0) {
+      slideT = 0.05;
+      const on = sfxOn && !demo && ui === null && phase === 'play';
+      if (on && !slide) slide = SF.loop('wind');
+      if (slide) {
+        const k = on ? clamp(Math.hypot(puck.vx, puck.vy) / MAXP, 0, 1) : 0;
+        slide.set(0.15 + k * 0.6, on ? 0.012 + k * 0.06 : 0.0001);
+      }
+    }
+    moodT -= dt;
+    if (moodT <= 0) {
+      moodT = 0.25;
+      if (demo) return;
+      const mp = winner < 0 && (score[0] === opts.target - 1 || score[1] === opts.target - 1);
+      KG.music.setLayer('hype', phase === 'play' && rally >= 6);
+      KG.music.setLayer('mp', mp);
+      KG.music.setTempo(mp ? 1.08 : 1);
+    }
+  }
+  function titleMusic() { KG.music.setVolume(0.42); KG.music.play(SONG_TITLE); }
+  function playMusic() { KG.music.setVolume(0.32); KG.music.setLayer('hype', false); KG.music.setLayer('mp', false); KG.music.setTempo(1); KG.music.play(SONG_PLAY, { restart: true }); }
   function wallHit(v) {
     if (v > 0.6) spawnSparks(puck.x, puck.y, 0.01, Math.min(8, 2 + v * 1.2 | 0), [2.5, 2.0, 1.2], 0.6 + v * 0.2, 0.3);
-    if (demo) return;
-    const n = performance.now();
-    if (n - lastWall < 45 || v < 0.25) return;
-    lastWall = n;
+    if (v < 0.25) return;
     const k = clamp(v / 5, 0.1, 1);
-    KG.note(760 + Math.random() * 240, 0.035, 'square', 0.02 + 0.035 * k);
-    KG.note(240, 0.05, 'triangle', 0.04 * k);
+    sfx('ah_wall', 0.25 + k * 0.85, 0.9 + k * 0.2, puck.x, puck.y, 45);
   }
   function onHit(m, imp, nx, ny) {
     if (m.cd > 0) return;
@@ -497,46 +614,16 @@ function main() {
     spawnSparks(puck.x - nx * RP, puck.y - ny * RP, 0.02, 4 + (k * 14 | 0), col, 0.8 + k * 2.2, 0.5 + k);
     if (k > 0.75) shake = Math.max(shake, 0.18);
     if (demo) return;
-    KG.note(240 + k * 460, 0.07, 'triangle', 0.09 + 0.12 * k);
-    KG.note(120, 0.07, 'sine', 0.12 + 0.12 * k, 0, 55);
-    if (k > 0.6) KG.note(2100, 0.03, 'square', 0.025);
+    // 打得越用力越大聲、音越亮；連續來回音高慢慢往上
+    sfx(k > 0.6 ? 'ah_smash' : 'ah_mallet', 0.35 + k * 0.75, (0.85 + k * 0.3) * (1 + Math.min(rally, 12) * 0.008), puck.x, puck.y);
     if (m.human) KG.vibrate(k > 0.6 ? 18 : 8);
   }
-  function sfxLand() {
-    if (demo) return;
-    KG.note(320, 0.06, 'triangle', 0.1);
-    KG.note(150, 0.09, 'sine', 0.14, 0, 70);
-  }
+  function sfxLand() { sfx('ah_land', 1, 1, puck.x, puck.y); }
   function goalHorn(good) {
-    const ch = good ? [196, 247, 294] : [174.6, 207.7, 261.6];
-    [0, 0.26].forEach(d => ch.forEach((f, i) => KG.note(f, 0.22, 'sawtooth', 0.07 - i * 0.012, d)));
-    ch.forEach((f, i) => KG.note(f, 0.9, 'sawtooth', 0.075 - i * 0.012, 0.52));
-    KG.note(520, 0.3, 'sine', 0.12, 0, 130);
-    KG.sound('whoosh');
-    // 觀眾歡呼：一堆隨機的短音
-    const n = good ? 26 : 12;
-    for (let i = 0; i < n; i++) KG.note(rand(380, 980), rand(0.06, 0.18), 'triangle', 0.018, 0.12 + Math.random() * 1.3, rand(300, 1300));
-    if (good) [784, 988, 1175, 1568].forEach((f, i) => KG.note(f, 0.14, 'square', 0.035, 1.3 + i * 0.08));
+    sfx('ah_buzzer', 1, good ? 1 : 0.89, null, null, 0);
+    if (good) sfx('ah_crowd', 1, 1, null, null, 0); else sfx('ah_groan', 1, 1, null, null, 0);
+    jingle(good ? J.goalFor : J.goalAgainst);
   }
-
-  /* ---------- 背景音樂：街機電子樂 ---------- */
-  const BASS = [55, 55, 43.65, 49];
-  const ARP = [[220, 262, 330, 440], [220, 262, 330, 392], [174.6, 220, 262, 349], [196, 247, 294, 392]];
-  let musicTimer = 0, mStep = 0;
-  function startMusic() {
-    if (musicTimer) return;
-    musicTimer = setInterval(() => {
-      if (KG.isMuted() || document.hidden || demo || ui === 'pause' || phase === 'over') return;
-      const bar = Math.floor(mStep / 16) % 4, s = mStep % 16;
-      if (s % 2 === 0) KG.note(BASS[bar] * (s % 4 === 0 ? 1 : 2), 0.12, 'sawtooth', 0.026);
-      if (s % 4 === 0) KG.note(95, 0.09, 'sine', 0.07, 0, 40);
-      if (s % 4 === 2) KG.note(5200, 0.025, 'square', 0.006);
-      const c = ARP[bar];
-      if (s % 2 === 1 || bar === 3) KG.note(c[(s >> 1) % 4] * (s >= 8 ? 2 : 1), 0.08, 'triangle', 0.016);
-      mStep++;
-    }, 125);
-  }
-  function stopMusic() { clearInterval(musicTimer); musicTimer = 0; }
 
   /* =========================================================
    * 3D 場景
@@ -1103,8 +1190,26 @@ function main() {
         ctx.fillStyle = g; ctx.fill();
       } else if (hot && !disabled) { rr(bx, y + 3, iw, h - 6, 8); ctx.fillStyle = 'rgba(255,255,255,.1)'; ctx.fill(); }
       txt(it[1], bx + iw / 2, y + h / 2 + 1, Math.min(17, h * 0.42), disabled ? 'rgba(200,210,230,.4)' : on ? '#ffffff' : 'rgba(220,230,255,.8)', { weight: 800 });
-      if (!disabled) addHit(id + i, bx, y, iw, h, () => { KG.sound('click'); pick(it[0]); });
+      if (!disabled) addHit(id + i, bx, y, iw, h, () => { uiS('click'); pick(it[0]); });
     });
+  }
+  // 音樂／音效開關
+  function toggle(id, x, y, w, h, label, on, onClick) {
+    const hot = hover === id;
+    rr(x, y, w, h, 12);
+    ctx.fillStyle = on ? (hot ? 'rgba(255,95,192,.32)' : 'rgba(255,95,192,.16)') : (hot ? 'rgba(255,255,255,.14)' : 'rgba(255,255,255,.06)');
+    ctx.fill();
+    ctx.lineWidth = 1.5; ctx.strokeStyle = on ? 'rgba(255,150,220,.8)' : 'rgba(160,180,220,.35)'; ctx.stroke();
+    const sw = 34, sh = 18, sx = x + w - sw - 12, sy = y + h / 2 - sh / 2;
+    rr(sx, sy, sw, sh, sh / 2); ctx.fillStyle = on ? '#ff5fc0' : 'rgba(120,130,160,.55)'; ctx.fill();
+    ctx.beginPath(); ctx.arc(on ? sx + sw - sh / 2 : sx + sh / 2, sy + sh / 2, sh / 2 - 3, 0, TAU); ctx.fillStyle = '#ffffff'; ctx.fill();
+    txt(label + (on ? ' 開' : ' 關'), x + 14, y + h / 2 + 1, 16, on ? '#ffffff' : 'rgba(200,215,240,.7)', { weight: 800, align: 'left' });
+    addHit(id, x, y, w, h, onClick);
+  }
+  function soundToggles(x, y, w) {
+    const bw = (w - 12) / 2;
+    toggle('tmusic', x, y, bw, 42, '音樂', KG.music.isEnabled(), () => { KG.music.setEnabled(!KG.music.isEnabled()); uiS('ui'); });
+    toggle('tsfx', x + bw + 12, y, bw, 42, '音效', sfxOn, () => { sfxOn = !sfxOn; KG.store.set(SFX_KEY, sfxOn); uiS('ui'); });
   }
   function panel(w, h) {
     ctx.fillStyle = 'rgba(2,3,10,.55)'; ctx.fillRect(0, 0, W, H);
@@ -1244,7 +1349,7 @@ function main() {
     }
   }
   function drawTitle() {
-    const PW = 380, PH = 452;
+    const PW = 380, PH = 506;
     panel(PW, PH);
     logo(PW / 2, 58, 46);
     let y = 122;
@@ -1257,8 +1362,10 @@ function main() {
     y += 54;
     txt('目標', lx, y + 21, 15, 'rgba(190,215,255,.85)', { weight: 800, align: 'left' });
     seg('tgt', sx, y, sw, 42, [[7, '先得 7 分'], [11, '先得 11 分']], opts.target, v => { opts.target = v; });
-    y += 60;
-    button('start', 24, y, PW - 48, 54, '開始比賽', true, () => { KG.sound('click'); newMatch({ mode: opts.mode, diff: opts.diff, target: opts.target }); });
+    y += 56;
+    soundToggles(24, y, PW - 48);
+    y += 58;
+    button('start', 24, y, PW - 48, 54, '開始比賽', true, () => { uiS('select'); newMatch({ mode: opts.mode, diff: opts.diff, target: opts.target }); });
     y += 76;
     const W_ = stats.wins;
     txt('勝場　簡單 ' + W_.easy + ' · 普通 ' + W_.normal + ' · 困難 ' + W_.hard, PW / 2, y, 14, '#ffd23a', { weight: 800 });
@@ -1268,12 +1375,13 @@ function main() {
     endPanel();
   }
   function drawPause() {
-    const PW = 330, PH = 250;
+    const PW = 330, PH = 304;
     panel(PW, PH);
     txt('暫停', PW / 2, 52, 34, '#ffffff', { weight: 900 });
     txt((opts.mode === 'ai' ? '你 ' + score[0] + ' : ' + score[1] + ' 電腦' : 'P1 ' + score[0] + ' : ' + score[1] + ' P2'), PW / 2, 88, 16, '#bfe0ff', { weight: 800 });
     button('resume', 24, 116, PW - 48, 50, '繼續比賽', true, togglePause);
-    button('quit', 24, 178, PW - 48, 46, '回到選單', false, () => { KG.sound('click'); toTitle(); });
+    soundToggles(24, 178, PW - 48);
+    button('quit', 24, 232, PW - 48, 46, '回到選單', false, () => { uiS('back'); toTitle(); });
     endPanel();
   }
   function drawOver() {
@@ -1291,15 +1399,15 @@ function main() {
     } else {
       txt('雙人對戰已進行 ' + stats.pvp + ' 場', PW / 2, 164, 14, '#bfe0ff', { weight: 700 });
     }
-    button('again', 24, 208, PW - 48, 52, '再來一局', true, () => { KG.sound('click'); newMatch(); });
-    button('menu', 24, 270, (PW - 60) / 2, 44, '選單', false, () => { KG.sound('click'); toTitle(); });
+    button('again', 24, 208, PW - 48, 52, '再來一局', true, () => { uiS('select'); newMatch(); });
+    button('menu', 24, 270, (PW - 60) / 2, 44, '選單', false, () => { uiS('back'); toTitle(); });
     button('home', 36 + (PW - 60) / 2, 270, (PW - 60) / 2, 44, '回首頁', false, () => { location.href = '../../index.html'; });
     endPanel();
   }
   function togglePause() {
     if (demo || phase === 'over') return;
-    KG.sound('click');
     ui = ui === 'pause' ? null : 'pause';
+    if (ui === 'pause') { uiS('back'); KG.music.pause(); } else { uiS('select'); KG.music.resume(); }
   }
 
   /* =========================================================
@@ -1371,8 +1479,8 @@ function main() {
     if (e.code === 'Space' || e.code === 'Enter') {
       e.preventDefault();
       if (e.repeat) return;
-      if (ui === 'title') newMatch({ mode: opts.mode, diff: opts.diff, target: opts.target });
-      else if (phase === 'over' && stateT > 1.1) newMatch();
+      if (ui === 'title') { uiS('select'); newMatch({ mode: opts.mode, diff: opts.diff, target: opts.target }); }
+      else if (phase === 'over' && stateT > 1.1) { uiS('select'); newMatch(); }
       else if (ui === 'pause') togglePause();
     } else if (e.code === 'KeyP' || e.code === 'Escape') togglePause();
   });

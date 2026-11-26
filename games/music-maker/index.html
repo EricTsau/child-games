@@ -132,6 +132,19 @@
   .tcard .acts { display: flex; flex-direction: column; gap: 12px; align-items: center; }
   .tcard .kg-btn { min-width: 220px; }
   #tNotes { height: 44px; width: 100%; display: block; }
+  .snd { display: flex; gap: 10px; justify-content: center; margin-top: 16px; }
+  .sndb { height: 40px; min-width: 110px; border: 3px solid #fff; border-radius: 20px; background: #eee6f5; color: #6d5a78; font-weight: 800; font-size: 15px; padding: 0 14px; box-shadow: 0 3px 0 rgba(74,59,82,0.15); cursor: pointer; }
+  .sndb.on { background: linear-gradient(180deg,#9ad8ff,#3a9ee8); color: #fff; }
+  @media (max-height: 560px) and (orientation: landscape) {
+    #title { padding: 8px; }
+    .tcard { width: min(600px, 100%); padding: 10px 18px 14px; }
+    #tNotes { height: 30px; }
+    .logo { font-size: 34px; margin: 0 0 2px; }
+    .tcard p { margin-bottom: 10px; font-size: 15px; }
+    .tcard .acts { flex-direction: row; flex-wrap: wrap; justify-content: center; gap: 10px; }
+    .tcard .kg-btn { min-width: 0; font-size: 17px; padding: 10px 18px; }
+    .snd { margin-top: 12px; }
+  }
 
   /* 橫向矮螢幕：左欄控制、右欄格子 */
   @media (orientation: landscape) and (max-height: 560px) {
@@ -220,9 +233,11 @@
       <button class="kg-btn blue" id="tDemo">聽聽範例歌</button>
       <button class="kg-btn yellow" id="tCont" hidden>繼續上次的歌</button>
     </div>
+    <div class="snd"><button class="sndb" id="tMus">音樂：開</button><button class="sndb" id="tSfx">音效：開</button></div>
   </div>
 </div>
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
 <script>
 'use strict';
 /* =====================================================================
@@ -303,6 +318,90 @@ const IC = {
 function icon(el, name) { el.innerHTML = IC[name]; }
 
 /* =====================================================================
+ * 背景音樂與介面音效（kg-music.js）
+ * 標題一首、「我的作品」一首；編曲、播放、自由彈奏時背景音樂完全停掉
+ * （小朋友自己的歌就是音樂，兩首一起響會打架）。
+ * 「音效」開關只管介面音效；樂團與自由彈奏是樂器，一直都會響（🔊 靜音時才安靜）。
+ * ===================================================================== */
+const M = KG.music;
+let sfxOn = KG.store.get('music-maker:sfx', true) !== false;
+const sfxLast = {};
+const SFX_PITCH = { tick: 1, click: 1 };
+function sfx(name, o) {
+  if (!sfxOn || KG.isMuted()) return;
+  const n = performance.now();
+  if (sfxLast[name] && n - sfxLast[name] < 40) return;
+  sfxLast[name] = n;
+  o = Object.assign({ vol: 0.8 }, o);
+  if (o.pitch == null) o.pitch = (SFX_PITCH[name] || 1) * (1 + (Math.random() - 0.5) * 0.08);
+  KG.sfx.play(name, o);
+}
+function jingleSave() {
+  if (!sfxOn) return;
+  M.jingle({ bpm: 168, inst: 'marimba', vol: 0.34, notes: [['C5', 1], ['E5', 1], ['G5', 1], ['C6', 1], ['G5', 1], ['C6+E6', 4]], bass: [['C3', 3, 0], ['G2', 1, 3], ['C3', 5, 4]], bassVol: 0.35 });
+  M.jingle({ bpm: 168, inst: 'bell', vol: 0.16, notes: [['G5', 4], ['E6+G6', 5]] });
+}
+const NN = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
+const CQ = { '': [0, 4, 7], m: [0, 3, 7], '7': [0, 4, 10], m7: [0, 3, 10], '6': [0, 4, 9] };
+function chordTok(ch, lo) {
+  const m = /^([A-G])([#b]?)(.*)$/.exec(ch);
+  const pc = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 }[m[1]] + (m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0);
+  return (CQ[m[3]] || CQ['']).map(iv => { let x = pc + iv; while (x < lo) x += 12; while (x >= lo + 12) x -= 12; return x; })
+    .sort((a, b) => a - b).map(x => NN[x % 12] + (Math.floor(x / 12) - 1)).join('+');
+}
+function stabs(inst, chords, rhythm, lo, vol, extra) {
+  return Object.assign({ inst, vol, seq: chords.map(c => { const v = chordTok(c, lo); return rhythm.split('').map(x => x === 'x' ? v : x === '-' ? '-' : '.').join(' '); }) }, extra || {});
+}
+/* 標題：巴西弗雷沃街頭嘉年華（F 大調 138） */
+const T_CH = ['F', 'Dm', 'Bb', 'C7', 'F', 'D7', 'Gm', 'C7'];
+const SONG_TITLE = {
+  bpm: 138, steps: 16, swing: 0, chords: T_CH, layers: { party: false },
+  tracks: [
+    { inst: 'brass', vol: 0.52, seq: [
+      'C5 F5 A5 - G5 F5 E5 F5', 'D5 - A5 - F5 - D5 -', 'Bb4 D5 F5 - Bb5 - A5 G5', 'E5 - G5 - Bb5 - G5 E5',
+      'F5 - C5 - A4 C5 F5 A5', 'F#5 - A5 - D5 - C5 -', 'Bb4 D5 G5 - F5 - D5 Bb4', 'C5 - E5 G5 C6 - . .'] },
+    { inst: 'flute', layer: 'party', vol: 0.5, seq: ['', '', '', '. . . . . . . . G5 A5 Bb5 C6 Bb5 G5 E5 C5', '', '', '', '. . . . . . . . C5 D5 E5 F5 G5 A5 Bb5 C6'] },
+    stabs('organ', T_CH, '..x...x...x...x.', 60, 0.28),
+    { inst: 'sub', chord: 'R...5...R...5...', vol: 0.8 },
+    { inst: 'snare', pat: 'X.oxo.x.X.oxo.x.', vol: 0.34 },
+    { inst: 'kick', pat: 'x.......x.......', vol: 0.55 },
+    { inst: 'tom', layer: 'party', pat: ['', '', '', '............x.xx', '', '', '', '........x.x.xxxx'], vol: 0.45 },
+    { inst: 'crash', layer: 'party', pat: ['X...............', '', '', '', '', '', '', ''], vol: 0.4 }
+  ]
+};
+/* 我的作品：慢慢的衣索比亞爵士（降 E 提吉塔五聲音階 Eb F G Bb C，84） */
+const W_CH = ['Eb6', 'Cm7', 'Fm7', 'Bb7', 'Eb6', 'Cm7', 'Fm7', 'Eb6'];
+const SONG_WORKS = {
+  bpm: 84, steps: 16, swing: 0.16, chords: W_CH,
+  tracks: [
+    { inst: 'bell', vol: 1, seq: [
+      'G5 - Bb5 - C6 - Bb5 G5', 'Eb5 - - F5 G5 - Eb5 -', 'C5 - Eb5 - F5 - Eb5 C5', 'Bb4 - - - . . F5 G5',
+      'Bb5 - C6 - Bb5 G5 F5 -', 'G5 - Eb5 - C5 - Bb4 C5', 'Eb5 - F5 - G5 - F5 Eb5', 'Eb5 - - - . . . .'] },
+    { inst: 'flute', vol: 0.6, seq: ['', '', '', '. . . . Bb5 G5 F5 Eb5', '', '', '', '. . . . G5 F5 Eb5 C5'] },
+    { inst: 'organ', chord: 'hold', rate: 8, oct: 4, vol: 0.24 },
+    { inst: 'pluck', chord: 'R...3...5...3...', oct: 2, vol: 1 },
+    { inst: 'shaker', pat: '..x...x...x...x.', vol: 0.45 },
+    { inst: 'rim', pat: '....x.......x...', vol: 0.28 }
+  ]
+};
+let partyTimer = 0;
+/** 現在該播哪一首背景音樂（null = 不播） */
+function bgmUpdate() {
+  let want = null;
+  if (titleOn) want = SONG_TITLE;
+  else if (sheetName === 'works' && !P.playing && !jamOn) want = SONG_WORKS;
+  if (want) {
+    if (M.current() !== want) {
+      M.setVolume(want === SONG_WORKS ? 0.55 : 0.26);
+      M.play(want);
+      clearTimeout(partyTimer);
+      if (want === SONG_TITLE) partyTimer = setTimeout(() => { if (M.current() === SONG_TITLE) M.setLayer('party', true); }, 7000);
+    }
+  } else if (M.current()) M.stop(0.3);
+}
+function setSfxOn(on) { sfxOn = !!on; KG.store.set('music-maker:sfx', sfxOn); if (sfxOn) sfx('ui'); }
+
+/* =====================================================================
  * 歌曲資料
  * ===================================================================== */
 function newPattern() {
@@ -371,12 +470,12 @@ function pushUndo() {
   refreshUI();
 }
 function undo() {
-  if (!undoStack.length) { KG.toast('沒有可以復原的了'); KG.sound('tick'); return; }
+  if (!undoStack.length) { KG.toast('沒有可以復原的了'); sfx('tick'); return; }
   const keepMode = song.mode;
   song = deserialize(JSON.parse(undoStack.pop()));
   song.mode = keepMode;
   applyMix();
-  KG.sound('whoosh');
+  sfx('whoosh');
   if (P.step >= song.steps) P.step = 0;
   cur = clamp(cur, 0, 7);
   changed(true);
@@ -497,13 +596,13 @@ function noiseBuf(ctx) {
   }
   return b;
 }
-function buildGraph(ctx) {
+function buildGraph(ctx, dest) {
   const master = ctx.createGain(); master.gain.value = 0.9;
   const comp = ctx.createDynamicsCompressor();
   comp.threshold.value = -16; comp.knee.value = 12; comp.ratio.value = 4; comp.attack.value = 0.004; comp.release.value = 0.2;
-  master.connect(comp); comp.connect(ctx.destination);
+  master.connect(comp); if (dest) comp.connect(dest);
   const tg = TRACKS.map(() => { const g = ctx.createGain(); g.connect(master); return g; });
-  return { master, comp, tg };
+  return { master, comp, tg, dest: dest || null };
 }
 function trackGainValue(s, i) { return s.mute[i] ? 0 : Math.pow(s.vol[i], 1.6) * 1.15; }
 function applyMix(graph, ctx) {
@@ -511,16 +610,29 @@ function applyMix(graph, ctx) {
   for (let i = 0; i < TRACKS.length; i++) graph.tg[i].gain.setTargetAtTime(trackGainValue(song, i), ctx.currentTime, 0.02);
 }
 let outMuted = null;
+const LIVE_GAIN = 0.5;
+/** 用全站共用的 AudioContext；樂團的聲音接到引擎的音效匯流排 */
 function ensureAudio() {
   if (!ac) {
-    const AC = window.AudioContext || window.webkitAudioContext;
-    if (!AC) return null;
-    ac = new AC({ latencyHint: 'interactive' });
-    G = buildGraph(ac);
+    if (navigator.userActivation && !navigator.userActivation.hasBeenActive) return null; // 還沒點過畫面：不建立聲音（瀏覽器會警告）
+    const A = KG.audio();
+    if (!A) return null;
+    ac = A;
+    G = buildGraph(ac, null);
+    G.master.gain.value = LIVE_GAIN; // 跟其他遊戲的音量一致（匯出 WAV 仍用 0.9）
     for (let i = 0; i < TRACKS.length; i++) G.tg[i].gain.value = trackGainValue(song, i);
   }
+  routeAudio();
   if (ac.state === 'suspended') ac.resume();
   return ac;
+}
+function routeAudio() {
+  let n = KG.music._nodes();
+  if (!n && !KG.isMuted()) { KG.sfx.noise(0.01, { vol: 0.0001 }); n = KG.music._nodes(); }
+  const dest = n && n.ctx === ac ? n.sfxBus : ac.destination;
+  if (G.dest === dest) return;
+  if (G.dest) { try { G.comp.disconnect(); } catch (e) { /* 忽略 */ } }
+  G.comp.connect(dest); G.dest = dest;
 }
 function osc(ctx, type, f, t) { const o = ctx.createOscillator(); o.type = type; o.frequency.setValueAtTime(f, t); return o; }
 function adsr(Gp, t, a, d, s, peak, hold, rel) {
@@ -537,8 +649,8 @@ function startAll(nodes, t, end, g) {
   for (const o of nodes) { o.start(t); o.stop(end); }
   if (nodes.length) nodes[0].onended = () => { try { g.disconnect(); } catch (e) { /* 忽略 */ } };
 }
-/** 樂器音色 */
-function voice(ctx, out, inst, f, t, dur, vel) {
+/** 樂器音色（註冊成引擎樂器 KG.music.INST.mm_*，用 out.context，即時播放和離線匯出共用） */
+function synthVoice(ctx, out, inst, f, t, dur, vel) {
   const g = ctx.createGain(); g.connect(out);
   const nodes = []; let end;
   switch (inst) {
@@ -548,7 +660,7 @@ function voice(ctx, out, inst, f, t, dur, vel) {
       lp.frequency.setValueAtTime(Math.min(f * 7, 10000), t); lp.frequency.exponentialRampToValueAtTime(Math.min(f * 2.4, 7000), t + 0.6);
       lp.connect(g);
       const o1 = osc(ctx, 'triangle', f, t); o1.connect(lp);
-      const o2 = osc(ctx, 'sine', f * 2.001, t); const g2 = ctx.createGain(); g2.gain.value = 0.35; o2.connect(g2); g2.connect(lp);
+      const o2 = osc(ctx, 'sine', f * 2, t); const g2 = ctx.createGain(); g2.gain.value = 0.35; o2.connect(g2); g2.connect(lp);
       const o3 = osc(ctx, 'sawtooth', f, t); const g3 = ctx.createGain(); g3.gain.setValueAtTime(0.18, t); g3.gain.exponentialRampToValueAtTime(0.001, t + 0.12); o3.connect(g3); g3.connect(lp);
       nodes.push(o1, o2, o3); break;
     }
@@ -592,7 +704,7 @@ function voice(ctx, out, inst, f, t, dur, vel) {
       lp.frequency.setValueAtTime(Math.min(f * 12, 9000), t); lp.frequency.exponentialRampToValueAtTime(Math.max(f * 1.3, 120), t + 0.35);
       lp.connect(g);
       const o1 = osc(ctx, 'sawtooth', f, t); o1.connect(lp);
-      const o2 = osc(ctx, 'square', f * 0.998, t); const g2 = ctx.createGain(); g2.gain.value = 0.3; o2.connect(g2); g2.connect(lp);
+      const o2 = osc(ctx, 'square', f, t); const g2 = ctx.createGain(); g2.gain.value = 0.3; o2.connect(g2); g2.connect(lp);
       nodes.push(o1, o2);
     }
   }
@@ -607,7 +719,7 @@ function noiseHit(ctx, out, t, type, freq, q, vol, dec, delay) {
   n.start(t, Math.random() * 0.5); n.stop(t0 + dec + 0.02);
   n.onended = () => { try { g.disconnect(); } catch (e) { /* 忽略 */ } };
 }
-function drum(ctx, out, kind, t, vel) {
+function drumVoice(ctx, out, kind, t, vel) {
   vel = vel || 1;
   if (kind === 'kick') {
     const g = ctx.createGain(); g.connect(out);
@@ -635,7 +747,7 @@ function drum(ctx, out, kind, t, vel) {
     noiseHit(ctx, out, t, 'bandpass', 900, 1, 0.12 * vel, 0.05);
   }
 }
-function sfx(ctx, out, kind, t) {
+function fxVoice(ctx, out, kind, t) {
   const g = ctx.createGain(); g.connect(out);
   if (kind === 'meow') {
     const o = osc(ctx, 'sawtooth', 560, t);
@@ -666,6 +778,14 @@ function sfx(ctx, out, kind, t) {
     startAll([o, lfo], t, t + 0.56, g);
   }
 }
+const MI = KG.music.INST;
+INSTS.forEach(it => { MI['mm_' + it.id] = (f, t, d, v, out) => synthVoice(out.context, out, it.id, f, t, d, v); });
+DRUM_KEYS.forEach(k => { MI['mm_' + k] = (f, t, d, v, out) => drumVoice(out.context, out, k, t, v); });
+SFX_KEYS.forEach(k => { MI['mm_' + k] = (f, t, d, v, out) => fxVoice(out.context, out, k, t); });
+function voice(ctx, out, inst, f, t, dur, vel) { (MI['mm_' + inst] || MI.mm_piano)(f, t, dur, vel, out); }
+function drum(ctx, out, kind, t, vel) { MI['mm_' + kind](0, t, 0.3, vel || 1, out); }
+function fxHit(out, kind, t) { MI['mm_' + kind](0, t, 0.5, 1, out); }
+
 /** 下一個同軌音符距離幾步（決定長音長度） */
 function noteLen(rows, step, S, cap) {
   for (let k = 1; k <= cap; k++) {
@@ -702,7 +822,7 @@ function scheduleStep(ctx, graph, s, patIdx, step, t, sd, onHit) {
     }
   }
   if (!s.mute[3]) for (let r = 0; r < 5; r++) if (g[3][r][step]) { drum(ctx, tg[3], DRUM_KEYS[r], t, 1); if (onHit) onHit(3, r, t); }
-  if (!s.mute[4]) for (let r = 0; r < 4; r++) if (g[4][r][step]) { sfx(ctx, tg[4], SFX_KEYS[r], t); if (onHit) onHit(4, r, t); }
+  if (!s.mute[4]) for (let r = 0; r < 4; r++) if (g[4][r][step]) { fxHit(tg[4], SFX_KEYS[r], t); if (onHit) onHit(4, r, t); }
 }
 /** 立刻試聽某軌某列 */
 function previewRow(tr, row, when) {
@@ -717,7 +837,7 @@ function previewRow(tr, row, when) {
     if (row === 0) for (const m of chordMidis(ch)) voice(ac, out, song.inst[2], mtof(m), t, sd * 3, 0.13);
     else voice(ac, out, song.inst[2], mtof(chordMidis(ch)[0] + 12), t, sd * 1.4, 0.17);
   } else if (tr === 3) drum(ac, out, DRUM_KEYS[row], t, 1);
-  else sfx(ac, out, SFX_KEYS[row], t);
+  else fxHit(out, SFX_KEYS[row], t);
   bumpAnimal(tr, t);
 }
 function previewChord(idx) {
@@ -764,6 +884,7 @@ function play() {
   clearInterval(P.timer); P.timer = setInterval(tick, TICK_MS);
   tick();
   refreshUI();
+  bgmUpdate();
 }
 function pause() {
   if (!P.playing) return;
@@ -772,11 +893,13 @@ function pause() {
   if (vq.length) { const f = vq[0]; P.step = f.step; P.nextN = f.n; if (song.mode === 'song') { const k = song.arr.indexOf(f.pat); if (k >= 0 && song.arr[P.songPos % song.arr.length] !== f.pat) P.songPos = k; } }
   vq = []; hq = [];
   refreshUI();
+  bgmUpdate();
 }
 function stop() {
   P.playing = false; clearInterval(P.timer);
   vq = []; hq = []; vis = null; P.step = 0; P.songPos = 0;
   refreshUI(); gridDirty = true;
+  bgmUpdate();
 }
 function togglePlay() { if (P.playing) { pause(); KG.vibrate && KG.vibrate(10); } else play(); }
 function setTempo(v) {
@@ -809,7 +932,7 @@ async function renderWav() {
   const dur = total * sd + 1.6;
   const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
   const oc = new OAC(2, Math.ceil(dur * SR), SR);
-  const graph = buildGraph(oc);
+  const graph = buildGraph(oc, oc.destination);
   for (let i = 0; i < TRACKS.length; i++) graph.tg[i].gain.value = trackGainValue(song, i);
   let n = 0;
   const t0 = 0.05;
@@ -856,7 +979,7 @@ const patChips = [];
 for (let i = 0; i < NPAT; i++) {
   const b = document.createElement('button'); b.className = 'pchip'; b.textContent = LETTERS[i];
   b.setAttribute('aria-label', '樂段 ' + LETTERS[i]);
-  b.addEventListener('click', () => { KG.sound('click'); setCur(i); lastTouchEdit = performance.now(); });
+  b.addEventListener('click', () => { sfx('click'); setCur(i); lastTouchEdit = performance.now(); });
   el.patBar.appendChild(b); patChips.push(b);
 }
 function setCur(i, quiet) {
@@ -919,25 +1042,25 @@ function setPage(p, quiet) {
   p = clamp(p, 0, pages - 1);
   if (p === page) return;
   page = p; gridDirty = true; layoutGrid(); refreshUI();
-  if (!quiet) { KG.sound('tick'); lastTouchEdit = performance.now(); }
+  if (!quiet) { sfx('tick'); lastTouchEdit = performance.now(); }
 }
 el.pgL.addEventListener('click', () => setPage(page - 1));
 el.pgR.addEventListener('click', () => setPage(page + 1));
-el.play.addEventListener('click', () => { togglePlay(); KG.sound(P.playing ? 'pop' : 'click'); });
-el.stop.addEventListener('click', () => { stop(); KG.sound('click'); });
+el.play.addEventListener('click', () => { togglePlay(); sfx(P.playing ? 'select' : 'back'); });
+el.stop.addEventListener('click', () => { stop(); sfx('back', { pitch: 0.85 }); });
 el.undo.addEventListener('click', undo);
 el.mode.addEventListener('click', () => {
   song.mode = song.mode === 'song' ? 'loop' : 'song';
   P.songPos = 0;
   if (song.mode === 'song') { const k = song.arr.indexOf(cur); P.songPos = k >= 0 ? k : 0; }
-  KG.sound('pop');
+  sfx('pop');
   KG.toast(song.mode === 'song' ? '歌曲模式：照排列播放' : '循環模式：重複這個樂段');
   changed();
 });
 el.vol.addEventListener('input', () => { song.vol[sel] = el.vol.value / 100; applyMix(); scheduleSave(); });
 el.vol.addEventListener('change', () => previewRow(sel, Math.min(3, TRACKS[sel].rows - 1)));
 el.mute.addEventListener('click', () => {
-  song.mute[sel] = song.mute[sel] ? 0 : 1; applyMix(); KG.sound(song.mute[sel] ? 'tick' : 'pop');
+  song.mute[sel] = song.mute[sel] ? 0 : 1; applyMix(); sfx(song.mute[sel] ? 'tick' : 'pop');
   KG.toast(song.mute[sel] ? TRACKS[sel].who + '休息一下' : TRACKS[sel].who + '回來了！');
   changed();
 });
@@ -979,19 +1102,20 @@ function openSheet(name) {
   builders[name](el.sBody);
   el.sheet.classList.add('on'); el.backdrop.classList.add('on');
   el.sBody.scrollTop = 0;
+  bgmUpdate();
 }
-function closeSheet() { sheetName = null; el.sheet.classList.remove('on'); el.backdrop.classList.remove('on'); }
-$('sClose').addEventListener('click', () => { KG.sound('click'); closeSheet(); });
+function closeSheet() { sheetName = null; el.sheet.classList.remove('on'); el.backdrop.classList.remove('on'); bgmUpdate(); }
+$('sClose').addEventListener('click', () => { sfx('click'); closeSheet(); });
 el.backdrop.addEventListener('click', closeSheet);
 el.nav.addEventListener('click', e => {
   const b = e.target.closest('.navb'); if (!b) return;
-  KG.sound('click');
+  sfx('click');
   const n = b.dataset.n;
   if (n === 'jam') { setJam(!jamOn); return; }
   openSheet(n);
 });
 function h(tag, cls, html) { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
-function btn(label, cls, fn) { const b = h('button', 'bbtn ' + (cls || ''), label); b.addEventListener('click', () => { KG.sound('click'); fn(b); }); return b; }
+function btn(label, cls, fn) { const b = h('button', 'bbtn ' + (cls || ''), label); b.addEventListener('click', () => { sfx('click'); fn(b); }); return b; }
 
 function buildPresets(body) {
   const sec = h('div', 'sec');
@@ -1011,6 +1135,13 @@ function buildPresets(body) {
   s2.appendChild(cards); body.appendChild(s2);
 }
 function buildSettings(body) {
+  const s0 = h('div', 'sec'); s0.appendChild(h('h4', '', '聲音'));
+  const r0 = h('div', 'row');
+  const mb = btn('背景音樂：' + (M.isEnabled() ? '開' : '關'), M.isEnabled() ? 'on' : '', b => { M.setEnabled(!M.isEnabled()); b.innerHTML = '背景音樂：' + (M.isEnabled() ? '開' : '關'); b.classList.toggle('on', M.isEnabled()); syncTitleToggles(); });
+  const sb = btn('音效：' + (sfxOn ? '開' : '關'), sfxOn ? 'on' : '', b => { setSfxOn(!sfxOn); b.innerHTML = '音效：' + (sfxOn ? '開' : '關'); b.classList.toggle('on', sfxOn); syncTitleToggles(); });
+  r0.appendChild(mb); r0.appendChild(sb); s0.appendChild(r0);
+  s0.appendChild(h('p', 'hint', '背景音樂只在標題和「我的作品」播放；樂團和自由彈奏的聲音一直都有。'));
+  body.appendChild(s0);
   const mkSlider = (title, min, max, val, fmt, onInput) => {
     const s = h('div', 'sec'); s.appendChild(h('h4', '', title));
     const r = h('div', 'row'); const inp = h('input'); inp.type = 'range'; inp.min = min; inp.max = max; inp.value = val;
@@ -1039,7 +1170,7 @@ function buildSettings(body) {
   const r6 = h('div', 'row');
   r6.appendChild(btn('清空整首歌', '', b => {
     if (!b.dataset.ok) { b.dataset.ok = 1; b.textContent = '再按一次確定清空'; b.classList.add('pri'); return; }
-    pushUndo(); const keep = { tempo: song.tempo, scale: song.scale }; song = newSong(); Object.assign(song, keep); cur = 0; applyMix(); changed(true); closeSheet(); KG.sound('whoosh'); KG.toast('全新的一頁！');
+    pushUndo(); const keep = { tempo: song.tempo, scale: song.scale }; song = newSong(); Object.assign(song, keep); cur = 0; applyMix(); changed(true); closeSheet(); sfx('whoosh'); KG.toast('全新的一頁！');
   }));
   s6.appendChild(r6); body.appendChild(s6);
 }
@@ -1047,14 +1178,14 @@ function buildSongSheet(body) {
   const s1 = h('div', 'sec'); s1.appendChild(h('h4', '', '目前樂段 ' + LETTERS[cur]));
   const r1 = h('div', 'row');
   r1.appendChild(btn('複製', '', () => { clipboard = serPat(song.pats[cur]); KG.toast('已複製樂段 ' + LETTERS[cur]); }));
-  r1.appendChild(btn('貼上', '', () => { if (clipboard == null) { KG.toast('還沒有複製喔'); return; } pushUndo(); song.pats[cur] = deserPat(clipboard); changed(true); KG.sound('pop'); KG.toast('貼到樂段 ' + LETTERS[cur]); }));
-  r1.appendChild(btn('清空這段', '', () => { pushUndo(); song.pats[cur] = newPattern(); changed(true); KG.sound('whoosh'); }));
+  r1.appendChild(btn('貼上', '', () => { if (clipboard == null) { KG.toast('還沒有複製喔'); return; } pushUndo(); song.pats[cur] = deserPat(clipboard); changed(true); sfx('pop'); KG.toast('貼到樂段 ' + LETTERS[cur]); }));
+  r1.appendChild(btn('清空這段', '', () => { pushUndo(); song.pats[cur] = newPattern(); changed(true); sfx('whoosh'); }));
   r1.appendChild(btn('<span class="i">' + IC.dice + '</span>隨機', 'yel', () => { randomInspire(); }));
   s1.appendChild(r1);
   const r1b = h('div', 'row'); r1b.style.marginTop = '8px';
   r1b.appendChild(h('span', '', '複製到：'));
   for (let i = 0; i < NPAT; i++) if (i !== cur) {
-    const b = btn(LETTERS[i], '', () => { pushUndo(); song.pats[i] = deserPat(serPat(song.pats[cur])); changed(true); KG.sound('pop'); KG.toast(LETTERS[cur] + ' → ' + LETTERS[i]); });
+    const b = btn(LETTERS[i], '', () => { pushUndo(); song.pats[i] = deserPat(serPat(song.pats[cur])); changed(true); sfx('pop'); KG.toast(LETTERS[cur] + ' → ' + LETTERS[i]); });
     b.style.color = PAT_COLORS[i]; b.style.minWidth = '44px'; b.style.justifyContent = 'center'; r1b.appendChild(b);
   }
   s1.appendChild(r1b);
@@ -1066,14 +1197,14 @@ function buildSongSheet(body) {
     song.arr.forEach((pi, k) => {
       const b = h('button', 'aslot' + (P.playing && song.mode === 'song' && P.songPos === k ? ' now' : ''), LETTERS[pi]);
       b.style.background = PAT_COLORS[pi];
-      b.addEventListener('click', () => { if (song.arr.length <= 1) { KG.toast('至少要留一段'); return; } pushUndo(); song.arr.splice(k, 1); if (P.songPos >= song.arr.length) P.songPos = 0; KG.sound('tick'); changed(); redraw(); });
+      b.addEventListener('click', () => { if (song.arr.length <= 1) { KG.toast('至少要留一段'); return; } pushUndo(); song.arr.splice(k, 1); if (P.songPos >= song.arr.length) P.songPos = 0; sfx('tick'); changed(); redraw(); });
       arr.appendChild(b);
     });
   };
   redraw();
   const r2 = h('div', 'row'); r2.style.marginTop = '8px'; r2.appendChild(h('span', '', '加入：'));
   for (let i = 0; i < NPAT; i++) {
-    const b = btn(LETTERS[i], '', () => { if (song.arr.length >= MAXARR) { KG.toast('排滿了'); return; } pushUndo(); song.arr.push(i); KG.sound('pop'); changed(); redraw(); });
+    const b = btn(LETTERS[i], '', () => { if (song.arr.length >= MAXARR) { KG.toast('排滿了'); return; } pushUndo(); song.arr.push(i); sfx('pop'); changed(); redraw(); });
     b.style.background = PAT_COLORS[i]; b.style.color = '#fff'; b.style.minWidth = '44px'; b.style.justifyContent = 'center'; r2.appendChild(b);
   }
   s2.appendChild(r2);
@@ -1110,16 +1241,16 @@ function buildWorks(body) {
     const ex = list.findIndex(x => x.name === nm);
     const item = { name: nm, color: coverColor, t: Date.now(), code: encodeSong(song) };
     if (ex >= 0) list[ex] = item;
-    else { if (list.length >= 12) { KG.toast('滿了！先刪掉一首'); KG.sound('wrong'); return; } list.unshift(item); }
+    else { if (list.length >= 12) { KG.toast('滿了！先刪掉一首'); sfx('wrong'); return; } list.unshift(item); }
     setSaves(list); currentName = nm;
-    KG.sound('win'); KG.confetti(); KG.toast('存好了！');
+    jingleSave(); KG.confetti(); KG.toast('存好了！');
     openSheet('works');
   });
   r1.appendChild(saveBtn); s1.appendChild(r1);
   const r1b = h('div', 'row'); r1b.style.marginTop = '8px'; r1b.style.gap = '5px';
   COVER_COLORS.forEach(c => {
     const sw = h('button', 'sw' + (c === coverColor ? ' on' : '')); sw.style.background = c; sw.setAttribute('aria-label', '封面顏色');
-    sw.addEventListener('click', () => { coverColor = c; KG.sound('tick'); r1b.querySelectorAll('.sw').forEach(x => x.classList.remove('on')); sw.classList.add('on'); });
+    sw.addEventListener('click', () => { coverColor = c; sfx('tick'); r1b.querySelectorAll('.sw').forEach(x => x.classList.remove('on')); sw.classList.add('on'); });
     r1b.appendChild(sw);
   });
   s1.appendChild(r1b);
@@ -1135,10 +1266,10 @@ function buildWorks(body) {
       it.appendChild(cv);
       const d = new Date(sv.t || 0);
       it.appendChild(h('div', 'nm', escH(sv.name) + '<small>' + (d.getMonth() + 1) + '/' + d.getDate() + ' ' + SCALES[ss.scale].name + '・' + ss.tempo + ' 拍</small>'));
-      it.appendChild(btn('打開', 'pri', () => { pushUndo(); stop(); song = ss; currentName = sv.name; coverColor = sv.color || coverColor; cur = song.arr[0] || 0; applyMix(); changed(true); closeSheet(); KG.sound('correct'); KG.toast('打開「' + sv.name + '」'); }));
+      it.appendChild(btn('打開', 'pri', () => { pushUndo(); stop(); song = ss; currentName = sv.name; coverColor = sv.color || coverColor; cur = song.arr[0] || 0; applyMix(); changed(true); closeSheet(); sfx('correct'); KG.toast('打開「' + sv.name + '」'); }));
       it.appendChild(btn('刪', '', b => {
         if (!b.dataset.ok) { b.dataset.ok = 1; b.textContent = '確定?'; b.classList.add('pri'); return; }
-        const l = getSaves(); l.splice(i, 1); setSaves(l); KG.sound('whoosh'); openSheet('works');
+        const l = getSaves(); l.splice(i, 1); setSaves(l); sfx('whoosh'); openSheet('works');
       }));
       list.appendChild(it);
     });
@@ -1155,7 +1286,7 @@ function buildWorks(body) {
       wavUrl = URL.createObjectURL(r.blob);
       const a = h('a', 'bbtn grn', '下載 ' + escH(currentName || '我的歌') + '.wav（' + (r.blob.size / 1048576).toFixed(1) + 'MB・' + r.duration.toFixed(0) + ' 秒）');
       a.href = wavUrl; a.download = (currentName || '我的歌') + '.wav'; a.style.textDecoration = 'none';
-      r3.appendChild(a); KG.sound('sparkle');
+      r3.appendChild(a); sfx('sparkle');
       wbtn.textContent = '再匯出一次';
     } catch (e) { KG.toast('匯出失敗'); wbtn.textContent = '匯出 WAV'; }
     wbtn.disabled = false;
@@ -1171,8 +1302,8 @@ function buildWorks(body) {
   s4.appendChild(ta2);
   const r5 = h('div', 'row'); r5.style.marginTop = '6px';
   r5.appendChild(btn('載入分享碼', 'pri', () => {
-    try { const ns = decodeSong(ta2.value); pushUndo(); stop(); song = ns; cur = song.arr[0] || 0; applyMix(); changed(true); closeSheet(); KG.sound('correct'); KG.toast('載入成功！'); }
-    catch (e) { KG.sound('wrong'); KG.toast('分享碼看不懂耶'); }
+    try { const ns = decodeSong(ta2.value); pushUndo(); stop(); song = ns; cur = song.arr[0] || 0; applyMix(); changed(true); closeSheet(); sfx('correct'); KG.toast('載入成功！'); }
+    catch (e) { sfx('wrong'); KG.toast('分享碼看不懂耶'); }
   }));
   s4.appendChild(r5);
   body.appendChild(s4);
@@ -1272,7 +1403,7 @@ function randomInspire() {
   song.pats[cur] = p;
   if (Math.random() < 0.5) { const cands = INSTS.map(i => i.id); song.inst[0] = pick(cands); }
   changed(true);
-  KG.sound('sparkle'); KG.toast('靈感來了！');
+  sfx('sparkle'); KG.toast('靈感來了！');
   for (let i = 0; i < 5; i++) bumpAnimal(i, ac ? ac.currentTime + i * 0.08 : 0);
 }
 
@@ -1432,7 +1563,7 @@ gcv.addEventListener('pointerdown', e => {
     openPop(rect, fam.map((chd, i) => ({ html: chd.n, bg: CHORD_COLORS[i], on: song.pats[cur].cb[hit.bar] === i, pick: () => {
       pushUndo(); song.pats[cur].cb[hit.bar] = i; changed(); previewChord(i);
     } })));
-    KG.sound('click');
+    sfx('click');
     return;
   }
   if (hit.type !== 'cell') return;
@@ -1440,7 +1571,7 @@ gcv.addEventListener('pointerdown', e => {
   const v = !song.pats[cur].g[sel][hit.row][hit.step];
   drag = { id: e.pointerId, v, row: hit.row, step: hit.step };
   setCellRaw(sel, hit.row, hit.step, v);
-  if (v) { previewRow(sel, hit.row); lastPrev = performance.now(); } else KG.sound('tick');
+  if (v) { previewRow(sel, hit.row); lastPrev = performance.now(); } else sfx('tick');
   try { gcv.setPointerCapture(e.pointerId); } catch (err) { /* 忽略 */ }
   changed();
 });
@@ -1463,7 +1594,7 @@ gcv.addEventListener('pointermove', e => {
     }
   }
   drag.row = row; drag.step = step;
-  if (any) { if (!drag.v) KG.sound('tick'); lastTouchEdit = performance.now(); changed(); }
+  if (any) { if (!drag.v) sfx('tick'); lastTouchEdit = performance.now(); changed(); }
 });
 const endDrag = e => { if (drag && e.pointerId === drag.id) drag = null; };
 gcv.addEventListener('pointerup', endDrag);
@@ -1728,10 +1859,11 @@ function setJam(on) {
   if (on) { relabelJam(); selectTrack(0); KG.toast('自由彈奏！跟著音樂彈彈看'); }
   else { requestAnimationFrame(() => { layoutGrid(); }); }
   refreshUI();
+  bgmUpdate();
 }
-$('jQ').addEventListener('click', () => { jamQ = !jamQ; $('jQ').classList.toggle('on', jamQ); KG.sound('click'); });
-$('jR').addEventListener('click', () => { jamRec = !jamRec; $('jR').classList.toggle('on', jamRec); KG.sound(jamRec ? 'pop' : 'click'); if (jamRec && !P.playing) KG.toast('按播放後彈奏就會錄進去'); });
-$('jX').addEventListener('click', () => { KG.sound('click'); setJam(false); });
+$('jQ').addEventListener('click', () => { jamQ = !jamQ; $('jQ').classList.toggle('on', jamQ); sfx('click'); });
+$('jR').addEventListener('click', () => { jamRec = !jamRec; $('jR').classList.toggle('on', jamRec); sfx(jamRec ? 'powerup' : 'back'); if (jamRec && !P.playing) KG.toast('按播放後彈奏就會錄進去'); });
+$('jX').addEventListener('click', () => { sfx('click'); setJam(false); });
 function jamHit(tr, row, elx) {
   if (!ensureAudio()) return;
   let t = ac.currentTime + 0.005;
@@ -1754,7 +1886,7 @@ function jamHit(tr, row, elx) {
   const sd = stepDurOf(), out = G.tg[tr];
   if (tr === 0) voice(ac, out, song.inst[0], mtof(melMidi(song.scale, 7 - row)), t, sd * 2.5, 0.32);
   else if (tr === 3) drum(ac, out, DRUM_KEYS[row], t, 1);
-  else sfx(ac, out, SFX_KEYS[row], t);
+  else fxHit(out, SFX_KEYS[row], t);
   bumpAnimal(tr, t);
   if (elx) { elx.classList.add('hit'); setTimeout(() => elx.classList.remove('hit'), 120); }
   KG.vibrate && KG.vibrate(8);
@@ -1776,7 +1908,7 @@ addEventListener('keydown', e => {
     const ki = KEYMAP.indexOf(k); if (ki >= 0) { jamHit(0, 7 - ki, keyEls[ki]); return; }
     const pi = PADMAP.indexOf(k); if (pi >= 0) { const pr = PAD_ROWS[pi]; jamHit(pr.tr, pr.row, padEls[pi]); return; }
   }
-  if (!jamOn && /^[1-5]$/.test(e.key)) { selectTrack(+e.key - 1); KG.sound('click'); return; }
+  if (!jamOn && /^[1-5]$/.test(e.key)) { selectTrack(+e.key - 1); sfx('click'); return; }
   if (/^[a-h]$/i.test(e.key) && !jamOn && !e.ctrlKey && !e.metaKey) { setCur(e.key.toUpperCase().charCodeAt(0) - 65); }
 });
 
@@ -1799,7 +1931,7 @@ function frame(nowMs) {
     }
     hq.length = Math.min(w, 400);
     const m = KG.isMuted();
-    if (G && m !== outMuted) { outMuted = m; G.master.gain.setTargetAtTime(m ? 0 : 0.9, ac.currentTime, 0.02); }
+    if (G && m !== outMuted) { outMuted = m; if (!m) routeAudio(); G.master.gain.setTargetAtTime(m ? 0 : LIVE_GAIN, ac.currentTime, 0.02); }
     if (P.playing && vis) {
       frac = (at - vis.t) / P.sd;
       // 跟著翻頁 / 換樂段
@@ -1844,11 +1976,11 @@ function drawTitleNotes(t) {
   [...txt].forEach((ch, i) => { const s = document.createElement('span'); s.textContent = ch; s.style.color = cols[i % cols.length]; s.style.animationDelay = (i * 0.12) + 's'; L.appendChild(s); });
 })();
 function hideTitle() {
-  titleOn = false; $('title').classList.add('out'); setTimeout(() => { const t = $('title'); if (t) t.style.display = 'none'; }, 400);
+  titleOn = false; clearTimeout(partyTimer); bgmUpdate(); $('title').classList.add('out'); setTimeout(() => { const t = $('title'); if (t) t.style.display = 'none'; }, 400);
   relayout();
 }
 $('tStart').addEventListener('click', () => {
-  ensureAudio(); KG.sound('pop');
+  ensureAudio(); sfx('pop');
   hideTitle();
   pushUndo(); stop();
   const keepScale = 'penta'; song = newSong(); song.scale = keepScale; currentName = ''; cur = 0; undoStack = []; applyMix(); changed(true);
@@ -1864,9 +1996,18 @@ if (saved && saved.code) {
   $('tCont').addEventListener('click', () => {
     ensureAudio(); hideTitle();
     try { song = decodeSong(saved.code); currentName = saved.name || ''; } catch (e) { song = newSong(); }
-    cur = song.arr[0] || 0; applyMix(); changed(true); KG.sound('pop');
+    cur = song.arr[0] || 0; applyMix(); changed(true); sfx('pop');
   });
 }
+
+function syncTitleToggles() {
+  const m = $('tMus'), x = $('tSfx');
+  m.textContent = '音樂：' + (M.isEnabled() ? '開' : '關'); m.classList.toggle('on', M.isEnabled());
+  x.textContent = '音效：' + (sfxOn ? '開' : '關'); x.classList.toggle('on', sfxOn);
+}
+$('tMus').addEventListener('click', () => { M.setEnabled(!M.isEnabled()); sfx('ui'); syncTitleToggles(); });
+$('tSfx').addEventListener('click', () => { setSfxOn(!sfxOn); syncTitleToggles(); });
+syncTitleToggles();
 
 /* ---------- 啟動 ---------- */
 buildJam();
@@ -1874,6 +2015,7 @@ song = buildPreset(PRESETS[3]); cur = 0;
 relayout();
 layoutTitle();
 requestAnimationFrame(frame);
+bgmUpdate(); // 標題音樂（引擎會等第一次點擊才真的出聲）
 // 標題畫面上動物們隨機跳舞
 const titleDance = setInterval(() => { if (!titleOn) { clearInterval(titleDance); return; } const i = Math.floor(Math.random() * 5); animals[i].bounce = 1; spawnNote(animals[i], TRACKS[i].color); }, 260);
 
@@ -1912,7 +2054,10 @@ window.__mm = {
   get log() { return schedLog; },
   clearLog() { schedLog.length = 0; },
   audioTime: () => ac ? ac.currentTime : 0,
-  P
+  P,
+  get bgm() { return M.current() === SONG_TITLE ? 'title' : M.current() === SONG_WORKS ? 'works' : null; },
+  songs: { title: SONG_TITLE, works: SONG_WORKS },
+  get sfxOn() { return sfxOn; }
 };
 </script>
 </body>

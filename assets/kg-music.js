@@ -408,7 +408,11 @@
     /** 開關某一層樂器（曲子 track 的 layer 名稱） */
     setLayer: function (name, on) { layers[name] = !!on; },
     setTempo: function (mult) { tempoMult = Math.max(0.5, Math.min(2, mult || 1)); },
-    setVolume: function (v) { musicVol = Math.max(0, Math.min(1, v)); if (musicOut && playing) musicOut.gain.setTargetAtTime(musicVol, A.currentTime, 0.1); },
+    setVolume: function (v) {
+      musicVol = Math.max(0, Math.min(1, v));
+      // 先清掉還沒跑完的淡入，不然 play() 後 0.6 秒內設的音量會被淡入蓋掉
+      if (musicOut && playing) { var t = A.currentTime, g = musicOut.gain; g.cancelScheduledValues(t); g.setValueAtTime(Math.max(0.0001, g.value), t); g.setTargetAtTime(musicVol, t, 0.1); }
+    },
     isEnabled: function () { return musicEnabled; },
     /** 背景音樂開關（記在瀏覽器，所有遊戲共用） */
     setEnabled: function (on) {
@@ -429,6 +433,7 @@
       if (def.bass) def.bass.forEach(function (n) { var m = midiOf(n[0]); if (m != null) INST.sub(hz(m), t + n[2] * spb, n[1] * spb, def.bassVol == null ? 0.8 : def.bassVol, sfxBus); });
       var dur = total * spb;
       if (playing && musicOut) {
+        musicOut.gain.cancelScheduledValues(t); musicOut.gain.setValueAtTime(Math.max(0.0001, musicOut.gain.value), t);
         musicOut.gain.setTargetAtTime(musicVol * 0.25, t, 0.05);
         musicOut.gain.setTargetAtTime(musicVol, t + dur + 0.1, 0.4);
       }

@@ -69,6 +69,9 @@
     border-radius: 5px; transform: rotate(-6deg); box-shadow: inset 0 0 0 2px #fbe9d0, inset 0 0 0 4px var(--red); vertical-align: top; margin-left: 4px; letter-spacing: 0; text-shadow: none; }
   .sub { color: #6d5235; font-size: 16px; letter-spacing: 2px; }
   .btns { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 16px; }
+  .btns.snd { margin-top: 12px; }
+  .b.sm { font-size: 16px; padding: 6px 16px; min-height: 42px; min-width: 104px; }
+  .b.off { filter: saturate(.25) brightness(.9); opacity: .8; }
   .b { font-family: var(--kai); font-weight: 700; font-size: 20px; letter-spacing: 3px; border: 0; cursor: pointer; padding: 11px 22px; border-radius: 10px; min-height: 48px;
     color: #fff7e6; background: linear-gradient(#c8463b, #8f241d); box-shadow: inset 0 1px 0 rgba(255,210,180,.5), 0 4px 0 #5c1511, 0 8px 14px rgba(0,0,0,.2); }
   .b.wood { background: linear-gradient(#9a6038, #643519); box-shadow: inset 0 1px 0 rgba(255,220,170,.4), 0 4px 0 #3c1e0d, 0 8px 14px rgba(0,0,0,.2); }
@@ -153,6 +156,7 @@
       <button class="b wood" id="btnNum">數字華容道</button>
       <button class="b gold" id="btnHelp">玩法</button>
     </div>
+    <div class="btns snd"><button class="b wood sm" id="tMus">音樂 開</button><button class="b wood sm" id="tSfx">音效 開</button></div>
   </div>
 </div>
 
@@ -174,6 +178,7 @@
       <button class="b wood" id="pLevels">選關</button>
       <button class="b gold" id="pTitle">回標題</button>
     </div>
+    <div class="btns snd"><button class="b wood sm" id="pMus">音樂 開</button><button class="b wood sm" id="pSfx">音效 開</button></div>
   </div>
 </div>
 
@@ -208,6 +213,7 @@
 </div>
 
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
 <script>
 'use strict';
 const SLUG = 'huarong-dao';
@@ -430,70 +436,124 @@ function mkCanvas(w, h) { const c = document.createElement('canvas'); c.width = 
 function fmtTime(s) { s = Math.floor(s); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
 
 /* =====================================================================
- * 音效：木頭碰撞聲（自己的 AudioContext，尊重靜音）＋古箏風背景音樂
+ * 音效與音樂（共用引擎 kg-music.js）：木頭碰撞聲＋三國電影感配樂
  * ===================================================================== */
-let AC = null, noiseBuf = null;
-function ac() {
-  if (KG.isMuted()) return null;
-  if (!AC) {
-    const A = window.AudioContext || window.webkitAudioContext; if (!A) return null;
-    try { AC = new A(); } catch (e) { return null; }
-    const len = Math.floor(AC.sampleRate * 0.12); noiseBuf = AC.createBuffer(1, len, AC.sampleRate);
-    const d = noiseBuf.getChannelData(0); for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3);
-  }
-  if (AC.state === 'suspended') AC.resume();
-  return AC;
+const MU = KG.music, SX = KG.sfx;
+let sfxOn = KG.store.get(SLUG + ':sfx', true) !== false;
+if (MU && MU.INST) {
+  const I = MU.INST;
+  // 古箏般的撥弦：撥弦＋卡林巴的圓潤尾音
+  I.zheng = (f, t, d, v, out) => { I.pluck(f, t, Math.min(d, 0.5), v * 0.55, out); I.kalimba(f, t, d, v * 0.5, out); };
 }
-window.addEventListener('pointerdown', () => ac(), { capture: true });
-/** 木塊撞擊聲：vol 音量、pitch 音高倍率 */
-function clack(vol, pitch) {
-  const a = ac(); if (!a) return;
-  vol = vol == null ? 0.5 : vol; pitch = pitch || 1;
-  const t = a.currentTime;
-  const src = a.createBufferSource(); src.buffer = noiseBuf; src.playbackRate.value = 0.9 + Math.random() * 0.2;
-  const f = a.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 1500 * pitch; f.Q.value = 2.5;
-  const g = a.createGain(); g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
-  src.connect(f); f.connect(g); g.connect(a.destination); src.start(t); src.stop(t + 0.12);
-  const o = a.createOscillator(), og = a.createGain();
-  o.type = 'triangle'; o.frequency.setValueAtTime(330 * pitch, t); o.frequency.exponentialRampToValueAtTime(140 * pitch, t + 0.08);
-  og.gain.setValueAtTime(vol * 0.55, t); og.gain.exponentialRampToValueAtTime(0.0001, t + 0.1);
-  o.connect(og); og.connect(a.destination); o.start(t); o.stop(t + 0.12);
+const sfxLast = Object.create(null);
+/** 同一種音效 40ms 內只播一次、音高隨機 ±4% */
+function sp(name, o) {
+  if (!SX || !sfxOn) return;
+  const t = performance.now();
+  if (t - (sfxLast[name] || 0) < 40) return;
+  sfxLast[name] = t;
+  o = o || {};
+  SX.play(name, { vol: o.vol, pan: o.pan, pitch: (o.pitch || 1) * (o.exact ? 1 : 0.96 + Math.random() * 0.08) });
 }
-function slideSound() {
-  const a = ac(); if (!a) return;
-  const t = a.currentTime, src = a.createBufferSource(); src.buffer = noiseBuf; src.playbackRate.value = 0.35;
-  const f = a.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 700;
-  const g = a.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(0.12, t + 0.04); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
-  src.connect(f); f.connect(g); g.connect(a.destination); src.start(t); src.stop(t + 0.32);
+if (SX) {
+  // 木塊撞擊：帶通雜音＋往下滑的三角波
+  SX.define('hd_clack', (p, s) => { s.noise(0.08, { vol: 0.3, freq: 1500 * p, q: 2.5 }); s.tone(330 * p, 0.09, { type: 'triangle', vol: 0.2, slide: 140 * p }); });
+  // 木塊在木盤上滑動的摩擦聲
+  SX.define('hd_slide', (p, s) => { s.noise(0.28, { vol: 0.13, freq: 520 * p, sweep: 900 * p, q: 0.9, attack: 0.04 }); });
+  SX.define('hd_select', (p, s) => { s.noise(0.04, { vol: 0.16, freq: 2500 * p, q: 3 }); s.tone(560 * p, 0.05, { type: 'triangle', vol: 0.1, slide: 420 * p }); });
+  SX.define('hd_wrong', (p, s) => { s.tone(220 * p, 0.12, { type: 'triangle', vol: 0.18, slide: 160 * p }); s.noise(0.06, { vol: 0.12, freq: 820 * p, q: 2.5 }); });
+  SX.define('hd_undo', (p, s) => { s.noise(0.18, { vol: 0.08, freq: 1200 * p, sweep: 500, q: 1 }); s.tone(520 * p, 0.1, { vol: 0.1, slide: 330 * p, delay: 0.04 }); });
+  SX.define('hd_hint', (p, s) => { [880, 1174.66, 1567.98].forEach((f, i) => s.tone(f * p, 0.35, { type: 'triangle', vol: 0.08, delay: i * 0.07 })); });
+  // 銅鑼：低沉的基音＋不和諧泛音＋金屬沙沙
+  SX.define('hd_gong', (p, s) => {
+    s.tone(98 * p, 2.2, { vol: 0.28, attack: 0.01 }); s.tone(196 * p * 1.01, 1.6, { vol: 0.1 }); s.tone(147 * p, 1.8, { type: 'triangle', vol: 0.07 });
+    s.tone(271 * p, 1.2, { vol: 0.05 }); s.noise(1.2, { vol: 0.05, freq: 3200, q: 0.8, sweep: 1200 });
+  });
 }
+function panOfPiece(p) {
+  if (!p || !W) return 0;
+  const w = HRS.DIMS[p.t] ? HRS.DIMS[p.t][0] : 1;
+  return clamp(((G.bx + (p.fx + w / 2) * G.cs) / W) * 2 - 1, -1, 1) * 0.55;
+}
+/** 木塊撞擊聲：vol 音量（0~1）、pitch 音高倍率 */
+function clack(vol, pitch, pan) { sp('hd_clack', { vol: clamp((vol == null ? 0.5 : vol) * 1.8, 0.2, 1.4), pitch: pitch || 1, pan: pan || 0 }); }
+/** 滑動聲：距離越長越大聲 */
+function slideSound(dist, pan) { sp('hd_slide', { vol: clamp(0.55 + (dist || 1) * 0.18, 0.5, 1.3), pitch: 1 + Math.min(4, (dist || 1) - 1) * 0.06, pan: pan || 0 }); }
 const SFX = {
-  select() { clack(0.22, 1.7); },
-  land(n) { clack(0.5 + Math.min(0.3, n * 0.1), 1); },
-  bump() { clack(0.35, 0.6); },
-  wrong() { KG.note(220, 0.12, 'triangle', 0.12, 0, 160); clack(0.25, 0.55); },
-  undo() { clack(0.3, 1.25); KG.note(520, 0.1, 'sine', 0.08, 0, 330); },
-  hint() { [880, 1175, 1568].forEach((f, i) => KG.note(f, 0.35, 'triangle', 0.07, i * 0.07)); },
-  ui() { clack(0.25, 1.4); },
-  gong() { KG.note(98, 2.2, 'sine', 0.3); KG.note(196, 1.6, 'sine', 0.12, 0.01); KG.note(147, 1.8, 'triangle', 0.08, 0.02); },
-  win() { const s = [587, 659, 784, 880, 1175]; s.forEach((f, i) => { KG.note(f, 0.5, 'triangle', 0.12, 0.15 + i * 0.1); }); KG.note(1568, 0.9, 'sine', 0.08, 0.7); }
+  select(p) { sp('hd_select', { pan: panOfPiece(p) }); },
+  // 撞擊力道（0~2）決定音量
+  land(n, p) { clack(0.3 + Math.min(0.5, n * 0.25), 1, panOfPiece(p)); },
+  bump(p) { clack(0.35, 0.6, panOfPiece(p)); },
+  wrong() { sp('hd_wrong'); },
+  undo() { sp('hd_undo'); },
+  hint() { sp('hd_hint'); },
+  ui() { clack(0.22, 1.4); },
+  gong() { sp('hd_gong', { exact: 1 }); },
+  win() { jingleWin(); }
 };
-/* 背景音樂：五聲音階的古箏撥弦 */
-const Music = {
-  t: 0, i: 0, beat: 0.38,
-  mel: [62, 0, 66, 69, 71, 0, 69, 66, 64, 0, 62, 64, 66, 0, 0, 0, 69, 0, 71, 74, 76, 0, 74, 71, 69, 0, 66, 69, 64, 0, 0, 0,
-        71, 0, 69, 66, 69, 0, 74, 0, 71, 69, 66, 64, 62, 0, 0, 0, 66, 69, 71, 0, 69, 66, 64, 66, 62, 0, 0, 0, 0, 0, 0, 0],
-  bass: [50, 0, 0, 0, 0, 0, 0, 0, 47, 0, 0, 0, 0, 0, 0, 0, 45, 0, 0, 0, 0, 0, 0, 0, 50, 0, 0, 0, 0, 0, 0, 0],
-  update(dt) {
-    if (KG.isMuted() || document.hidden) return;
-    this.t -= dt;
-    if (this.t > 0) return;
-    this.t += this.beat; if (this.t < -0.5) this.t = this.beat;
-    const n = this.mel[this.i % this.mel.length], b = this.bass[this.i % this.bass.length];
-    if (n) { const f = 440 * Math.pow(2, (n - 69) / 12); KG.note(f, 0.9, 'triangle', 0.045); KG.note(f * 2, 0.25, 'sine', 0.015); }
-    if (b) KG.note(440 * Math.pow(2, (b - 69) / 12), 2.4, 'sine', 0.05);
-    this.i++;
+function jingleWin() {
+  if (!MU || !sfxOn) return;
+  MU.jingle({ bpm: 132, inst: 'brass', vol: 0.3, notes: [['D5', 1], ['F5', 1], ['A5', 2], ['G5', 1], ['F5', 1], ['E5', 1], ['C#5', 1], ['D5+F5+A5', 4]], bass: [['D3', 4, 0], ['A2', 4, 4], ['D3', 4, 8]], bassVol: 0.3 });
+  MU.jingle({ bpm: 132, inst: 'zheng', vol: 0.3, notes: [['A4', 1], ['D5', 1], ['F5', 1], ['A5', 1], ['D6', 2], ['A5', 2], ['D6', 4]] });
+}
+const SONG_TITLE = {
+  bpm: 112, steps: 16, swing: 0,
+  chords: ['Dm', 'Bb', 'F', 'C', 'Dm', 'Gm', 'Bb', 'A'],
+  tracks: [
+    { inst: 'brass', vol: 0.55, seq: [
+      'A4 - - D5 F5 - E5 D5', 'F5 - D5 - Bb4 - - .', 'C5 - - F5 A5 - G5 F5', 'G5 - E5 - C5 - - .',
+      'D5 - - F5 A5 - - D5', 'Bb5 - A5 G5 D5 - - .', 'F5 - D5 - Bb4 - D5 F5', 'E5 - - . C#5 - A4 -'] },
+    { inst: 'strings', chord: 'R.R.R.5.R.R.R.5.', oct: 3, vol: 0.4 },
+    { inst: 'strings', chord: 'hold', oct: 4, vol: 0.22 },
+    { inst: 'bass', chord: 'R.......R...5...', vol: 0.5 },
+    { inst: 'tom', pat: 'x..x..x.x.......', pitch: 110, vol: 0.45 },
+    { inst: 'kick', pat: 'x.......x.......', vol: 0.5 },
+    { inst: 'snare', pat: '....x.......x.oo', vol: 0.28 },
+    { inst: 'crash', pat: ['x...............', '', '', '', 'x...............', '', '', ''], vol: 0.22 }
+  ] };
+const SONG_PLAY = {
+  bpm: 84, steps: 16, swing: 0, bars: 16,
+  chords: ['Bm', 'G', 'Em', 'F#', 'Bm', 'D', 'Em', 'F#'],
+  layers: { progress: false },
+  tracks: [
+    { inst: 'flute', vol: 0.6, seq: [
+      'F#5 - - - E5 D5 B4 -', 'D5 - E5 - D5 - B4 -', 'G4 - - B4 E5 - D5 -', 'C#5 - - - A#4 - - .',
+      'B4 - D5 - F#5 - E5 F#5', 'A5 - - F#5 D5 - E5 F#5', 'G5 - F#5 E5 B4 - - .', 'E5 - C#5 - A#4 - - .',
+      'B4 - - - D5 - C#5 B4', 'B4 - - - G4 - - .', 'E5 - G5 - F#5 - E5 -', 'F#5 - - - C#5 - - .',
+      'D5 - F#5 - B5 - A5 F#5', 'A5 - F#5 - D5 - - .', 'E5 - D5 - B4 - G4 -', 'F#4 - - - . . . .'] },
+    { inst: 'zheng', arp: 'up', rate: 2, oct: 3, span: 2, vol: 0.42 },
+    { inst: 'strings', chord: 'R.......5.......', oct: 2, vol: 0.42 },
+    { inst: 'pad', chord: 'hold', oct: 3, vol: 0.25 },
+    { inst: 'tom', pat: 'x...........x...', pitch: 80, vol: 0.35 },
+    { inst: 'rim', pat: '........o.......', vol: 0.22 },
+    { inst: 'brass', layer: 'progress', vol: 0.32, seq: ['D4 - - - - - - -', 'D4 - - - - - - -', 'E4 - - - - - - -', 'F#4 - - - - - - -', 'F#4 - - - - - - -', 'F#4 - - - - - - -', 'G4 - - - - - - -', 'F#4 - - - - - - -'] },
+    { inst: 'strings', layer: 'progress', chord: 'hold', oct: 4, vol: 0.25 },
+    { inst: 'ohat', layer: 'progress', pat: '......x.......x.', vol: 0.25 }
+  ] };
+// 標題：三國英雄進行曲（D 小調）；遊戲中：軍師沉思的室內樂（B 小調）。曹操越接近出口，樂器越多
+function musicTitle() { if (MU) { MU.play(SONG_TITLE); MU.setVolume(0.6); } }
+let moodK = -1;
+function musicPlay() { if (MU) { MU.play(SONG_PLAY, { restart: true }); MU.setVolume(0.75); moodK = -1; musicMood(); } }
+function musicMood() {
+  if (!MU || scene !== 'play') return;
+  let k = 0;
+  if (mode === 'k') {
+    const c = K.ps.find(p => p.t === 0);
+    if (c) { const r = c.a >> 2, col = c.a & 3; k = r >= 3 && col === 1 ? 2 : r >= 2 ? 1 : 0; }
+  } else if (N.tiles && N.tiles.length) {
+    let ok = 0; for (let i = 0; i < N.tiles.length - 1; i++) if (N.tiles[i] === i + 1) ok++;
+    const r = ok / Math.max(1, N.tiles.length - 1); k = r >= 0.9 ? 2 : r >= 0.7 ? 1 : 0;
   }
-};
+  if (k === moodK) return;
+  moodK = k;
+  MU.setLayer('progress', k >= 1);
+  MU.setTempo(k >= 2 ? 1.05 : 1);
+}
+function syncSnd() {
+  const m = !!(MU && MU.isEnabled());
+  for (const id of ['tMus', 'pMus']) { const b = $(id); if (b) { b.textContent = '音樂 ' + (m ? '開' : '關'); b.classList.toggle('off', !m); } }
+  for (const id of ['tSfx', 'pSfx']) { const b = $(id); if (b) { b.textContent = '音效 ' + (sfxOn ? '開' : '關'); b.classList.toggle('off', !sfxOn); } }
+}
 
 /* =====================================================================
  * 人物：名稱、配色與畫法（全部以程式繪製的原創造型）
@@ -977,6 +1037,7 @@ function startLevel(i, restore) {
   }
   showHud(); layout(); updateHud(); hideAll();
   KG.store.set(SLUG + ':last', K.lv);
+  musicPlay();
 }
 function saveGame() {
   if (scene !== 'play') return;
@@ -1017,8 +1078,8 @@ function kMoveTo(i, to, opts) {
   K.sel = opts.keepSel ? i : -1; K.targets = opts.keepSel ? null : null;
   if (K.hint && !(K.hint.i === i && K.hint.to === to)) K.path = null;
   K.hint = null;
-  if (!opts.silent) slideSound();
-  updateHud(); saveGame();
+  if (!opts.silent) slideSound(Math.max(1, pathCells(prev, to).length - 1), panOfPiece(p));
+  updateHud(); saveGame(); musicMood();
   if (HRS.isGoal(kGrid())) { K.won = true; K.winPending = true; }
   dirty = true;
   return true;
@@ -1031,7 +1092,7 @@ function kUndo() {
   const way = prev.has(h.from) ? corners(pathCells(prev, h.from)) : [h.from];
   p.a = h.from; p.way = way.map(a => [a & 3, a >> 2]); p.moving = true; p.travel = 1;
   K.moves = K.hist.length; K.sel = -1; K.targets = null; K.hint = null;
-  SFX.undo(); updateHud(); saveGame(); return true;
+  SFX.undo(); updateHud(); saveGame(); musicMood(); return true;
 }
 /** 直線移動（測試用與鍵盤） dir: 0上 1下 2左 3右，n 格；可傳 'up' 等 */
 const DIRS = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0], U: [0, -1], D: [0, 1], L: [-1, 0], R: [1, 0] };
@@ -1055,7 +1116,7 @@ function pieceAtCell(col, row) {
 }
 function select(i) {
   K.sel = i; K.targets = i >= 0 ? reachOf(i) : null; dirty = true;
-  if (i >= 0) SFX.select();
+  if (i >= 0) SFX.select(K.ps[i]);
 }
 
 /* ---------- 求解（分段執行，不卡畫面） ---------- */
@@ -1165,6 +1226,7 @@ function startNum(n, restore) {
   N.moves = N.hist.length; N.started = N.moves > 0; N.won = false; N.drag = null; N.winPending = false;
   nSyncVis(true);
   showHud(); layout(); updateHud(); hideAll();
+  musicPlay();
 }
 function nSyncVis(snap) {
   const n = N.n; const vis = N.vis.length === n * n ? N.vis : [];
@@ -1179,12 +1241,13 @@ function nTap(idx, silent) {
   const r = Math.floor(idx / n), c = idx % n, er = Math.floor(e / n), ec = e % n;
   if (idx === e || (r !== er && c !== ec)) { if (!silent) SFX.wrong(); return false; }
   const step = r === er ? (c < ec ? -1 : 1) : (r < er ? -n : n);
-  let cur = e;
-  while (cur !== idx) { const nx = cur + step; N.tiles[cur] = N.tiles[nx]; N.tiles[nx] = 0; cur = nx; }
+  let cur = e, cnt = 0;
+  while (cur !== idx) { const nx = cur + step; N.tiles[cur] = N.tiles[nx]; N.tiles[nx] = 0; cur = nx; cnt++; }
   N.hist.push(e); N.moves = N.hist.length; N.started = true;
   for (let k = 1; k < n * n; k++) N.vis[k].moving = true;
   nSyncVis(false);
-  if (!silent) slideSound();
+  if (!silent) slideSound(cnt, clamp(((G.bx + (c + 0.5) * G.cs) / Math.max(1, W)) * 2 - 1, -1, 1) * 0.55);
+  musicMood();
   if (nSolved(N.tiles)) { N.won = true; N.winPending = true; N.winT = 0.45; }
   updateHud(); saveGame(); dirty = true;
   return true;
@@ -1196,7 +1259,7 @@ function nUndo() {
   const step = Math.floor(e0 / n) === Math.floor(e / n) ? (e0 < e ? -1 : 1) : (e0 < e ? -n : n);
   let cur = e; while (cur !== e0) { const nx = cur + step; N.tiles[cur] = N.tiles[nx]; N.tiles[nx] = 0; cur = nx; }
   N.moves = N.hist.length; for (let k = 1; k < n * n; k++) N.vis[k].moving = true; nSyncVis(false);
-  SFX.undo(); updateHud(); saveGame(); return true;
+  SFX.undo(); updateHud(); saveGame(); musicMood(); return true;
 }
 /** 方向鍵：dir 是「木塊移動的方向」 */
 function nMoveDir(dir) {
@@ -1243,11 +1306,12 @@ function toTitle() {
   const sv = KG.store.get(SLUG + ':save', null);
   $('btnPlay').textContent = sv ? '繼續上次' : '開始闖關';
   show('ovTitle');
+  musicTitle(); syncSnd();
 }
 function findLevelByName(n) { return Math.max(0, LEVELS.findIndex(l => l.n === n)); }
 let selTab = 'k';
 function openSelect(tab) {
-  if (scene === 'play') { saveGame(); paused = true; }
+  if (scene === 'play') { saveGame(); paused = true; if (MU) MU.pause(); } else musicTitle();
   selTab = tab || selTab;
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.tab === selTab));
   const grid = $('selGrid'); grid.innerHTML = '';
@@ -1279,12 +1343,14 @@ function pause() {
   if (scene !== 'play' || paused) return;
   paused = true; stopDemo(); saveGame();
   $('pauseInfo').textContent = mode === 'k' ? '第' + (K.lv + 1) + '關「' + LEVELS[K.lv].n + '」　已走 ' + K.moves + ' 步' : '數字華容道 ' + N.n + '×' + N.n + '　已走 ' + N.moves + ' 步';
-  show('ovPause');
+  show('ovPause'); syncSnd();
+  if (MU) MU.pause();
 }
-function resume() { paused = false; hideAll(); dirty = true; }
+function resume() { paused = false; hideAll(); dirty = true; if (MU) MU.resume(); }
 function starsFor(moves, opt) { return moves <= opt ? 3 : moves <= Math.ceil(opt * 1.5) + 3 ? 2 : 1; }
 function showWin() {
   scene = 'win';
+  if (MU) MU.stop(0.5);
   KG.store.set(SLUG + ':save', null);
   let html = '', rec = '', stars = 0;
   if (mode === 'k') {
@@ -1443,7 +1509,7 @@ function tapBoard(d) {
   const [col, row, fx, fy] = d.hit;
   const i = pieceAtCell(col, row);
   if (i >= 0) {
-    if (K.sel === i) { K.sel = -1; K.targets = null; dirty = true; SFX.select(); return; }
+    if (K.sel === i) { K.sel = -1; K.targets = null; dirty = true; SFX.select(K.ps[i]); return; }
     select(i); return;
   }
   // 點空格：先試選中的棋子，再試所有棋子
@@ -1496,7 +1562,7 @@ window.addEventListener('keydown', e => {
     if (K.sel < 0) { select(0); return; }
     const i = K.sel, n = e.shiftKey ? kMaxDir(i, dir) : 1;
     if (n > 0 && kMoveDir(i, dir, n)) { K.sel = i; K.targets = K.won ? null : reachOf(i); }
-    else { SFX.bump(); K.ps[i].bumpT = 0.25; K.ps[i].bumpDir = DIRS[dir]; }
+    else { SFX.bump(K.ps[i]); K.ps[i].bumpT = 0.25; K.ps[i].bumpDir = DIRS[dir]; }
   }
 });
 
@@ -1517,6 +1583,10 @@ function act(a) {
 document.querySelectorAll('.tb').forEach(b => b.addEventListener('click', () => { act(b.dataset.act); b.blur(); }));
 $('pauseBtn').addEventListener('click', () => { SFX.ui(); pause(); });
 $('pResume').addEventListener('click', () => { SFX.ui(); resume(); });
+function toggleMusic() { if (MU) { MU.setEnabled(!MU.isEnabled()); if (scene === 'play' && paused) MU.pause(); } syncSnd(); SFX.ui(); }
+function toggleSfx() { sfxOn = !sfxOn; KG.store.set(SLUG + ':sfx', sfxOn); syncSnd(); SFX.ui(); }
+$('tMus').addEventListener('click', toggleMusic); $('pMus').addEventListener('click', toggleMusic);
+$('tSfx').addEventListener('click', toggleSfx); $('pSfx').addEventListener('click', toggleSfx);
 $('pRestart').addEventListener('click', () => { paused = false; hideAll(); act('restart'); });
 $('pLevels').addEventListener('click', () => { SFX.ui(); openSelect(mode); });
 $('pTitle').addEventListener('click', () => { SFX.ui(); toTitle(); });
@@ -1573,7 +1643,7 @@ function updateK(dt) {
     if (final && !p.clacked && dist < 0.06) {
       p.clacked = true; const dir = [Math.sign(prevVx) * (Math.abs(prevVx) > Math.abs(prevVy) ? 1 : 0), Math.sign(prevVy) * (Math.abs(prevVy) >= Math.abs(prevVx) ? 1 : 0)];
       const strength = Math.min(1, Math.hypot(prevVx, prevVy) / 12);
-      SFX.land(strength * 2); landFx(p, dir); if (p.t === 0) shake(G.cs * 0.03 * (0.5 + strength), 0.15);
+      SFX.land(strength * 2, p); landFx(p, dir); if (p.t === 0) shake(G.cs * 0.03 * (0.5 + strength), 0.15);
     }
     if (final && dist < 0.004 && sp < 0.05) { p.fx = w[0]; p.fy = w[1]; p.vx = p.vy = 0; p.moving = false; p.way = []; p.clacked = false; }
   }
@@ -1708,7 +1778,6 @@ function frame(now) {
     if (mode === 'k') updateK(dt); else updateN(dt);
     updateParts(dt);
   }
-  if (scene === 'play' && !paused) Music.update(dt);
   if (shakeT > 0) shakeT = Math.max(0, shakeT - dt); else shakeA = 0;
   if (scene === 'play') updateHud();
   // 繪製

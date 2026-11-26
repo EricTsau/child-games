@@ -17,6 +17,7 @@
 <body>
 <canvas id="game" aria-label="泡泡射擊"></canvas>
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
 <script>
 'use strict';
 const SLUG = 'bubble-shooter';
@@ -526,80 +527,110 @@ class Sim {
 }
 
 /* =====================================================================
- * 音效與背景音樂
+ * 音效與背景音樂（kg-music.js）
+ * 標題：夏威夷烏克麗麗（C 大調、90 bpm）；遊戲中：西非 highlife（Eb 大調、120 bpm）
+ * 層次：combo（大連擊或大掉落：拍手、風琴、開鈸）、danger（泡泡接近底線：弦樂＋中鼓，速度 ×1.08）
  * ===================================================================== */
+const MZ = KG.music, SX = KG.sfx;
+let sfxOn = KG.store.get(SLUG + ':sfx', true) !== false;
 const sfxLast = {};
-function sfx(name, arg) {
+const SFX_GAP = { pop: 40, thud: 70, bounce: 40, drop: 90, aim: 60 };
+function panB(x) { return x == null ? 0 : clamp(x / BW * 2 - 1, -1, 1) * 0.6; }
+function sfxPlay(name, pitch, vol, x) { SX.play(name, { pitch: (pitch || 1) * (0.96 + Math.random() * 0.08), vol, pan: panB(x) }); }
+function sfx(name, arg, x) {
+  if (!sfxOn || !SX) return;
   const now = performance.now();
-  const gap = { pop: 28, thud: 70, bounce: 40, drop: 90 }[name] || 0;
-  if (gap && sfxLast[name] && now - sfxLast[name] < gap) return;
+  const gap = SFX_GAP[name] || 40;
+  if (sfxLast[name] && now - sfxLast[name] < gap) return;
   sfxLast[name] = now;
-  try {
-    switch (name) {
-      case 'shoot': KG.note(380, 0.13, 'triangle', 0.16, 0, 900); KG.note(1200, 0.05, 'sine', 0.05, 0.03, 1700); break;
-      case 'bounce': KG.note(1250, 0.05, 'square', 0.045); KG.note(900, 0.06, 'sine', 0.08); break;
-      case 'land': KG.note(240, 0.08, 'sine', 0.2, 0, 150); break;
-      case 'pop': { const f = 520 * Math.pow(1.06, Math.min(arg || 0, 18)); KG.note(f, 0.09, 'sine', 0.18, 0, f * 1.9); break; }
-      case 'drop': KG.note(800, 0.4, 'triangle', 0.12, 0, 170); break;
-      case 'thud': KG.note(170, 0.09, 'sine', 0.16, 0, 90); KG.note(600, 0.05, 'triangle', 0.05); break;
-      case 'bomb': KG.sound('hit'); KG.note(110, 0.45, 'sawtooth', 0.1, 0, 40); break;
-      case 'zap': KG.note(1800, 0.28, 'sawtooth', 0.06, 0, 220); KG.sound('whoosh'); break;
-      case 'swap': KG.note(660, 0.06, 'triangle', 0.13); KG.note(990, 0.07, 'triangle', 0.13, 0.05); break;
-      case 'ceil': KG.note(130, 0.3, 'square', 0.07, 0, 70); KG.sound('hit'); break;
-      case 'free': KG.sound('sparkle'); KG.note(1320, 0.12, 'sine', 0.12, 0.05, 1900); break;
-      case 'combo': { const n = Math.min(arg || 2, 6); for (let i = 0; i < 3; i++) KG.note(523 * Math.pow(1.12, n + i * 2), 0.12, 'triangle', 0.12, i * 0.06); break; }
-      case 'charge': [784, 988, 1175, 1568].forEach((f, i) => KG.note(f, 0.12, 'square', 0.06, i * 0.05)); break;
-      case 'warn': KG.note(440, 0.1, 'square', 0.06); KG.note(440, 0.1, 'square', 0.06, 0.15); break;
-      case 'star': KG.note(660 * Math.pow(1.26, arg || 0), 0.25, 'triangle', 0.22); KG.note(1320 * Math.pow(1.26, arg || 0), 0.3, 'sine', 0.08); break;
-      default: KG.sound(name);
-    }
-  } catch (e) { /* 忽略 */ }
-}
-let userActed = false;
-window.addEventListener('pointerdown', () => { userActed = true; }, { capture: true });
-window.addEventListener('keydown', () => { userActed = true; }, { capture: true });
-const NOTE_IDX = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
-function nf(name) {
-  const m = /^([A-G])(#|b)?(\d)$/.exec(name);
-  if (!m) return 0;
-  const n = NOTE_IDX[m[1]] + (m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0) + (parseInt(m[3], 10) + 1) * 12;
-  return 440 * Math.pow(2, (n - 69) / 12);
-}
-const SONGS = {
-  menu: { bpm: 104, wave: 'triangle', mel: 'E5 - G5 - A5 G5 E5 - D5 - E5 G5 C5 - - - E5 - G5 - A5 C6 B5 - G5 - A5 G5 E5 - - - F5 - A5 - G5 F5 E5 - D5 - E5 F5 G5 - - - E5 G5 A5 G5 E5 D5 C5 - D5 - E5 D5 C5 - - -', bass: 'C3 . G3 . A2 . E3 . F2 . C3 . G2 . G3 . C3 . G3 . A2 . E3 . F2 . G2 . C3 . . .' },
-  play: { bpm: 126, wave: 'triangle', mel: 'C5 E5 G5 E5 A5 G5 E5 - F5 A5 C6 A5 G5 - - . E5 G5 C6 G5 A5 G5 E5 C5 D5 F5 E5 D5 C5 - - . A4 C5 E5 C5 F5 E5 C5 - D5 F5 A5 F5 G5 - - . E5 G5 C6 B5 A5 G5 E5 G5 F5 D5 B4 D5 C5 - - .', bass: 'C3 . G2 . F2 . C3 . F2 . A2 . G2 . G2 . C3 . E3 . F2 . C3 . D3 . G2 . C3 . G2 . A2 . E3 . A2 . C3 . D3 . F3 . G2 . B2 . C3 . E3 . F2 . A2 . G2 . G2 . C3 . . .' }
-};
-const Music = {
-  on: false, song: null, step: 0, next: 0, name: '',
-  start(name) {
-    if (this.name === name && this.on) return;
-    const song = SONGS[name]; this.name = name;
-    this.song = { bpm: song.bpm, mel: song.mel.trim().split(/\s+/), bass: song.bass.trim().split(/\s+/), wave: song.wave };
-    this.on = true; this.step = 0; this.next = 0.15;
-  },
-  update(dt) {
-    if (!this.on || !this.song || !userActed) return;
-    this.next -= dt;
-    if (this.next < -0.3) this.next = 0;
-    const s = this.song, beat = 60 / s.bpm / 2;
-    while (this.next <= 0) {
-      if (!KG.isMuted() && !document.hidden) {
-        const i = this.step % s.mel.length, tok = s.mel[i];
-        if (tok !== '-' && tok !== '.') {
-          let len = 1;
-          while (s.mel[(i + len) % s.mel.length] === '-' && len < 8) len++;
-          const f = nf(tok);
-          KG.note(f, beat * len * 0.95, s.wave, 0.045);
-          KG.note(f * 2, beat * len * 0.45, 'sine', 0.012);
-        }
-        const bt = s.bass[this.step % s.bass.length];
-        if (bt !== '-' && bt !== '.') KG.note(nf(bt), beat * 1.8, 'sine', 0.065);
-      }
-      this.step++;
-      this.next += beat;
-    }
+  switch (name) {
+    case 'pop': sfxPlay('bs_pop', Math.pow(1.06, Math.min(arg || 0, 18)), 1, x); break;
+    case 'combo': sfxPlay('bs_combo', Math.pow(1.12, Math.min(arg || 2, 6) - 2), 1); break;
+    case 'star': sfxPlay('star', Math.pow(1.26, arg || 0) * 0.85, 0.9); break;
+    case 'win': jingle({ bpm: 168, inst: 'marimba', vol: 0.4, notes: [['Bb4', 1], ['Eb5', 1], ['G5', 1], ['Bb5', 2], ['Ab5', 1], ['G5', 1], ['Eb5+Bb5', 5]], bass: [['Eb3', 4, 0], ['Ab2', 2, 4], ['Bb2', 2, 6], ['Eb3', 4, 8]], bassVol: 0.3 });
+      jingle({ bpm: 168, inst: 'brass', vol: 0.18, notes: [['.', 7], ['G5+Bb5', 5]] }); break;
+    case 'record': jingle({ bpm: 200, inst: 'bell', vol: 0.26, notes: [['.', 13], ['Eb5', 1], ['G5', 1], ['Bb5', 1], ['Eb6', 3]] }); break;
+    case 'lose': jingle({ bpm: 120, inst: 'marimba', vol: 0.36, notes: [['G5', 1], ['Eb5', 1], ['C5', 1], ['D5', 2], ['Bb4', 1], ['Eb5', 4]], bass: [['C3', 3, 0], ['Bb2', 3, 3], ['Eb2', 4, 6]], bassVol: 0.28 }); break;
+    default: sfxPlay('bs_' + name, 1, 1, x);
   }
+}
+/*SONGS*/
+const SONG_TITLE = {
+  bpm: 90, swing: 0.14,
+  chords: ['C', 'F', 'C', 'A7', 'D7', 'G7', 'C', 'G7'],
+  tracks: [
+    { inst: 'shaker', pat: '..x...x...x...x.', vol: 0.45 },
+    { inst: 'rim', pat: '........x.......', vol: 0.25 },
+    { inst: 'sub', chord: 'R.......5.......', vol: 0.75 },
+    { inst: 'pluck', arp: 'updown', rate: 2, oct: 4, vol: 0.3 },
+    { inst: 'pad', chord: 'hold', vol: 0.22 },
+    { inst: 'kalimba', vol: 1, seq: [
+      'E5 - G5 - E5 D5 C5 .', 'A4 - C5 - F5 - E5 D5', 'E5 - - . G5 . E5 .', 'C#5 - E5 - G5 - A5 .',
+      'F#5 - A5 - F#5 E5 D5 .', 'F5 - D5 - B4 - G4 .', 'C5 - E5 G5 A5 - G5 E5', 'D5 - - . B4 . . .'] },
+    { inst: 'flute', vol: 0.4, seq: ['', 'C5 - - - - - - -', '', 'E5 - - - - - - -', '', 'D5 - - - B4 - - -', '', 'F5 - - - - - - -'] }
+  ]
 };
+const SONG_PLAY = {
+  bpm: 120, swing: 0.06,
+  chords: ['Eb', 'Ab', 'Eb', 'Bb', 'Eb', 'Ab', 'Bb', 'Eb'],
+  layers: { combo: false, danger: false },
+  tracks: [
+    { inst: 'kick', pat: 'x.......x.......', vol: 0.6 },
+    { inst: 'rim', pat: 'x..x..x...x.x...', vol: 0.4 },
+    { inst: 'shaker', pat: 'xoxoxoxoxoxoxoxo', vol: 0.35 },
+    { inst: 'tom', pat: '......x.......x.', vol: 0.3 },
+    { inst: 'bass', chord: 'R..5..R.R..3..5.', vol: 0.65 },
+    { inst: 'pluck', arp: 'up', rate: 2, oct: 4, vol: 0.22 },
+    { inst: 'marimba', vol: 0.45, seq: [
+      '. G4 . Bb4 . Eb5 . Bb4', '. Ab4 . C5 . Eb5 . C5', '. G4 . Bb4 . Eb5 . Bb4', '. F4 . Bb4 . D5 . Bb4',
+      '. G4 . Bb4 . Eb5 . Bb4', '. Ab4 . C5 . Eb5 . C5', '. F4 . Bb4 . D5 . Bb4', '. G4 . Bb4 . Eb5 . Bb4'] },
+    { inst: 'brass', vol: 0.55, seq: [
+      'G4 . Bb4 . Eb5 - D5 Eb5', 'C5 - Ab4 - Eb5 . C5 .', 'Bb4 . G4 . Bb4 - Eb5 F5', 'D5 - Bb4 - F4 . Bb4 .',
+      'G5 . F5 . Eb5 - G5 .', 'Ab5 - G5 - F5 . Eb5 C5', 'D5 . F5 . Bb5 - Ab5 F5', 'Eb5 - - - . . Bb4 .'] },
+    { inst: 'clap', pat: '....x.......x...', vol: 0.4, layer: 'combo' },
+    { inst: 'organ', chord: 'hold', rate: 8, oct: 4, vol: 0.25, layer: 'combo' },
+    { inst: 'ohat', pat: '..x...x...x...x.', vol: 0.35, layer: 'combo' },
+    { inst: 'strings', chord: 'hold', oct: 3, vol: 0.5, layer: 'danger' },
+    { inst: 'tom', pat: 'x..x..x.....x.x.', vol: 0.35, layer: 'danger' }
+  ]
+};
+const __songs = { title: { song: SONG_TITLE, key: 'C' }, play: { song: SONG_PLAY, key: 'Eb' } };
+/*END SONGS*/
+function jingle(def) { if (MZ && sfxOn) return MZ.jingle(def); return 0; }
+let curSong = null, dangerOn = false, comboOn = false, comboUntil = 0, aimQ = 0;
+const Music = {
+  start(name) { const s = name === 'play' ? SONG_PLAY : SONG_TITLE; if (s === curSong && MZ && MZ.isPlaying()) return; curSong = s; dangerOn = comboOn = false; if (MZ) { MZ.setVolume(s === SONG_PLAY ? 0.27 : 0.3); MZ.play(s, { restart: name === 'play' }); } },
+  stop() { curSong = null; if (MZ) MZ.stop(0.3); }
+};
+function setDanger(on) { if (on === dangerOn || !MZ || curSong !== SONG_PLAY) return; dangerOn = on; MZ.setLayer('danger', on); MZ.setTempo(on ? 1.08 : 1); }
+function setCombo(on) { if (on) comboUntil = time + 5; if (on === comboOn || !MZ || curSong !== SONG_PLAY) return; comboOn = on; MZ.setLayer('combo', on); }
+/** 泡泡最低的那排離底線不到 2 排，或天花板下一發就要降下來且很接近 */
+function checkDanger() {
+  if (!P || P.sim.over) { setDanger(false); return; }
+  const gap = DEADY - P.sim.board.lowestY();
+  const ceilSoon = P.sim.info.drop && P.sim.info.drop - P.sim.sinceDrop <= 1;
+  setDanger(gap < RH * 2.2 || (ceilSoon && gap < RH * 3.2));
+}
+if (SX) {
+  SX.define('bs_shoot', (p, s) => { s.tone(380 * p, 0.13, { type: 'triangle', vol: 0.16, slide: 900 * p }); s.noise(0.1, { vol: 0.08, freq: 1600 * p, sweep: 3200 * p, q: 1.5 }); });
+  SX.define('bs_bounce', (p, s) => { s.tone(1250 * p, 0.05, { type: 'triangle', vol: 0.08 }); s.tone(900 * p, 0.06, { vol: 0.1 }); });
+  // 黏上去：果凍般的「啵唷」
+  SX.define('bs_land', (p, s) => { s.tone(260 * p, 0.1, { vol: 0.24, slide: 160 * p }); s.tone(520 * p, 0.05, { type: 'triangle', vol: 0.05, delay: 0.02 }); });
+  SX.define('bs_pop', (p, s) => { s.tone(520 * p, 0.09, { vol: 0.17, slide: 990 * p }); s.noise(0.04, { vol: 0.06, freq: 2600 * p, q: 3 }); });
+  // 一串泡泡掉下去：往下的哨音
+  SX.define('bs_drop', (p, s) => { s.tone(820 * p, 0.42, { type: 'triangle', vol: 0.11, slide: 170 * p }); s.tone(1230 * p, 0.3, { vol: 0.04, slide: 300 * p, delay: 0.05 }); });
+  SX.define('bs_thud', (p, s) => { s.tone(170 * p, 0.09, { vol: 0.16, slide: 90 * p }); s.noise(0.04, { vol: 0.06, freq: 700 * p, q: 1.5 }); });
+  SX.define('bs_bomb', (p, s) => { s.noise(0.45, { vol: 0.3, freq: 900 * p, sweep: 90, type: 'lowpass' }); s.tone(110 * p, 0.45, { vol: 0.3, slide: 40 }); });
+  SX.define('bs_zap', (p, s) => { s.tone(1800 * p, 0.28, { type: 'sawtooth', vol: 0.05, slide: 220 * p }); s.noise(0.3, { vol: 0.14, freq: 3000 * p, sweep: 600, q: 1 }); });
+  SX.define('bs_swap', (p, s) => { s.tone(660 * p, 0.06, { type: 'triangle', vol: 0.13 }); s.tone(990 * p, 0.07, { type: 'triangle', vol: 0.13, delay: 0.05 }); });
+  SX.define('bs_ceil', (p, s) => { s.tone(130 * p, 0.3, { type: 'square', vol: 0.06, slide: 70 * p }); s.noise(0.15, { vol: 0.2, freq: 500 * p, type: 'lowpass' }); s.tone(170 * p, 0.12, { vol: 0.25, slide: 60 }); });
+  SX.define('bs_free', (p, s) => { [1568, 2093, 2637].forEach((f, i) => s.tone(f * p, 0.16, { vol: 0.08, delay: i * 0.05 })); s.tone(1320 * p, 0.12, { vol: 0.1, delay: 0.05, slide: 1900 * p }); });
+  SX.define('bs_combo', (p, s) => { for (let i = 0; i < 3; i++) s.tone(784 * p * Math.pow(1.26, i), 0.12, { type: 'triangle', vol: 0.12, delay: i * 0.06 }); });
+  SX.define('bs_charge', (p, s) => { [784, 988, 1175, 1568].forEach((f, i) => s.tone(f * p, 0.12, { type: 'square', vol: 0.05, delay: i * 0.05 })); });
+  SX.define('bs_warn', (p, s) => { s.tone(440 * p, 0.1, { type: 'square', vol: 0.06 }); s.tone(440 * p, 0.1, { type: 'square', vol: 0.06, delay: 0.15 }); });
+  SX.define('bs_aim', (p, s) => { s.tone(1700 * p, 0.022, { type: 'triangle', vol: 0.03 }); });
+  SX.define('bs_press', (p, s) => { s.tone(880 * p, 0.04, { vol: 0.08 }); });
+}
 
 /* =====================================================================
  * 存檔
@@ -1237,7 +1268,7 @@ function fire(a) {
   if (ins) P.vIns -= RH * ins;
   P.holdVis = true;
   P.tutorial = false; Save.set('tut', true);
-  sfx('shoot'); owl.flap = 1; owl.bounce = 1;
+  sfx('shoot', 0, LX + Math.cos(a) * 40); owl.flap = 1; owl.bounce = 1;
   KG.vibrate(8);
   return ev;
 }
@@ -1247,7 +1278,7 @@ function landShot() {
   const [r, c] = ev.cell;
   const bd = P.sim.board;
   const lx = sh.pts[sh.pts.length - 2], ly = sh.pts[sh.pts.length - 1];
-  sfx('land');
+  sfx('land', 0, lx);
   // 果凍晃動：附近的泡泡被推開一點
   P.wob = { x: lx, y: ly, t: 0 };
   let maxD = 0, idx = 0;
@@ -1266,6 +1297,7 @@ function landShot() {
     o.x = d.x; o.y = d.y; o.b = d.b; o.vx = (Math.random() - 0.5) * 120 + (d.x - BW / 2) * 0.3; o.vy = -60 - Math.random() * 120; o.bn = 0; o.t = -(maxD + 0.08) - Math.random() * 0.06; o.rot = 0;
   }
   if (ev.drop.length) setTimeout(() => sfx('drop'), (maxD + 0.08) * 1000);
+  if (ev.combo >= 3 || ev.drop.length >= 6 || ev.pop.length >= 8) setCombo(true);
   const np = ev.pop.length, nd = ev.drop.length;
   const cx = ev.pop.length ? ev.pop.reduce((s, p) => s + p.x, 0) / np : lx;
   const cy = ev.pop.length ? ev.pop.reduce((s, p) => s + p.y, 0) / np : ly;
@@ -1283,11 +1315,12 @@ function landShot() {
   if (np >= 3 || nd >= 3) { owl.mood = 'happy'; owl.moodT = 1.1; }
   if (ev.clear) floatText('全部清光 +1000', BW / 2, 290, 22, '#fff38a', 1.8, -20);
   P.busy = Math.max(0.12, maxD + 0.12);
-  if (ev.ceil) { P.busy = Math.max(P.busy, 0.55); setTimeout(() => { if (P) { sfx('ceil'); shake(5, 0.3); } }, maxD * 1000 + 120); }
+  if (ev.ceil) { P.busy = Math.max(P.busy, 0.55); setTimeout(() => { if (P) { sfx('ceil'); shake(5, 0.3); checkDanger(); } }, maxD * 1000 + 120); }
   if (ev.inserted) P.busy = Math.max(P.busy, 0.45);
   P.lastEv = ev;
   // 天花板前一發的警告
   if (!P.sim.over && P.sim.info.drop && P.sim.info.drop - P.sim.sinceDrop === 1) { P.warnT = 1.2; sfx('warn'); }
+  checkDanger();
   if (P.sim.over) {
     P.overT = maxD + (nd ? 1.1 : 0.5) + (ev.win ? 0.3 : 0);
     if (!ev.win) { owl.mood = 'sad'; owl.moodT = 99; }
@@ -1300,7 +1333,8 @@ function finish() {
     const prev = KG.best(SLUG + '-endless') || 0;
     best = KG.best(SLUG + '-endless', sim.score);
     newBest = sim.score > prev;
-    sfx(newBest ? 'win' : 'lose');
+    Music.stop();
+    sfx(newBest ? 'win' : 'lose'); if (newBest) setTimeout(() => sfx('record'), 300);
     if (newBest) KG.confetti();
   } else if (sim.won) {
     stars = sim.stars();
@@ -1308,9 +1342,10 @@ function finish() {
     const prev = Save.bestLv(P.lv);
     Save.setBestLv(P.lv, sim.score); best = Math.max(prev, sim.score); newBest = sim.score > prev;
     KG.best(SLUG + '-stars', Save.total());
-    sfx('win'); KG.confetti();
+    Music.stop();
+    sfx('win'); if (newBest && prev > 0) setTimeout(() => sfx('record'), 300); KG.confetti();
     owl.mood = 'happy'; owl.moodT = 99;
-  } else { sfx('lose'); best = Save.bestLv(P.lv); }
+  } else { Music.stop(); sfx('lose'); best = Save.bestLv(P.lv); }
   P.result = { won: sim.won, stars, best, newBest, score: sim.score, reason: P.lastEv && P.lastEv.lose, t: 0, shown: 0, panelS: 0 };
 }
 
@@ -1319,6 +1354,10 @@ function finish() {
  * ===================================================================== */
 function updatePlay(dt) {
   if (P.paused) return;
+  if (comboOn && time > comboUntil) setCombo(false);
+  // 瞄準時的小刻度聲（角度每變一格響一下）
+  const aq = Math.round(P.aimA / 0.06);
+  if (aq !== aimQ) { if ((P.aiming || P.kbAim || P.hover) && !P.shot) sfx('aim', 0, LX + Math.cos(P.aimA) * 120); aimQ = aq; }
   const sim = P.sim;
   if (P.banner > 0) P.banner -= dt;
   if (P.busy > 0) P.busy -= dt;
@@ -1332,7 +1371,7 @@ function updatePlay(dt) {
   if (P.shot) {
     const sh = P.shot;
     sh.s += 1150 * dt;
-    while (sh.si < sh.seg.length - 1 && sh.s > sh.seg.slice(0, sh.si + 1).reduce((a, b) => a + b, 0)) { sh.si++; sfx('bounce'); }
+    while (sh.si < sh.seg.length - 1 && sh.s > sh.seg.slice(0, sh.si + 1).reduce((a, b) => a + b, 0)) { sh.si++; sfx('bounce', 0, sh.pts[sh.si * 2]); }
     if (sh.s >= sh.total) landShot();
   }
   if (!P.holdVis) {
@@ -1349,7 +1388,7 @@ function updatePlay(dt) {
       q.t += dt;
       if (q.t >= 0) {
         q.done = true;
-        if (q.f.t === 'bomb') { sfx('bomb'); shake(7, 0.35); ringFx(q.f.x, q.f.y, '#ffb347', D * 1.4); ringFx(q.f.x, q.f.y, '#fff', D * 0.9); burst(q.f.x, q.f.y, '#ffb347', 18, 260); }
+        if (q.f.t === 'bomb') { sfx('bomb', 0, q.f.x); shake(7, 0.35); ringFx(q.f.x, q.f.y, '#ffb347', D * 1.4); ringFx(q.f.x, q.f.y, '#fff', D * 0.9); burst(q.f.x, q.f.y, '#ffb347', 18, 260); }
         else if (q.f.t === 'light') { sfx('zap'); shake(3, 0.2); P.flash = 1; P.flashY = q.f.y; for (let i = 0; i < 12; i++) spawn(Math.random() * BW, q.f.y + (Math.random() - 0.5) * 8, (Math.random() - 0.5) * 200, (Math.random() - 0.5) * 100, 0.4, 5, '#fff38a', 2, 0); }
       }
     }
@@ -1362,7 +1401,7 @@ function updatePlay(dt) {
     if (prev < 0 && o.t >= 0) {
       const col = o.b.t === 'n' ? COLORS[o.b.c] : o.b.t === 'bomb' ? '#ffb347' : o.b.t === 'light' ? '#fff38a' : '#ffffff';
       burst(o.x, o.y, col, KG.lowEnd ? 4 : 7, 150); ringFx(o.x, o.y, '#ffffff', R);
-      sfx('pop', o.i);
+      sfx('pop', o.i, o.x);
       if (o.b.a >= 0) freeAnimal(o.x, o.y, o.b.a);
     }
     if (o.t > 0.14) o.on = false;
@@ -1379,7 +1418,7 @@ function updatePlay(dt) {
     if (o.x > BW - R) { o.x = BW - R; o.vx = -Math.abs(o.vx) * 0.7; }
     if (o.y > floor && o.vy > 0) {
       o.y = floor; o.vy = -o.vy * 0.48; o.vx *= 0.85; o.bn++;
-      sfx('thud');
+      sfx('thud', 0, o.x);
       burst(o.x, o.y + R * 0.6, '#ffffff', 2, 60);
       if (o.bn >= 2) {
         o.on = false;
@@ -1418,7 +1457,6 @@ function freeAnimal(x, y, kind) {
 }
 function update(dt) {
   time += dt;
-  Music.update(dt);
   if (shakeT > 0) shakeT -= dt;
   owl.flap = Math.max(0, owl.flap - dt * 3);
   owl.bounce = Math.max(0, owl.bounce - dt * 4);
@@ -1744,15 +1782,28 @@ function drawBanner() {
 }
 function drawPause() {
   ctx.fillStyle = 'rgba(20,20,60,0.55)'; ctx.fillRect(0, 0, W, H);
-  const w = Math.min(W - 40, 300 * U), h = 270 * U, x = W / 2 - w / 2, y = H / 2 - h / 2;
+  const w = Math.min(W - 40, 300 * U), h = 320 * U, x = W / 2 - w / 2, y = H / 2 - h / 2;
   panel(x, y, w, h, THEMES[theme].ui);
+  soundToggles(W / 2 - (w - 60 * U) / 2, y + 258 * U, w - 60 * U, 42 * U, 'p');
   txt('暫停', W / 2, y + 36 * U, 28 * U, THEMES[theme].ui, { stroke: '#fff', sw: 6 * U });
   const bw = w - 60 * U, bh = 50 * U;
   button('resume', W / 2 - bw / 2, y + 70 * U, bw, bh, { color: 'green', icon: 'play', label: '繼續', onClick: () => togglePause(false) });
   button('restart', W / 2 - bw / 2, y + 132 * U, bw, bh, { color: 'yellow', icon: 'replay', label: '重新開始', onClick: () => startLevel(P.lv) });
   button('quit', W / 2 - bw / 2, y + 194 * U, bw, bh, { color: 'blue', icon: P.endless ? 'back' : 'map', label: P.endless ? '主選單' : '關卡地圖', onClick: () => P.endless ? goTitle() : goMap() });
 }
-function togglePause(on) { if (!P || P.result) return; P.paused = on; P.aiming = false; }
+/** 音樂／音效開關（兩顆按鈕：橫排，或 stack=true 時上下排） */
+function soundToggles(x, y, w, h, k, stack) {
+  const mOn = MZ ? MZ.isEnabled() : false;
+  const bw = stack ? w : (w - 10 * U) / 2;
+  const x2 = stack ? x : x + bw + 10 * U, y2 = stack ? y + h + 12 * U : y;
+  button(k + 'tgM', x, y, bw, h, { color: mOn ? 'green' : 'white', label: '音樂 ' + (mOn ? '開' : '關'), size: 16 * U, onClick: () => { if (MZ) MZ.setEnabled(!MZ.isEnabled()); } });
+  button(k + 'tgS', x2, y2, bw, h, { color: sfxOn ? 'green' : 'white', label: '音效 ' + (sfxOn ? '開' : '關'), size: 16 * U, onClick: () => { sfxOn = !sfxOn; Save.set('sfx', sfxOn); } });
+}
+function togglePause(on) {
+  if (!P || P.result) return;
+  if (on !== P.paused && MZ) { if (on) MZ.pause(); else MZ.resume(); }
+  P.paused = on; P.aiming = false;
+}
 function drawResult() {
   const rs = P.result, sim = P.sim;
   ctx.fillStyle = 'rgba(20,20,60,' + (0.5 * rs.panelS) + ')'; ctx.fillRect(0, 0, W, H);
@@ -1822,9 +1873,12 @@ function drawTitle() {
     y0 = Math.min(H - bh - 30, oy + osz + 22 * U);
     button('adv', W / 2 - bw2 - 10, y0, bw2, bh, { color: 'green', label: '冒險模式', sub: '★ ' + Save.total() + ' / ' + LV.length * 3, size: 22 * U, pulse: true, onClick: () => goMap() });
     button('end', W / 2 + 10, y0, bw2, bh, { color: 'purple', label: '無盡模式', sub: '最佳 ' + (KG.best(SLUG + '-endless') || 0), size: 22 * U, onClick: () => startLevel('endless') });
+    const tw = Math.min(118 * U, (W - (W / 2 + 10 + bw2)) - 24), th = 40 * U;
+    soundToggles(W - 12 - tw, H - 12 - th * 2 - 12 * U, tw, th, 't', true);
   } else {
     button('adv', W / 2 - bw / 2, y0, bw, bh, { color: 'green', label: '冒險模式', sub: '★ ' + Save.total() + ' / ' + LV.length * 3, size: 24 * U, pulse: true, onClick: () => goMap() });
     button('end', W / 2 - bw / 2, y0 + bh + 22 * U, bw, bh, { color: 'purple', label: '無盡模式', sub: '最佳 ' + (KG.best(SLUG + '-endless') || 0), size: 24 * U, onClick: () => startLevel('endless') });
+    soundToggles(W / 2 - bw / 2, Math.min(H - 52 * U, y0 + bh * 2 + 40 * U), bw, 40 * U, 't');
   }
 }
 function mapSp() { return 96 * U; }
@@ -1955,7 +2009,7 @@ cv.addEventListener('pointerdown', e => {
   const [px, py, sx, sy] = toBoard(e.clientX, e.clientY);
   const b = hitBtn(sx, sy);
   if (b && (scr !== 'play' || P.paused || P.result || Math.hypot(sx - (b.x + b.w / 2), sy - (b.y + b.h / 2)) < Math.max(b.w, b.h) * 0.75)) {
-    pressed = { id: b.id, pid: e.pointerId }; KG.note(880, 0.05, 'sine', 0.12); return;
+    pressed = { id: b.id, pid: e.pointerId }; sfx('press'); return;
   }
   if (scr === 'map') {
     if (mapCard >= 0) return;
@@ -1992,7 +2046,7 @@ function endPointer(e, cancel) {
   if (pressed && pressed.pid === e.pointerId) {
     const b = hitBtn(sx, sy), id = pressed.id;
     pressed = null;
-    if (!cancel && b && b.id === id && b.onClick) { KG.sound('pop'); b.onClick(); }
+    if (!cancel && b && b.id === id && b.onClick) { if (sfxOn && SX) SX.play('ui'); b.onClick(); }
     return;
   }
   if (scr === 'map' && mapDrag && mapDrag.pid === e.pointerId) {
@@ -2004,8 +2058,8 @@ function endPointer(e, cancel) {
         if (d < bd) { bd = d; best = i; }
       }
       if (best >= 0) {
-        if (Save.unlocked(best)) { mapCard = best; KG.sound('click'); }
-        else { KG.sound('wrong'); KG.toast('先過前一關才能玩喔！'); }
+        if (Save.unlocked(best)) { mapCard = best; if (sfxOn && SX) SX.play('select'); }
+        else { if (sfxOn && SX) SX.play('error'); KG.toast('先過前一關才能玩喔！'); }
       }
     }
     return;
@@ -2066,7 +2120,7 @@ function relayout() { layout(); }
 window.addEventListener('resize', relayout);
 window.addEventListener('orientationchange', () => setTimeout(relayout, 120));
 if (window.visualViewport) window.visualViewport.addEventListener('resize', relayout);
-document.addEventListener('visibilitychange', () => { if (document.hidden && scr === 'play' && P && !P.result) togglePause(true); if (document.hidden) Music.next = 0.2; });
+document.addEventListener('visibilitychange', () => { if (document.hidden && scr === 'play' && P && !P.result) togglePause(true); });
 layout();
 Music.start('menu');
 requestAnimationFrame(frame);
@@ -2103,7 +2157,7 @@ window.__bs = {
     over: P ? P.sim.over : false, won: P ? P.sim.won : false, result: P && P.result ? { won: P.result.won, stars: P.result.stars, score: P.result.score } : null,
     flying: !!(P && P.shot), busy: P ? Math.max(0, P.busy) : 0, banner: P ? Math.max(0, P.banner) : 0, paused: P ? P.paused : false,
     ammo: P ? P.sim.ammo.map(a => a.t === 'n' ? a.c : a.t) : [], grid: P ? gridStr(P.sim.board) : [], ceil: P ? P.sim.board.ceil : 0,
-    aim: P ? P.aimA : 0, combo: P ? P.sim.combo : 0, mapCard
+    aim: P ? P.aimA : 0, combo: P ? P.sim.combo : 0, mapCard, danger: dangerOn, comboLayer: comboOn
   }),
   start: lv => { startLevel(lv == null ? 0 : lv); P.banner = 0; return true; },
   map: () => goMap(), title: () => goTitle(),

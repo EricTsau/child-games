@@ -227,6 +227,13 @@
   .tb.v .b { background: linear-gradient(180deg, #d6c4ff, #8e6cef); box-shadow: 0 5px 0 #5a3fb8, 0 8px 12px rgba(0,0,0,.18); }
   .tb.pulse .b { animation: kit-pulse .9s ease-in-out infinite; }
 
+  @media (max-height: 560px) {
+    .kit-title { padding-top: 56px; }
+    .kit-title .kit-logo-svg { width: min(56vw, 46vh, 600px); }
+    .kit-title .kit-hero { width: min(40vw, 24vh, 330px); }
+  }
+  .kit-ov { z-index: 9250; }
+  @media (min-aspect-ratio: 1/1) and (max-height: 600px) { .au-btn.au-pause { top: 10px; right: 66px; } }
   .kit-chip .dot { display: inline-block; width: 26px; height: 26px; border-radius: 50%; border: 3px solid #6a4a5a; margin-left: 4px; box-shadow: inset 0 -3px 0 rgba(0,0,0,.15); }
 
   .splat { position: fixed; width: 70px; height: 70px; margin: -35px 0 0 -35px; border-radius: 50%; pointer-events: none; z-index: 50; animation: splat .55s ease-out forwards; }
@@ -289,6 +296,136 @@
   </div>
 </div>
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
+<style>
+  /* ===== 聲音選單（暫停／設定）：z-index 要小於 9300，🏠／🔊 才按得到 ===== */
+  .au-btn { width: 48px; height: 48px; border-radius: 50%; border: 3px solid #fff; padding: 0; cursor: pointer; display: grid; place-items: center;
+    background: linear-gradient(180deg, #fff 0%, #ffe9f1 100%); box-shadow: 0 4px 0 rgba(0,0,0,.12), 0 6px 12px rgba(0,0,0,.15); transition: transform .12s; touch-action: manipulation; }
+  .au-btn:active { transform: scale(.9); }
+  .au-btn[hidden], .au-ov[hidden] { display: none; }
+  .au-btn svg { width: 26px; height: 26px; }
+  .au-gear { position: fixed; top: 60px; right: 10px; z-index: 9000; }
+  .au-ov { position: fixed; inset: 0; z-index: 9200; display: grid; place-items: center; padding: 12px; background: rgba(60,40,80,.45); backdrop-filter: blur(3px); animation: kg-fade .2s ease; }
+  .au-card { width: min(360px, 100%); max-height: calc(100% - 8px); overflow-y: auto; background: linear-gradient(180deg, #fff 0%, #fff4f8 100%); border: 5px solid #fff; border-radius: 30px;
+    padding: 16px 16px 18px; box-shadow: 0 14px 34px rgba(60,40,80,.35); text-align: center; animation: kg-pop .3s cubic-bezier(.2,1.6,.4,1); font-family: var(--kg-font); }
+  .au-card h2 { margin: 0 0 12px; font-size: 28px; color: var(--au-d, #c2406e); }
+  .au-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .au-b { grid-column: span 2; min-height: 56px; border-radius: 999px; border: 4px solid #fff; cursor: pointer; font-family: var(--kg-font); font-size: 20px; font-weight: 900; color: #fff;
+    display: flex; align-items: center; justify-content: center; gap: 6px; padding: 4px 10px; white-space: nowrap; box-shadow: 0 5px 0 rgba(0,0,0,.18), 0 8px 14px rgba(0,0,0,.14);
+    background: linear-gradient(180deg, #9cf08f 0%, #4cc75a 55%, #33a845 100%); text-shadow: 0 2px 0 rgba(0,0,0,.18); }
+  .au-b:active { transform: translateY(3px) scale(.97); }
+  .au-b svg { width: 26px; height: 26px; flex: none; }
+  .au-b.half { grid-column: span 1; font-size: 18px; background: linear-gradient(180deg, #9ee0ff 0%, #44a8f0 60%, #2f8ad6 100%); }
+  .au-b.half.off { background: linear-gradient(180deg, #e6e0ea 0%, #b9aec4 100%); }
+  .au-b.alt { background: linear-gradient(180deg, #ffb3cc 0%, #ff6f9e 60%, #e8507f 100%); }
+</style>
+<script>
+/* ===== 聲音小幫手：音效開關（存在 KG.store）、節流＋隨機音高、jingle、語音時音樂調小、暫停／設定選單 ===== */
+const AU = (function () {
+  'use strict';
+  const KEY = 'coloring:sfx';
+  let on = KG.store.get(KEY, true) !== false;
+  const last = Object.create(null);
+  let musVol = 0.24, ducked = false, duckT = 0;
+  const ICON = {
+    music: '<svg viewBox="0 0 32 32"><path d="M12 6 L26 3 V21" stroke="#fff" stroke-width="3.4" fill="none" stroke-linejoin="round"/><ellipse cx="9" cy="24" rx="5" ry="4" fill="#fff"/><ellipse cx="22" cy="21" rx="5" ry="4" fill="#fff"/><path d="M12 6 V24" stroke="#fff" stroke-width="3.4"/></svg>',
+    sfx: '<svg viewBox="0 0 32 32"><path d="M5 12 H11 L18 6 V26 L11 20 H5 Z" fill="#fff" stroke="#fff" stroke-width="2" stroke-linejoin="round"/><path d="M22 11 Q26 16 22 21 M25 7 Q32 16 25 25" stroke="#fff" stroke-width="2.8" fill="none" stroke-linecap="round"/></svg>',
+    off: '<path d="M4 4 L28 28" stroke="#7a5a8a" stroke-width="4" stroke-linecap="round"/>',
+    play: '<svg viewBox="0 0 32 32"><path d="M10 6 L26 16 L10 26 Z" fill="#fff" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg>',
+    pause: '<svg viewBox="0 0 32 32"><rect x="8" y="6" width="6" height="20" rx="2" fill="#8a3a2a"/><rect x="18" y="6" width="6" height="20" rx="2" fill="#8a3a2a"/></svg>',
+    gear: '<svg viewBox="0 0 32 32"><path d="M12 15 L26 12 V22" stroke="#8a3a2a" stroke-width="2.6" fill="none" stroke-linejoin="round"/><ellipse cx="9.5" cy="23" rx="4.2" ry="3.4" fill="#8a3a2a"/><ellipse cx="22.5" cy="22" rx="4.2" ry="3.4" fill="#8a3a2a"/><path d="M12 15 V23" stroke="#8a3a2a" stroke-width="2.6"/><path d="M5 9 H8 L12 5 V15 L8 11 H5 Z" fill="#8a3a2a"/></svg>',
+    home: '<svg viewBox="0 0 32 32"><path d="M5 15 L16 5 L27 15 M8 13 V27 H24 V13" stroke="#fff" stroke-width="3.4" fill="none" stroke-linejoin="round" stroke-linecap="round"/></svg>'
+  };
+  function play(name, o) {
+    if (!on) return;
+    o = o || {};
+    const t = performance.now(), k = o.key || name;
+    if (last[k] && t - last[k] < (o.gap || 40)) return;
+    last[k] = t;
+    try { KG.sfx.play(name, { vol: o.vol, pan: o.pan || 0, pitch: (o.pitch || 1) * (o.exact ? 1 : 0.955 + Math.random() * 0.09) }); } catch (e) { /* 忽略 */ }
+  }
+  const panX = x => Math.max(-1, Math.min(1, (x / Math.max(1, innerWidth)) * 2 - 1)) * 0.6;
+  function jingle(def) { if (!on) return 0; return KG.music.jingle(def); }
+  function setVol(v) { musVol = v; if (!ducked) KG.music.setVolume(v); }
+  // 念出來的時候把音樂調小，念完再恢復
+  function say(text, rate) {
+    KG.say(text, rate);
+    if (KG.isMuted() || !window.speechSynthesis) return;
+    if (!ducked) { ducked = true; KG.music.setVolume(musVol * 0.35); }
+    clearInterval(duckT);
+    let n = 0;
+    duckT = setInterval(() => {
+      n++;
+      let sp = false; try { sp = speechSynthesis.speaking || speechSynthesis.pending; } catch (e) { /* 忽略 */ }
+      if ((!sp && n > 3) || n > 80) { clearInterval(duckT); ducked = false; KG.music.setVolume(musVol); }
+    }, 150);
+  }
+  // 選單
+  let ov = null;
+  function toggleBtn(kind) {
+    const b = document.createElement('button');
+    b.className = 'au-b half';
+    const paint = () => {
+      const isOn = kind === 'music' ? KG.music.isEnabled() : on;
+      b.classList.toggle('off', !isOn);
+      b.innerHTML = ICON[kind].replace('</svg>', isOn ? '</svg>' : ICON.off + '</svg>') + '<span>' + (kind === 'music' ? '音樂 ' : '音效 ') + (isOn ? '開' : '關') + '</span>';
+      b.setAttribute('aria-pressed', String(isOn));
+    };
+    paint();
+    b.addEventListener('click', () => {
+      if (kind === 'music') KG.music.setEnabled(!KG.music.isEnabled());
+      else { on = !on; KG.store.set(KEY, on); }
+      paint(); play('ui', { exact: true });
+    });
+    return b;
+  }
+  /** 打開選單：o = {title, paused, resumeText, extra:[{text, cls, onClick}], onClose} */
+  function menu(o) {
+    o = o || {};
+    if (ov) return;
+    if (o.paused) KG.music.pause();
+    play('select', { exact: true });
+    ov = document.createElement('div');
+    ov.className = 'au-ov';
+    const card = document.createElement('div'); card.className = 'au-card';
+    card.innerHTML = '<h2>' + (o.title || (o.paused ? '暫停' : '設定')) + '</h2>';
+    const grid = document.createElement('div'); grid.className = 'au-grid';
+    const close = (fn) => {
+      if (!ov) return;
+      ov.remove(); ov = null;
+      if (o.paused) KG.music.resume();
+      if (o.onClose) o.onClose();
+      if (fn) fn();
+    };
+    const mk = (text, cls, icon, fn) => {
+      const b = document.createElement('button'); b.className = 'au-b ' + (cls || '');
+      b.innerHTML = (icon || '') + '<span>' + text + '</span>';
+      b.addEventListener('click', () => { play(fn ? 'ui' : 'back', { exact: true }); close(fn); });
+      return b;
+    };
+    grid.appendChild(mk(o.resumeText || (o.paused ? '繼續' : '好了'), '', ICON.play));
+    grid.appendChild(toggleBtn('music'));
+    grid.appendChild(toggleBtn('sfx'));
+    (o.extra || []).forEach(x => grid.appendChild(mk(x.text, x.cls || 'alt', x.icon ? ICON[x.icon] : '', x.onClick)));
+    card.appendChild(grid); ov.appendChild(card);
+    ov.addEventListener('click', e => { if (e.target === ov) { play('back', { exact: true }); close(); } });
+    document.body.appendChild(ov);
+  }
+  function isOpen() { return !!ov; }
+  function closeMenu() { if (ov) { ov.remove(); ov = null; } }
+  /** 圓形按鈕：kind = 'pause' | 'gear' */
+  function button(kind, cls, onClick) {
+    const b = document.createElement('button');
+    b.className = 'au-btn ' + (cls || '');
+    b.setAttribute('aria-label', kind === 'pause' ? '暫停' : '聲音設定');
+    b.innerHTML = ICON[kind];
+    b.addEventListener('click', e => { e.stopPropagation(); onClick ? onClick() : menu(); });
+    b.addEventListener('pointerdown', e => e.stopPropagation());
+    return b;
+  }
+  return { play, panX, jingle, say, setVol, menu, isOpen, closeMenu, button, isOn: () => on, ICON };
+})();
+</script>
 <script>
 /* ===== 遊戲共用 UI 套件 Kit：標題畫面、關卡選擇、結算、圖示、特效、背景音樂 ===== */
 const Kit = (function () {
@@ -368,39 +505,14 @@ const Kit = (function () {
     return s + '</svg>';
   }
 
-  /* ---------- 背景音樂（用 KG.note 合成） ---------- */
-  const Music = (function () {
-    let timer = null, step = 0, song = null;
-    const mf = m => 440 * Math.pow(2, (m - 69) / 12);
-    function tick() {
-      if (!song) return;
-      const dur = 60 / song.bpm / 2;
-      if (!KG.isMuted() && !document.hidden) {
-        const m = song.mel[step % song.mel.length];
-        if (m) KG.note(mf(m), dur * 1.5, song.wave || 'triangle', song.vol || 0.045);
-        if (song.bass && step % 2 === 0) {
-          const b = song.bass[(step / 2 | 0) % song.bass.length];
-          if (b) KG.note(mf(b), dur * 1.9, 'sine', (song.vol || 0.045) * 1.4);
-        }
-        if (song.tick && step % 4 === 2) KG.note(2200, 0.03, 'square', 0.012);
-      }
-      step++;
-      timer = setTimeout(tick, dur * 1000);
-    }
-    return {
-      start(s) { this.stop(); song = s; step = 0; timer = setTimeout(tick, 80); },
-      stop() { clearTimeout(timer); timer = null; song = null; },
-      get playing() { return !!song; }
-    };
-  })();
-  // 幾首可愛的旋律（MIDI 音高，0 = 休止，每格 = 八分音符）
-  const SONGS = {
-    happy: { bpm: 112, mel: [72, 0, 76, 79, 81, 79, 76, 0, 74, 0, 77, 81, 79, 0, 0, 0, 72, 74, 76, 79, 77, 76, 74, 0, 72, 0, 67, 0, 72, 0, 0, 0], bass: [48, 55, 53, 55, 48, 55, 43, 48], tick: true },
-    bouncy: { bpm: 120, mel: [67, 72, 76, 72, 79, 0, 76, 0, 74, 77, 81, 77, 79, 0, 0, 0, 76, 79, 84, 79, 81, 79, 76, 0, 74, 76, 72, 0, 72, 0, 0, 0], bass: [48, 52, 53, 55, 48, 52, 50, 48], tick: true },
-    gentle: { bpm: 92, mel: [76, 0, 79, 0, 84, 0, 83, 81, 79, 0, 76, 0, 77, 0, 0, 0, 74, 0, 77, 0, 81, 0, 79, 77, 76, 0, 72, 0, 74, 0, 0, 0], bass: [48, 55, 53, 50, 48, 52, 53, 55], wave: 'sine', vol: 0.05 },
-    march: { bpm: 126, mel: [72, 72, 79, 79, 81, 81, 79, 0, 77, 77, 76, 76, 74, 74, 72, 0, 79, 79, 77, 77, 76, 76, 74, 0, 79, 79, 77, 77, 76, 76, 74, 0], bass: [48, 53, 48, 43, 48, 53, 55, 48], tick: true }
+  /* ---------- 背景音樂（kg-music.js；曲子在遊戲程式裡，放進 Kit.SONGS） ---------- */
+  const Music = {
+    start(song) { if (!song) return; if (song.vol) AU.setVol(song.vol); KG.music.play(song); },
+    stop() { KG.music.stop(); },
+    get playing() { return !!KG.music.current(); }
   };
-  document.addEventListener('visibilitychange', () => { /* tick 內會檢查 document.hidden */ });
+  const SONGS = {};
+  Music.onStars = null;
 
   /* ---------- 粒子特效（全螢幕畫布） ---------- */
   const FX = (function () {
@@ -556,7 +668,7 @@ const Kit = (function () {
       btn.className = 'kit-bigbtn ' + (b.cls || '');
       btn.innerHTML = (b.icon || ICON.play()) + `<span>${b.text}</span>`;
       btn.addEventListener('click', () => {
-        KG.sound('pop');
+        AU.play('ui');
         ov.classList.add('out');
         setTimeout(() => ov.remove(), 350);
         if (b.onClick) b.onClick();
@@ -590,8 +702,8 @@ const Kit = (function () {
     if (o.extra) o.extra(ov.querySelector('.kit-extra'), close);
     ov.querySelectorAll('.kit-lv').forEach(b => b.addEventListener('click', () => {
       const i = +b.dataset.i;
-      if (!prog.unlocked(i)) { KG.sound('wrong'); shake(b, 6); return; }
-      KG.sound('pop');
+      if (!prog.unlocked(i)) { AU.play('error'); shake(b, 6); return; }
+      AU.play('select');
       close();
       o.onPick(i);
     }));
@@ -625,7 +737,7 @@ const Kit = (function () {
       const el = document.createElement('button');
       el.className = 'kit-rbtn ' + b.cls;
       el.innerHTML = `<div class="b">${b.icon}</div><span>${b.text}</span>`;
-      el.addEventListener('click', () => { KG.sound('pop'); ov.remove(); b.fn(); });
+      el.addEventListener('click', () => { AU.play('ui'); ov.remove(); b.fn(); });
       box.appendChild(el);
     });
     document.body.appendChild(ov);
@@ -634,8 +746,7 @@ const Kit = (function () {
     for (let i = 0; i < s; i++) {
       setTimeout(() => {
         stars[i].classList.add('lit');
-        KG.note([784, 988, 1319][i], 0.25, 'triangle', 0.22);
-        KG.note([1568, 1976, 2637][i], 0.2, 'sine', 0.08, 0.05);
+        AU.play('star', { pitch: [1, 1.122, 1.26][i], exact: true, vol: 0.8 });
         setTimeout(() => {
           const r = stars[i].getBoundingClientRect();
           FX.burst(r.left + r.width / 2, r.top + r.height / 2, { n: 12, types: ['star', 'spark'], colors: ['#ffd34d', '#fff1a8', '#ffb21f', '#ffffff'], speed: 300 });
@@ -643,7 +754,7 @@ const Kit = (function () {
       }, 450 + i * 380);
     }
     setTimeout(() => {
-      if (s > 0) { KG.sound('win'); KG.confetti(); } else KG.sound('lose');
+      if (s > 0) { if (Music.onStars) Music.onStars(s); else AU.play('levelup'); KG.confetti(); } else AU.play('lose');
     }, 450 + s * 380);
     return ov;
   }
@@ -982,6 +1093,81 @@ const Kit = (function () {
     fills[pic.id] = Array.isArray(saved) ? saved : [];
     undos[pic.id] = [];
   });
+
+  /* ===================== 聲音 ===================== */
+  /*SONGS*/
+  const SONGS = {
+    // 標題：沖繩島唄（三線＋笛，琉球音階 C E F G B，96）
+    title: {
+      bpm: 96, steps: 16, swing: 0.16, vol: 0.5, scale: 'C E F G B',
+      chords: ['C', 'F', 'C', 'G', 'C', 'Em', 'F', 'C'],
+      tracks: [
+        { inst: 'tom', pat: 'x.......x.....x.', vol: 0.35, pitch: 140 },
+        { inst: 'shaker', pat: 'x..x..x.x..x..x.', vol: 0.45 },
+        { inst: 'rim', pat: '....x.......x...', vol: 0.28 },
+        { inst: 'sub', chord: 'R.......5.......', vol: 0.6 },
+        { inst: 'pad', chord: 'hold', vol: 0.22 },
+        { inst: 'pluck', seq: [
+          'C5 E5 F5 G5 - - E5 .', 'F5 - E5 F5 C5 - - .', 'E5 G5 B5 G5 - E5 C5 .', 'B4 - G4 B4 D5 - - .',
+          'C5 E5 G5 - F5 E5 C5 .', 'E5 - G5 B5 G5 - E5 .', 'F5 - G5 F5 E5 - C5 .', 'C5 - - - . . . .'], vol: 0.75 },
+        { inst: 'flute', seq: ['E4 - - - G4 - - -', 'F4 - - - A4 - - -', 'G4 - - - E4 - - -', 'D4 - - - B3 - - -',
+          'E4 - - - G4 - - -', 'B4 - - - G4 - - -', 'A4 - - - F4 - - -', 'E4 - - - - - - -'], vol: 0.4 }
+      ]
+    },
+    // 塗色：剛果 soukous 陽光吉他（E 大調 112）
+    play: {
+      bpm: 112, steps: 16, vol: 0.38, scale: 'E F# G# A B C# D#',
+      chords: ['E', 'A', 'B7', 'E', 'C#m7', 'A', 'B7', 'E'],
+      layers: { color: false, done: false },
+      tracks: [
+        { inst: 'kick', pat: 'x.......x.......', vol: 0.45 },
+        { inst: 'rim', pat: 'x..x..x...x..x..', vol: 0.28 },
+        { inst: 'shaker', pat: 'x.x.x.x.x.x.x.x.', vol: 0.4 },
+        { inst: 'bass', chord: 'R..5..R.R..5..8.', vol: 0.7 },
+        { inst: 'pluck', arp: 'updown', rate: 2, oct: 4, vol: 0.3 },
+        { inst: 'pluck', chord: '..3...5...3...8.', oct: 4, vol: 0.3 },
+        { inst: 'marimba', seq: [
+          'G#5 - E5 G#5 B5 - G#5 .', 'A5 - E5 C#5 E5 - . .', 'F#5 - D#5 F#5 A5 - F#5 .', 'G#5 - B5 - E5 - . .',
+          'E5 - G#5 - C#5 - B4 .', 'C#5 - E5 - A5 - G#5 .', 'F#5 - A5 - D#5 - F#5 .', 'E5 - - - B4 - . .'], vol: 0.85 },
+        { inst: 'flute', seq: ['', '. . . . . . C#5 B4', '', '. . . . . . B4 A4', '', '. . . . . . E5 F#5', '', '. . . . G#4 - A4 B4'], vol: 0.45 },
+        { inst: 'bell', seq: ['B5 . . . . . . .', 'C#5 . . . . . . .', 'D#5 . . . . . . .', 'E5 . . . G#5 . . .', 'C#5 . . . . . . .', 'E5 . . . . . . .', 'F#5 . . . . . . .', 'G#5 . . . . . . .'], layer: 'color', vol: 0.45 },
+        { inst: 'ohat', pat: '..x...x...x...x.', layer: 'color', vol: 0.3 },
+        { inst: 'strings', chord: 'hold', oct: 4, layer: 'done', vol: 0.4 }
+      ]
+    }
+  };
+  /*/SONGS*/
+  Kit.SONGS.title = SONGS.title; Kit.SONGS.play = SONGS.play;
+  const D = (n, f) => KG.sfx.define(n, f);
+  // 塗一塊：啪一聲＋木琴音（音高依塗的位置高低，E 大調五聲音階）
+  D('splat', (p, s) => { s.noise(0.09, { vol: 0.12, freq: 1100, sweep: 320, q: 0.9 }); s.tone(330 * p, 0.3, { vol: 0.17 }); s.tone(1320 * p, 0.05, { vol: 0.035 }); });
+  D('crayon', (p, s) => { s.noise(0.05, { vol: 0.1, freq: 2200, q: 2 }); s.tone(330 * p, 0.12, { type: 'triangle', vol: 0.12 }); });
+  D('undoS', (p, s) => { s.tone(880 * p, 0.14, { type: 'triangle', vol: 0.12, slide: 440 * p }); s.noise(0.12, { vol: 0.06, freq: 3000, sweep: 900, q: 1 }); });
+  D('wipe', (p, s) => { s.noise(0.55, { vol: 0.16, freq: 2400 * p, sweep: 350, q: 0.7, attack: 0.05 }); s.noise(0.3, { vol: 0.07, freq: 900, sweep: 2600, q: 1, delay: 0.18 }); });
+  D('shutter', (p, s) => { s.noise(0.03, { vol: 0.3, freq: 2600 * p, q: 1.2 }); s.tone(1700 * p, 0.025, { type: 'square', vol: 0.04 }); s.noise(0.05, { vol: 0.22, freq: 1400 * p, q: 1.5, delay: 0.07 }); s.noise(0.25, { vol: 0.05, freq: 3000, sweep: 1200, q: 2, delay: 0.14 }); });
+  const PENT = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21];   // E 大調五聲音階（半音）
+  const semi = n => Math.pow(2, n / 12);
+  function fillPitch(y) {
+    const r = paper.getBoundingClientRect();
+    const k = Math.max(0, Math.min(PENT.length - 1, Math.floor((1 - (y - r.top) / Math.max(1, r.height)) * PENT.length)));
+    return semi(PENT[k]);
+  }
+  Kit.Music.onStars = n => {
+    AU.jingle({ bpm: 150, inst: 'marimba', vol: 0.38, notes: n >= 3 ? [['E4', 1], ['G#4', 1], ['B4', 1], ['E5', 1], ['D#5', 1], ['E5', 1], ['G#5+B4', 4]] : [['E4', 1], ['G#4', 1], ['B4', 1], ['E5', 4]], bass: [['E2', 4, 0], ['B2', 4, 4]], bassVol: 0.3 });
+    AU.jingle({ bpm: 150, inst: 'bell', vol: 0.2, notes: [['B4', 2], ['E5', 2], ['G#5', 4]] });
+  };
+  function jFull() {
+    AU.jingle({ bpm: 180, inst: 'kalimba', vol: 0.4, notes: [['B4', 1], ['E5', 1], ['G#5', 1], ['B5', 1], ['G#5', 1], ['B5+E5', 3]] });
+    AU.jingle({ bpm: 180, inst: 'flute', vol: 0.2, notes: [['E5', 4], ['G#5', 4]] });
+  }
+  function jSave() { AU.jingle({ bpm: 190, inst: 'bell', vol: 0.28, notes: [['E5', 1], ['B5', 1], ['G#5', 2]] }); }
+  function updateLayers() {
+    if (KG.music.current() !== SONGS.play) return;
+    const r = filledRatio();
+    KG.music.setLayer('color', r >= 0.5);
+    KG.music.setLayer('done', r >= 1);
+    KG.music.setTempo(r >= 1 ? 1.04 : 1);
+  }
   const picUnlocked = pic => !pic.need || totalStars() >= pic.need;
   const colUnlocked = c => !c.need || totalStars() >= c.need;
 
@@ -997,7 +1183,7 @@ const Kit = (function () {
       b.setAttribute('aria-label', c.n);
       if (!un) b.innerHTML = `<span class="lk">${Kit.ICON.lock()}</span>`;
       b.addEventListener('click', () => {
-        if (!colUnlocked(c)) { KG.sound('wrong'); Kit.shake(b, 4); KG.toast(`集 ${c.need} 顆星星就能用${c.n}！`); return; }
+        if (!colUnlocked(c)) { AU.play('error'); Kit.shake(b, 4); KG.toast(`集 ${c.need} 顆星星就能用${c.n}！`); return; }
         pickColor(c.k, true);
         Kit.bump(b);
       });
@@ -1012,7 +1198,7 @@ const Kit = (function () {
     $('hudDot').style.background = c.grad ? c.css : c.c;
     $('hudColorName').textContent = c.n;
     Kit.bump($('chipColor'));
-    if (speak) { KG.note(520 + COLORS.indexOf(c) * 30, 0.1, 'triangle', 0.15); KG.say(c.n); }
+    if (speak) { const ci = COLORS.indexOf(c); AU.play('crayon', { pitch: semi(PENT[ci % 5] + 12 * Math.floor(ci / 10)), exact: true }); AU.say(c.n); }
   }
 
   function loadPic(i) {
@@ -1028,6 +1214,7 @@ const Kit = (function () {
     paper.classList.remove('pop'); void paper.offsetWidth; paper.classList.add('pop');
     $('doneBtn').classList.remove('pulse');
     updateUndo();
+    updateLayers();
   }
   function save() { KG.store.set('coloring:' + PICS[cur].id, fills[PICS[cur].id]); }
   function setRegion(j, k) {
@@ -1043,15 +1230,16 @@ const Kit = (function () {
     const j = +el.dataset.i;
     const pic = PICS[cur];
     const prev = fills[pic.id][j] || null;
-    if (prev === color) { KG.sound('tick'); return; }
+    if (prev === color) { AU.play('tap', { pan: AU.panX(e.clientX) }); return; }
     undos[pic.id].push({ t: 'fill', j, prev });
     if (undos[pic.id].length > 200) undos[pic.id].shift();
     setRegion(j, color);
     save();
     updateUndo();
     splash(e.clientX, e.clientY);
-    KG.note(KG.pick([523, 587, 659, 784, 880]), 0.12, 'sine', 0.2, 0, 1200);
+    AU.play('splat', { pitch: fillPitch(e.clientY), exact: true, pan: AU.panX(e.clientX), gap: 30 });
     checkDone();
+    updateLayers();
   });
 
   function splash(x, y) {
@@ -1079,9 +1267,9 @@ const Kit = (function () {
       celebrated[pic.id] = true;
       const r = paper.getBoundingClientRect();
       KG.confetti(r.left + r.width / 2, r.top + r.height / 2);
-      KG.sound('sparkle');
+      jFull();
       Kit.callout('全部塗滿了！', '#ffd34d', '#8a3a2a');
-      KG.say('哇！好漂亮喔！按完成看看你得到幾顆星星！');
+      setTimeout(() => AU.say('哇！好漂亮喔！按完成看看你得到幾顆星星！'), 600);
       $('doneBtn').classList.add('pulse');
     }
   }
@@ -1090,29 +1278,31 @@ const Kit = (function () {
     const st = undos[PICS[cur].id];
     const u = st.pop();
     if (!u) return;
-    KG.sound('whoosh');
+    AU.play('undoS');
     if (u.t === 'fill') setRegion(u.j, u.prev);
     else u.prev.forEach((k, j) => setRegion(j, k || null));
     save();
     updateUndo();
+    updateLayers();
   });
   $('clearBtn').addEventListener('click', () => {
     const pic = PICS[cur];
     const arr = fills[pic.id];
-    if (!arr.some(Boolean)) { KG.sound('tick'); return; }
+    if (!arr.some(Boolean)) { AU.play('tap'); return; }
     undos[pic.id].push({ t: 'clear', prev: regions.map((_, j) => arr[j] || null) });
     regions.forEach((_, j) => setRegion(j, null));
     celebrated[pic.id] = false;
     save();
     updateUndo();
-    KG.sound('whoosh');
+    updateLayers();
+    AU.play('wipe');
     Kit.shake(paper, 6);
     KG.toast('變乾淨了！');
   });
 
   /* 存成 PNG */
   $('saveBtn').addEventListener('click', () => {
-    KG.sound('click');
+    AU.play('shutter');
     const clone = art.cloneNode(true);
     clone.setAttribute('width', '1200');
     clone.setAttribute('height', '1200');
@@ -1138,7 +1328,7 @@ const Kit = (function () {
         a.remove();
         setTimeout(() => URL.revokeObjectURL(a.href), 4000);
         KG.toast('存好了！');
-        KG.sound('sparkle');
+        jSave();
         const r = $('saveBtn').getBoundingClientRect();
         Kit.FX.burst(r.left + r.width / 2, r.top, { n: 12, types: ['star', 'spark'] });
       }, 'image/png');
@@ -1151,8 +1341,8 @@ const Kit = (function () {
   $('doneBtn').addEventListener('click', () => {
     const ratio = filledRatio();
     if (ratio < 0.3) {
-      KG.sound('boing');
-      KG.say('再多塗一點點顏色吧！');
+      AU.play('boing');
+      AU.say('再多塗一點點顏色吧！');
       KG.toast('再多塗一點喔！');
       Kit.shake(paper, 5);
       return;
@@ -1166,8 +1356,8 @@ const Kit = (function () {
     const newPic = PICS.find(p => p.need && p.need > before && p.need <= after);
     const newCol = COLORS.find(c => c.need && c.need > before && c.need <= after);
     const unlock = newPic ? `新圖畫：${newPic.name}！` : newCol ? `新顏色：${newCol.n}！` : null;
-    Kit.Music.stop();
-    KG.say(stars === 3 ? '太漂亮了！你是小畫家！' : '畫好了！好棒喔！');
+    Kit.Music.stop(); AU.closeMenu();
+    setTimeout(() => AU.say(stars === 3 ? '太漂亮了！你是小畫家！' : '畫好了！好棒喔！'), 1500);
     // 縮圖：把作品放在結算畫面
     const thumb = `<svg viewBox="0 0 400 400" style="width:100%;height:100%;border-radius:16px;background:#fff;box-shadow:0 4px 0 rgba(0,0,0,.12);transform:rotate(-3deg)">${art.innerHTML.replace(/id="m/g, 'id="r').replace(/url\(#m/g, 'url(#r')}</svg>`;
     Kit.result({
@@ -1176,10 +1366,10 @@ const Kit = (function () {
       hero: thumb,
       unlock,
       unlockIcon: newPic ? `<svg viewBox="0 0 400 400" style="width:100%;height:100%;background:#fff;border-radius:10px">${svgInner(newPic, 'u')}</svg>` : null,
-      onReplay: () => { Kit.Music.start(Kit.SONGS.gentle); },
+      onReplay: () => { Kit.Music.start(Kit.SONGS.play); updateLayers(); },
       replayText: '繼續塗',
       onMenu: showGallery,
-      onNext: () => { Kit.Music.start(Kit.SONGS.gentle); const nx = nextPic(); if (nx >= 0) loadPic(nx); else showGallery(); },
+      onNext: () => { Kit.Music.start(Kit.SONGS.play); const nx = nextPic(); if (nx >= 0) loadPic(nx); else showGallery(); },
       nextText: '下一張'
     });
     buildPalette();
@@ -1192,7 +1382,8 @@ const Kit = (function () {
   /* 圖畫選擇畫面 */
   function showGallery() {
     $('hud').style.display = 'none';
-    if (!Kit.Music.playing) Kit.Music.start(Kit.SONGS.gentle);
+    AU.closeMenu(); pauseBtn.hidden = true; gear.hidden = false;
+    Kit.Music.start(Kit.SONGS.title);
     Kit.ensureDefs();
     const ov = document.createElement('div');
     ov.className = 'kit-screen';
@@ -1211,9 +1402,9 @@ const Kit = (function () {
       const b = ov.querySelector(`.pg[data-i="${i}"]`);
       applyFills(Array.from(b.querySelectorAll('[data-r]')), fills[pic.id], 'g' + i);
       b.addEventListener('click', () => {
-        if (!picUnlocked(pic)) { KG.sound('wrong'); Kit.shake(b, 5); KG.say(`再集 ${pic.need - totalStars()} 顆星星，就可以畫${pic.name}了！`); return; }
-        KG.sound('pop');
-        KG.say(pic.name);
+        if (!picUnlocked(pic)) { AU.play('error'); Kit.shake(b, 5); AU.say(`再集 ${pic.need - totalStars()} 顆星星，就可以畫${pic.name}了！`); return; }
+        AU.play('select');
+        AU.say(pic.name);
         ov.classList.add('out');
         setTimeout(() => ov.remove(), 300);
         startPic(i);
@@ -1224,11 +1415,20 @@ const Kit = (function () {
   function startPic(i) {
     $('app').style.visibility = 'visible';
     $('hud').style.display = '';
+    gear.hidden = true; pauseBtn.hidden = false;
+    Kit.Music.start(Kit.SONGS.play);
     buildPalette();
     loadPic(i);
     layout();
   }
-  $('menuBtn').addEventListener('click', () => { KG.sound('pop'); showGallery(); });
+  $('menuBtn').addEventListener('click', () => { AU.play('ui'); showGallery(); });
+  // 聲音設定鈕（標題、選圖）、塗色時的暫停鈕
+  const gear = AU.button('gear', 'au-gear');
+  document.body.appendChild(gear);
+  const pauseBtn = AU.button('pause', 'au-gear au-pause', () => AU.menu({ paused: true, extra: [{ text: '選別張圖', icon: 'home', onClick: showGallery }] }));
+  pauseBtn.hidden = true;
+  document.body.appendChild(pauseBtn);
+  document.addEventListener('visibilitychange', () => { if (document.hidden && !pauseBtn.hidden && !AU.isOpen() && !document.querySelector('.kit-ov, .kit-screen')) pauseBtn.click(); });
 
   window.addEventListener('keydown', e => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undoBtn.click(); }
@@ -1248,8 +1448,9 @@ const Kit = (function () {
     bg: 'radial-gradient(circle at 50% 45%, rgba(255,255,255,.75), rgba(255,255,255,0) 55%), linear-gradient(160deg, #fff1b8 0%, #ffd9e8 55%, #d9e6ff 100%)',
     hero: crayonSVG('#ff7eb0'),
     sub: '選顏色，點一點，幫圖畫穿上漂亮衣服！',
-    buttons: [{ text: '開始', onClick: () => { KG.say('塗色本！選一張圖畫吧！'); showGallery(); } }]
+    buttons: [{ text: '開始', onClick: () => { AU.say('塗色本！選一張圖畫吧！'); showGallery(); } }]
   });
+  Kit.Music.start(Kit.SONGS.title);
 })();
 </script>
 </body>

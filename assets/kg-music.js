@@ -34,6 +34,7 @@
   /* ---------- 共用聲音節點 ---------- */
   var A = null, master, comp, musicBus, musicOut, sfxBus, loopBus, revIn, revOut, noiseBuf;
   var musicVol = 0.24, sfxVol = 0.9;
+  var duckUntil = 0; // jingle 壓低音樂到這個時間
 
   function getCtx() {
     // 使用者還沒點過畫面前不要建立聲音裝置（瀏覽器會警告）；音樂會等第一次點擊再開始
@@ -411,7 +412,12 @@
     setVolume: function (v) {
       musicVol = Math.max(0, Math.min(1, v));
       // 先清掉還沒跑完的淡入，不然 play() 後 0.6 秒內設的音量會被淡入蓋掉
-      if (musicOut && playing) { var t = A.currentTime, g = musicOut.gain; g.cancelScheduledValues(t); g.setValueAtTime(Math.max(0.0001, g.value), t); g.setTargetAtTime(musicVol, t, 0.1); }
+      if (musicOut && playing) {
+        var t = A.currentTime, g = musicOut.gain; g.cancelScheduledValues(t); g.setValueAtTime(Math.max(0.0001, g.value), t);
+        // jingle 正在壓低音樂：維持壓低，等 jingle 結束再回到新音量
+        if (duckUntil > t) { g.setTargetAtTime(musicVol * 0.25, t, 0.05); g.setTargetAtTime(musicVol, duckUntil, 0.4); }
+        else g.setTargetAtTime(musicVol, t, 0.1);
+      }
     },
     isEnabled: function () { return musicEnabled; },
     /** 背景音樂開關（記在瀏覽器，所有遊戲共用） */
@@ -436,6 +442,7 @@
         musicOut.gain.cancelScheduledValues(t); musicOut.gain.setValueAtTime(Math.max(0.0001, musicOut.gain.value), t);
         musicOut.gain.setTargetAtTime(musicVol * 0.25, t, 0.05);
         musicOut.gain.setTargetAtTime(musicVol, t + dur + 0.1, 0.4);
+        duckUntil = t + dur + 0.1;
       }
       return dur;
     },

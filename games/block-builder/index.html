@@ -317,6 +317,18 @@ function main() {
     return g;
   }
   const rbox = (w, h, d, x, y, z, r = 0.08) => chamferBox(w, h, d, r).translate(x, y, z);
+  // 拿掉完全在 yMax 以下的三角形（地板磚的底部埋在泥土裡，看不到）
+  function trimBelow(g, yMax) {
+    const p = g.attributes.position.array, n = g.attributes.normal.array, P2 = [], N2 = [];
+    for (let i = 0; i < p.length; i += 9) {
+      if (Math.max(p[i + 1], p[i + 4], p[i + 7]) <= yMax) continue;
+      for (let k = 0; k < 9; k++) { P2.push(p[i + k]); N2.push(n[i + k]); }
+    }
+    const o = new THREE.BufferGeometry();
+    o.setAttribute('position', new THREE.Float32BufferAttribute(P2, 3));
+    o.setAttribute('normal', new THREE.Float32BufferAttribute(N2, 3));
+    return o;
+  }
   const box = (w, h, d, x, y, z) => new THREE.BoxGeometry(w, h, d).translate(x, y, z);
   const cyl = (rt, rb, h, x, y, z, s = 12) => new THREE.CylinderGeometry(rt, rb, h, s).translate(x, y, z);
   const sph = (r, x, y, z, d = 1) => new THREE.IcosahedronGeometry(r, d).translate(x, y, z);
@@ -487,9 +499,7 @@ function main() {
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.shadowMap.autoUpdate = false;
   const scene = new THREE.Scene();
-  const pmrem = new THREE.PMREMGenerator(renderer);
-  const envTex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-  scene.environment = envTex;
+  let envTex = null;   // 環境貼圖在標題畫面出來之後才做（見最下面的 warmUp）
   scene.environmentIntensity = 0.35;
   scene.fog = new THREE.Fog(0x9fdcff, 90, 240);
   const camera = new THREE.PerspectiveCamera(42, 1, 0.3, 700);
@@ -498,7 +508,7 @@ function main() {
   const sun = new THREE.DirectionalLight(0xfff2dd, 2.2);
   sun.position.set(16, 30, 11);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(small ? 1024 : 2048, small ? 1024 : 2048);
+  sun.shadow.mapSize.set(small ? 512 : 1024, small ? 512 : 1024);
   Object.assign(sun.shadow.camera, { left: -25, right: 25, top: 25, bottom: -25, near: 5, far: 90 });
   sun.shadow.bias = -0.0006; sun.shadow.normalBias = 0.035;
   scene.add(sun, sun.target);
@@ -543,7 +553,7 @@ function main() {
   dirt.position.y = -0.5; dirt.receiveShadow = true;
   scene.add(dirt);
   const groundMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.75 });
-  const tiles = new THREE.InstancedMesh(chamferBox(0.98, 0.3, 0.98, 0.05).translate(0, -0.15, 0), groundMat, N * N);
+  const tiles = new THREE.InstancedMesh(trimBelow(chamferBox(0.98, 0.3, 0.98, 0.05), -0.1 + 1e-4).translate(0, -0.15, 0), groundMat, N * N);
   const gstuds = new THREE.InstancedMesh(stud(0, 0, 0), groundMat, N * N);
   tiles.receiveShadow = true; gstuds.receiveShadow = true; gstuds.castShadow = false;
   tiles.frustumCulled = gstuds.frustumCulled = false;
@@ -1039,11 +1049,12 @@ function main() {
     camGoal.tz += (dx * sy - dy * cy) * s;
     clampGoal();
   }
+  const CAMF = ['pitch', 'dist', 'tx', 'ty', 'tz'];
   function updCamera(dt) {
     const k = 1 - Math.exp(-dt * 14);
     let dyaw = camGoal.yaw - cam.yaw;
     cam.yaw += dyaw * k;
-    for (const f of ['pitch', 'dist', 'tx', 'ty', 'tz']) cam[f] += (camGoal[f] - cam[f]) * k;
+    for (let i = 0; i < CAMF.length; i++) { const f = CAMF[i]; cam[f] += (camGoal[f] - cam[f]) * k; }
     const cp = Math.cos(cam.pitch);
     camera.position.set(cam.tx + cam.dist * cp * Math.sin(cam.yaw), cam.ty + cam.dist * Math.sin(cam.pitch), cam.tz + cam.dist * cp * Math.cos(cam.yaw));
     if (shake > 0) {
@@ -1087,11 +1098,15 @@ function main() {
     }
     view = { cx: (L + R) / 2, cy: (Tp + B) / 2, w: Math.max(100, R - L), h: Math.max(100, B - Tp) };
     shapesMore();
-    camera.setViewOffset(W, H, W / 2 - view.cx, H / 2 - view.cy, W, H);
-    camera.updateProjectionMatrix();
+    applyView();
     const sc = H / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)));
     pMat.uniforms.uScale.value = sc * renderer.getPixelRatio();
     glowMat.uniforms.uScale.value = sc * renderer.getPixelRatio();
+  }
+  function applyView() {
+    camera.aspect = W / H;
+    camera.setViewOffset(W, H, W / 2 - view.cx, H / 2 - view.cy, W, H);
+    camera.updateProjectionMatrix();
   }
   let layoutT = 0;
   function relayout() { clearTimeout(layoutT); layoutT = setTimeout(() => { layout(); }, 60); }
@@ -1351,13 +1366,16 @@ function main() {
     world.clear(); anims.length = 0;
     for (let i = 0; i < N * N; i++) if (ground[i] !== 255) paintGround(i % N, (i / N) | 0, 255);
     const gr = data && data.ground;
+    // 地面的復原紀錄用格子編號查（以前每格都線性搜尋整個清單，大城市會卡）
+    const gOps = new Map();
+    if (undoable) for (const o of ops) if (o.a === 'ground') gOps.set(o.z * N + o.x, o);
     if (gr) for (let i = 0; i < N * N; i++) {
       const v = gr[i] == null ? 255 : gr[i] | 0;
       if (v !== 255 && v >= 0 && v < 16) {
         paintGround(i % N, (i / N) | 0, v);
         if (undoable) {
-          const j = ops.findIndex(o => o.a === 'ground' && o.x === i % N && o.z === ((i / N) | 0));
-          if (j >= 0) { ops[j].to = v; } else ops.push({ a: 'ground', x: i % N, z: (i / N) | 0, from: 255, to: v });
+          const o = gOps.get(i);
+          if (o) { o.to = v; } else ops.push({ a: 'ground', x: i % N, z: (i / N) | 0, from: 255, to: v });
         }
       }
     }
@@ -1793,11 +1811,12 @@ function main() {
    * 小圖示 / 縮圖：直接用主渲染器畫一張小圖，馬上複製下來
    * ========================================================= */
   const iconScene = new THREE.Scene();
-  iconScene.environment = envTex; iconScene.environmentIntensity = 0.5;
+  iconScene.environmentIntensity = 0.5;
   iconScene.add(new THREE.HemisphereLight(0xffffff, 0x9a8a70, 1.4));
   const iconSun = new THREE.DirectionalLight(0xffffff, 2.2); iconSun.position.set(4, 8, 6);
   iconScene.add(iconSun);
   const iconCam = new THREE.PerspectiveCamera(30, 1, 0.1, 400);
+  // 舊方法（畫布太小時才用）：暫時把畫布改成縮圖大小
   function snap(w, h, sceneObj, camObj, bg, type) {
     const pr = renderer.getPixelRatio();
     const oldBg = sceneObj.background;
@@ -1815,6 +1834,49 @@ function main() {
     layout();
     return c2.toDataURL(type || 'image/png', 0.82);
   }
+  // 新方法：一批小圖畫在主畫布左下角的小視窗裡（不改畫布大小），整批只讀回一次，最後重畫主畫面蓋掉
+  const _vp = new THREE.Vector4();
+  function snapBatch(jobs) {
+    const out = [];
+    const pr = renderer.getPixelRatio(), cw = renderer.domElement.width, ch = renderer.domElement.height;
+    let i = 0;
+    while (i < jobs.length) {
+      let x = 0, y = 0, rowH = 0, maxW = 0;
+      const placed = [];
+      for (; i < jobs.length; i++) {
+        const j = jobs[i];
+        if (x + j.w > cw) { x = 0; y += rowH; rowH = 0; }
+        if (y + j.h > ch || j.w > cw) break;
+        placed.push([j, x, y]); x += j.w; rowH = Math.max(rowH, j.h); maxW = Math.max(maxW, x);
+      }
+      if (!placed.length) { const j = jobs[i++]; if (j.before) j.before(); out.push(snap(j.w, j.h, j.scene, j.cam, j.bg, j.type)); if (j.after) j.after(); continue; }
+      const regionH = y + rowH, sm = renderer.shadowMap.enabled;
+      renderer.getViewport(_vp);
+      renderer.setScissorTest(true);
+      for (const [j, jx, jy] of placed) {
+        if (j.before) j.before();
+        const oldBg = j.scene.background;
+        if (j.bg != null) j.scene.background = j.bg;
+        if (j.scene !== scene) renderer.shadowMap.enabled = false;
+        renderer.setViewport(jx / pr, jy / pr, j.w / pr, j.h / pr);
+        renderer.setScissor(jx / pr, jy / pr, j.w / pr, j.h / pr);
+        renderer.render(j.scene, j.cam);
+        renderer.shadowMap.enabled = sm;
+        j.scene.background = oldBg;
+        if (j.after) j.after();
+      }
+      renderer.setScissorTest(false);
+      renderer.setViewport(_vp);
+      const atlas = document.createElement('canvas'); atlas.width = maxW; atlas.height = regionH;
+      atlas.getContext('2d').drawImage(renderer.domElement, 0, ch - regionH, maxW, regionH, 0, 0, maxW, regionH);
+      for (const [j, jx, jy] of placed) {
+        const c2 = document.createElement('canvas'); c2.width = j.w; c2.height = j.h;
+        c2.getContext('2d').drawImage(atlas, jx, regionH - jy - j.h, j.w, j.h, 0, 0, j.w, j.h);
+        out.push(c2.toDataURL(j.type || 'image/png', 0.82));
+      }
+    }
+    return out;   // 角落的小圖會被下一幀的主畫面蓋掉（每幀都會重畫）
+  }
   const icons = [];
   const _box3 = new THREE.Box3(), _sph = new THREE.Sphere();
   function fitIconCam(obj, w, h, yaw = 0.75, pitch = 0.5) {
@@ -1824,25 +1886,31 @@ function main() {
     iconCam.position.set(_sph.center.x + Math.sin(yaw) * Math.cos(pitch) * d, _sph.center.y + Math.sin(pitch) * d, _sph.center.z + Math.cos(yaw) * Math.cos(pitch) * d);
     iconCam.lookAt(_sph.center);
   }
-  function makeIcons() {
-    for (let t = 0; t < NT; t++) {
+  // 積木圖示：14 個物件先一起放進圖示場景（先在背景編好 shader），再一批畫完
+  let iconGroups = null;
+  function iconSetup() {
+    if (iconGroups) return;
+    iconGroups = SH.map((sh, t) => {
       const g = new THREE.Group();
-      SH[t].parts.forEach(p => {
-        const mat = p.paint ? new THREE.MeshStandardMaterial({ color: COL3[SH[t].dc], roughness: 0.36 }) : p.mat;
-        g.add(new THREE.Mesh(p.g, mat));
-      });
-      if (t === T.LAMP) { M.lamp.emissiveIntensity = 1.2; }
-      iconScene.add(g);
-      fitIconCam(g, 96, 96, t === T.DOOR || t === T.WIN || t === T.PERSON || t === T.FENCE ? 0.45 : 0.75, 0.42);
-      icons[t] = snap(96, 96, iconScene, iconCam, new THREE.Color(0xffffff));
-      iconScene.remove(g);
-      g.children.forEach(m => { if (m.material !== M.lamp && SH[t].parts.every(p => p.mat !== m.material)) m.material.dispose(); });
-    }
+      sh.parts.forEach(p => g.add(new THREE.Mesh(p.g, p.paint ? new THREE.MeshStandardMaterial({ color: COL3[sh.dc], roughness: 0.36 }) : p.mat)));
+      g.visible = false; iconScene.add(g);
+      return g;
+    });
+  }
+  function makeIcons() {
+    iconSetup();
+    const bg = new THREE.Color(0xffffff);
+    const urls = snapBatch(SH.map((sh, t) => ({ w: 96, h: 96, scene: iconScene, cam: iconCam, bg,
+      before: () => { const g = iconGroups[t]; g.visible = true; if (t === T.LAMP) M.lamp.emissiveIntensity = 1.2; fitIconCam(g, 96, 96, t === T.DOOR || t === T.WIN || t === T.PERSON || t === T.FENCE ? 0.45 : 0.75, 0.42); },
+      after: () => { iconGroups[t].visible = false; if (t === T.LAMP) applyNight(); } })));
+    urls.forEach((u, t) => { icons[t] = u; });
+    iconGroups.forEach((g, t) => { iconScene.remove(g); g.children.forEach(m => { if (m.material !== M.lamp && SH[t].parts.every(p => p.mat !== m.material)) m.material.dispose(); }); });
     applyNight();
+    document.querySelectorAll('.shp img').forEach(im => { im.src = icons[+im.parentNode.dataset.t] || ''; });
+    document.querySelectorAll('#gNeed .chip img').forEach(im => { im.src = icons[+im.parentNode.dataset.t] || ''; });
   }
   const tplThumbs = {};
-  function tplThumb(def) {
-    if (tplThumbs[def.id]) return tplThumbs[def.id];
+  function tplJob(def) {
     const data = tplData(def);
     const root = new THREE.Group();
     const w = new World(root, { noShadow: true });
@@ -1853,20 +1921,30 @@ function main() {
     const base = new THREE.Mesh(new RoundedBoxGeometry(sz.x + 2, 0.4, sz.z + 2, 1, 0.15).translate(0, -0.2, 0), std(0x72c95a, 0.8));
     base.position.set(ctr.x, 0, ctr.z);
     root.add(base);
+    root.visible = false;
     iconScene.add(root);
-    fitIconCam(root, 160, 120, 0.7, 0.42);
-    tplThumbs[def.id] = snap(160, 120, iconScene, iconCam, new THREE.Color(0xcdeeff), 'image/jpeg');
-    iconScene.remove(root);
-    w.dispose(); base.geometry.dispose(); base.material.dispose();
+    return { w: 160, h: 120, scene: iconScene, cam: iconCam, bg: new THREE.Color(0xcdeeff), type: 'image/jpeg', root,
+      before: () => { root.visible = true; fitIconCam(root, 160, 120, 0.7, 0.42); },
+      after: () => { root.visible = false; },
+      done: () => { iconScene.remove(root); w.dispose(); base.geometry.dispose(); base.material.dispose(); } };
+  }
+  // 所有範本縮圖一次做好（一批讀回一次）
+  function makeTplThumbs(jobs) {
+    jobs = jobs || TEMPLATES.filter(d => !tplThumbs[d.id]).map(d => Object.assign(tplJob(d), { id: d.id }));
+    if (!jobs.length) return;
+    const urls = snapBatch(jobs);
+    jobs.forEach((j, k) => { tplThumbs[j.id] = urls[k]; j.done(); });
+  }
+  function tplThumb(def) {
+    if (!tplThumbs[def.id]) makeTplThumbs();
     return tplThumbs[def.id];
   }
   function sceneThumb() {
     hideGhost();
-    const hv = hintRoot.visible; hintRoot.visible = false; puffs.visible = false;
-    camera.clearViewOffset(); camera.aspect = 4 / 3; camera.updateProjectionMatrix();
-    const url = snap(200, 150, scene, camera, null, 'image/jpeg');
-    hintRoot.visible = hv; puffs.visible = true;
-    return url;
+    const hv = hintRoot.visible;
+    return snapBatch([{ w: 200, h: 150, scene, cam: camera, bg: null, type: 'image/jpeg',
+      before: () => { hintRoot.visible = false; puffs.visible = false; camera.clearViewOffset(); camera.aspect = 4 / 3; camera.updateProjectionMatrix(); },
+      after: () => { hintRoot.visible = hv; puffs.visible = true; applyView(); } }])[0];
   }
 
   /* =========================================================
@@ -1899,7 +1977,7 @@ function main() {
   const logo = $('logo');
   logo.innerHTML = '積木小城市'.split('').map((ch, i) => '<span style="background:' + ['#e8464a', '#ff8a3a', '#f5b82e', '#3dbb5c', '#3a74d8'][i] + ';animation-delay:' + (i * 0.12) + 's">' + ch + '</span>').join('');
   function buildPalette() {
-    $('shapes').innerHTML = SH.map((s, t) => '<button class="shp" data-t="' + t + '" title="' + s.name + (t < 10 ? ' (' + ((t + 1) % 10) + ')' : '') + '"><img alt="" src="' + icons[t] + '">' + s.name + '</button>').join('');
+    $('shapes').innerHTML = SH.map((s, t) => '<button class="shp" data-t="' + t + '" title="' + s.name + (t < 10 ? ' (' + ((t + 1) % 10) + ')' : '') + '"><img alt="" src="' + (icons[t] || '') + '">' + s.name + '</button>').join('');
     $('colors').innerHTML = COLORS.map((c, i) => '<button class="sw" data-c="' + i + '" style="background:' + c[0] + '" title="' + c[1] + '" aria-label="' + c[1] + '"></button>').join('');
     refreshPalette();
   }
@@ -2141,9 +2219,16 @@ function main() {
   /* =========================================================
    * 自動畫質：太卡就一步步降低（解析度 → 影子 → 夜燈），並記住
    * ========================================================= */
-  const QKEY = 'quality:block-builder';
-  const baseRatio = Math.min(window.devicePixelRatio || 1, small ? 1.75 : 2);
-  const QL = [
+  // 手機解析度最高 1.5 倍（影子貼圖 512）；表改過了，存檔鍵加 v2，舊的等級不套用
+  const QKEY = 'quality:v2:block-builder';
+  const baseRatio = Math.min(window.devicePixelRatio || 1, small ? 1.5 : 2);
+  const QL = small ? [
+    { ratio: baseRatio, shadow: true, lights: true },
+    { ratio: Math.min(baseRatio, 1.25), shadow: true, lights: true },
+    { ratio: 1, shadow: true, lights: true },
+    { ratio: 1, shadow: false, lights: true },
+    { ratio: 0.85, shadow: false, lights: false }
+  ] : [
     { ratio: baseRatio, shadow: true, lights: true },
     { ratio: Math.min(baseRatio, 1.5), shadow: true, lights: true },
     { ratio: Math.min(baseRatio, 1.25), shadow: true, lights: true },
@@ -2151,9 +2236,10 @@ function main() {
     { ratio: 1, shadow: false, lights: true },
     { ratio: 0.85, shadow: false, lights: false }
   ];
-  let qLevel = clamp(KG.store.get(QKEY, KG.lowEnd ? 2 : 0) | 0, 0, QL.length - 1);
-  const perf = { last: 0, n: 0, sum: 0, cool: 2.5 };
+  let qLevel = clamp(KG.store.get(QKEY, KG.lowEnd ? (small ? 1 : 2) : 0) | 0, 0, QL.length - 1);
+  const perf = { last: 0, n: 0, sum: 0, cool: 1.5, busy: false };
   const frameLog = new Float32Array(600); let flN = 0;
+  function allMatsNeedUpdate() { scene.traverse(o => { if (o.material) [].concat(o.material).forEach(m => { m.needsUpdate = true; }); }); }
   function applyQuality() {
     const q = QL[qLevel];
     renderer.setPixelRatio(q.ratio);
@@ -2161,27 +2247,59 @@ function main() {
     if (renderer.shadowMap.enabled !== q.shadow) {
       renderer.shadowMap.enabled = q.shadow;
       shadowDirty = true;
-      scene.traverse(o => { if (o.material) [].concat(o.material).forEach(m => { m.needsUpdate = true; }); });
+      allMatsNeedUpdate();
     }
     lampPickT = 0;
   }
+  /* shader 預先編譯：compile() 只送出編譯指令；有 KHR_parallel_shader_compile 就輪詢，
+     沒有的話一次只等一兩個 shader 連結完，中間讓出主執行緒（按鈕和拖曳照樣有反應） */
+  const PAR = renderer.extensions.has('KHR_parallel_shader_compile');
+  function waitPrograms(progs) {
+    return new Promise(res => {
+      let i = 0;
+      (function next() {
+        const t0 = performance.now();
+        if (PAR) { while (i < progs.length && progs[i].isReady()) i++; if (i < progs.length) { setTimeout(next, 16); return; } }
+        while (i < progs.length && performance.now() - t0 < 10) progs[i++].getUniforms();
+        if (i < progs.length) setTimeout(next, 0); else res();
+      })();
+    });
+  }
+  // setup() 暫時把場景改成另一種狀態（例如夜燈打開、關掉影子），編好那一組 shader 再還原
+  function bgCompile(sceneObj, cam, setup, restore) {
+    const before = new Set(renderer.info.programs);
+    if (setup) setup();
+    renderer.compile(sceneObj, cam);
+    if (restore) { restore(); if (sceneObj === scene) allMatsNeedUpdate(); }
+    return waitPrograms(renderer.info.programs.filter(p => !before.has(p)));
+  }
+  function stepDown() {
+    const next = qLevel + 1;
+    KG.store.set(QKEY, next);
+    if (QL[next].shadow !== QL[qLevel].shadow) {
+      // 關影子會換一組 shader：先在背景編好再切換
+      perf.busy = true;
+      const was = renderer.shadowMap.enabled;
+      bgCompile(scene, camera, () => { renderer.shadowMap.enabled = QL[next].shadow; }, () => { renderer.shadowMap.enabled = was; })
+        .then(() => { qLevel = next; applyQuality(); perf.busy = false; perf.cool = 1; perf.n = 0; perf.sum = 0; });
+    } else { qLevel = next; applyQuality(); perf.cool = 1; }
+  }
   function renderFrame() {
+    governor();
     if (shadowDirty && renderer.shadowMap.enabled) { renderer.shadowMap.needsUpdate = true; shadowDirty = false; }
     renderer.render(scene, camera);
+  }
+  function governor() {
     const now = performance.now(), dt = perf.last ? Math.min(0.5, (now - perf.last) / 1000) : 0;
     perf.last = now;
     frameLog[flN++ % 600] = dt * 1000;
-    if (document.hidden || qLevel >= QL.length - 1) return;
+    if (document.hidden || qLevel >= QL.length - 1 || perf.busy || perf.locked) return;
     perf.cool -= dt;
     if (perf.cool > 0) return;
     perf.sum += dt; perf.n++;
-    if (perf.n >= 60) {
-      if (perf.sum / perf.n > 1 / 45) {
-        qLevel++;
-        KG.store.set(QKEY, qLevel);
-        applyQuality();
-        perf.cool = 1.5;
-      }
+    // 大約每 1 秒判斷一次：平均低於 45 fps 就降一級（約 2 秒內反應）
+    if (perf.sum >= 1 && perf.n >= 8) {
+      if (perf.sum / perf.n > 1 / 45) stepDown();
       perf.n = 0; perf.sum = 0;
     }
   }
@@ -2189,7 +2307,7 @@ function main() {
   /* =========================================================
    * 主迴圈
    * ========================================================= */
-  let last = performance.now(), first = true, clock = 0;
+  let last = performance.now(), first = true, clock = 0, ready = false;
   const easeBack = t => { const c = 1.9; t -= 1; return 1 + (c + 1) * t * t * t + c * t * t; };
   function frame(now) {
     const dt = Math.max(0, Math.min(0.05, (now - last) / 1000));
@@ -2221,13 +2339,14 @@ function main() {
       if (hoverXY && !(gest && gest.type !== 'tap')) showPlan(planFor(hoverXY[0], hoverXY[1]));
     }
     if (ghostHold > 0) { ghostHold -= dt; if (ghostHold <= 0 && !ptrs.size && !hoverXY) hideGhost(); }
-    renderFrame();
-    if (first) { first = false; const m = $('msg'); if (m) m.remove(); }
+    if (ready) {
+      renderFrame();
+      if (first) { first = false; perf.last = 0; const m = $('msg'); if (m) m.remove(); }
+    }
     requestAnimationFrame(frame);
   }
 
-  // 啟動
-  makeIcons();
+  // 啟動：標題畫面（文字、按鈕）先出來就能按；3D 的準備工作在後面分段做
   buildPalette();
   applyQuality();
   applyNight();
@@ -2241,6 +2360,34 @@ function main() {
   refreshTitle();
   openOv = 'title';
   requestAnimationFrame(frame);
+  function lampVariant() { return nightT > 0.02 && QL[qLevel].lights; }
+  function warmUp() {
+    // 1) 環境光（PMREM）
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    envTex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    pmrem.dispose();
+    scene.environment = envTex; iconScene.environment = envTex;
+    // 2) 主場景 shader（用第一張畫面會用到的夜燈狀態）→ 好了才開始畫
+    const lv = lampVariant();
+    setTimeout(() => bgCompile(scene, camera, () => lampLights.forEach(l => { l.visible = lv; }), null).then(() => {
+      ready = true;
+      // 3) 之後在空檔做：積木圖示、範本縮圖、另一種夜燈狀態的 shader
+      setTimeout(() => {
+        iconSetup();
+        const jobs = TEMPLATES.map(d => Object.assign(tplJob(d), { id: d.id }));
+        bgCompile(iconScene, iconCam, () => { iconGroups.forEach(g => { g.visible = true; }); jobs.forEach(j => { j.root.visible = true; }); },
+          () => { iconGroups.forEach(g => { g.visible = false; }); jobs.forEach(j => { j.root.visible = false; }); }).then(() => {
+          makeIcons();
+          setTimeout(() => makeTplThumbs(jobs), 30);   // 分開兩個工作，每段都短一點
+          setTimeout(() => {
+            const vis = lampLights.map(l => l.visible);
+            bgCompile(scene, camera, () => lampLights.forEach(l => { l.visible = !lv; }), () => lampLights.forEach((l, i) => { l.visible = vis[i]; }));
+          }, 120);
+        });
+      }, 50);
+    }), 0);
+  }
+  requestAnimationFrame(() => setTimeout(warmUp, 0));
 
   /* =========================================================
    * 測試用掛勾
@@ -2293,6 +2440,8 @@ function main() {
     perf: () => { const n = Math.min(flN, 600); let s = 0, mx = 0; const a = []; for (let i = 0; i < n; i++) { s += frameLog[i]; mx = Math.max(mx, frameLog[i]); a.push(frameLog[i]); } a.sort((x, y) => x - y); return { n, avg: n ? s / n : 0, max: mx, p95: n ? a[Math.floor(n * 0.95)] : 0 }; },
     resetPerf: () => { flN = 0; },
     setQuality: (l) => { qLevel = clamp(l, 0, QL.length - 1); applyQuality(); },
+    lockQuality: (on) => { perf.locked = !!on; },
+    ready: () => ready && !!icons[0],
     toScreen: (x, y, z) => toScreen(wX(x), y, wX(z)),
     aim: (sx, sy) => { const p = planFor(sx, sy); return p ? { act: p.act, ok: p.ok, x: p.x, y: p.y, z: p.z, t: p.t, b: p.block ? [p.block.x, p.block.y, p.block.z] : null } : null; },
     night: (on) => toggleNight(on),

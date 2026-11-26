@@ -625,6 +625,137 @@ function main() {
   }
   function std(color, rough, metal, extra) { return new THREE.MeshStandardMaterial(Object.assign({ color, roughness: rough == null ? 0.8 : rough, metalness: metal || 0 }, extra || {})); }
 
+  /* ---------- 減少 draw call 的小工具 ---------- */
+  // 把同一個父物件底下、同一個材質的幾個靜態 Mesh 烘成一個幾何（只算一次 draw call）
+  function bakeMerge(list) {
+    let nv = 0, ni = 0;
+    const gs = list.map(m => {
+      m.updateMatrix();
+      const g = m.geometry.clone().applyMatrix4(m.matrix);
+      nv += g.attributes.position.count; ni += g.index ? g.index.count : g.attributes.position.count;
+      return g;
+    });
+    const hasUV = gs.every(g => g.attributes.uv);
+    const pos = new Float32Array(nv * 3), nor = new Float32Array(nv * 3), uv = hasUV ? new Float32Array(nv * 2) : null;
+    const idx = nv > 65535 ? new Uint32Array(ni) : new Uint16Array(ni);
+    let v0 = 0, i0 = 0;
+    for (const g of gs) {
+      const n = g.attributes.position.count;
+      pos.set(g.attributes.position.array, v0 * 3); nor.set(g.attributes.normal.array, v0 * 3);
+      if (uv) uv.set(g.attributes.uv.array, v0 * 2);
+      if (g.index) for (let k = 0; k < g.index.count; k++) idx[i0++] = g.index.array[k] + v0;
+      else for (let k = 0; k < n; k++) idx[i0++] = v0 + k;
+      v0 += n; g.dispose();
+    }
+    const out = new THREE.BufferGeometry();
+    out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    out.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+    if (uv) out.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    out.setIndex(new THREE.BufferAttribute(idx, 1));
+    return out;
+  }
+  function mergeMeshes(list) {
+    const parent = list[0].parent;
+    const m = new THREE.Mesh(bakeMerge(list), list[0].material);
+    m.castShadow = list.some(o => o.castShadow); m.receiveShadow = list.some(o => o.receiveShadow); m.renderOrder = list[0].renderOrder;
+    for (const o of list) o.removeFromParent();
+    parent.add(m);
+    return m;
+  }
+  // 人偶：很多小 Mesh 掛在會動的關節（Group）上。把每個零件 Mesh 當成一根「骨頭」，
+  // 整個人偶合成一個 SkinnedMesh（每個頂點只跟一根骨頭），一個人偶只要一次 draw call（影子也一次）。
+  // 零件本身留在場景樹裡（移到看不見的圖層），動畫照舊改零件或關節的 position/rotation/scale；
+  // 零件材質的 color/emissive 改了會自動重新上色，零件或中間的關節 visible=false 會縮成 0。
+  const RIG_LAYER = 31;
+  let rigStdMat = null;
+  function rigMaterial() {
+    if (rigStdMat) return rigStdMat;
+    rigStdMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0 });
+    rigStdMat.onBeforeCompile = sh => {
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>', '#include <common>\nattribute vec2 aRM;\nattribute vec3 aEm;\nvarying vec2 vRM;\nvarying vec3 vEm;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvRM = aRM; vEm = aEm;');
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying vec2 vRM;\nvarying vec3 vEm;')
+        .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = vRM.x;')
+        .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vRM.y;')
+        .replace('vec3 totalEmissiveRadiance = emissive;', 'vec3 totalEmissiveRadiance = vEm;');
+    };
+    return rigStdMat;
+  }
+  function skinRig(root, material) {
+    root.updateMatrixWorld(true);
+    const parts = [];
+    root.traverse(o => { if (o.isMesh && !o.isSkinnedMesh && !Array.isArray(o.material) && (material || !(o.material.map || o.material.transparent))) parts.push(o); });
+    let nv = 0, ni = 0;
+    for (const p of parts) { const g = p.geometry; nv += g.attributes.position.count; ni += g.index ? g.index.count : g.attributes.position.count; }
+    const pos = new Float32Array(nv * 3), nor = new Float32Array(nv * 3), col = new Float32Array(nv * 3), em = new Float32Array(nv * 3), rm = new Float32Array(nv * 2);
+    const si = new Uint16Array(nv * 4), sw = new Float32Array(nv * 4), idx = nv > 65535 ? new Uint32Array(ni) : new Uint16Array(ni);
+    const r0 = new Int32Array(parts.length), rn = new Int32Array(parts.length);
+    let v0 = 0, i0 = 0;
+    parts.forEach((p, b) => {
+      const g = p.geometry, n = g.attributes.position.count, m = p.material;
+      pos.set(g.attributes.position.array, v0 * 3); nor.set(g.attributes.normal.array, v0 * 3);
+      if (g.index) for (let k = 0; k < g.index.count; k++) idx[i0++] = g.index.array[k] + v0;
+      else for (let k = 0; k < n; k++) idx[i0++] = v0 + k;
+      for (let k = v0; k < v0 + n; k++) { si[k * 4] = b; sw[k * 4] = 1; rm[k * 2] = m.roughness == null ? 1 : m.roughness; rm[k * 2 + 1] = m.metalness || 0; }
+      r0[b] = v0; rn[b] = n; v0 += n;
+      p.layers.set(RIG_LAYER);
+    });
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+    geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4));
+    geo.setAttribute('skinWeight', new THREE.BufferAttribute(sw, 4));
+    if (!material) {
+      geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+      geo.setAttribute('aEm', new THREE.BufferAttribute(em, 3));
+      geo.setAttribute('aRM', new THREE.BufferAttribute(rm, 2));
+    }
+    geo.setIndex(new THREE.BufferAttribute(idx, 1));
+    const mesh = new THREE.SkinnedMesh(geo, material || rigMaterial());
+    mesh.frustumCulled = false;
+    mesh.castShadow = parts.some(p => p.castShadow);
+    mesh.receiveShadow = parts.some(p => p.receiveShadow);
+    const skel = new THREE.Skeleton(parts, parts.map(() => new THREE.Matrix4()));
+    root.add(mesh);
+    mesh.bind(skel, new THREE.Matrix4());
+    const last = new Float32Array(parts.length * 6).fill(-1), ZERO = new THREE.Matrix4().makeScale(0, 0, 0);
+    const baseUpdate = skel.update;
+    skel.update = function () {
+      baseUpdate.call(this);
+      let dirty = false;
+      for (let b = 0; b < parts.length; b++) {
+        let o = parts[b];
+        while (o && o !== root) { if (!o.visible) { ZERO.toArray(this.boneMatrices, b * 16); break; } o = o.parent; }
+        if (material) continue;
+        const m = parts[b].material, c = m.color, e = m.emissive, ei = m.emissiveIntensity == null ? 1 : m.emissiveIntensity, L = b * 6;
+        const er = e ? e.r * ei : 0, eg = e ? e.g * ei : 0, eb = e ? e.b * ei : 0;
+        if (last[L] === c.r && last[L + 1] === c.g && last[L + 2] === c.b && last[L + 3] === er && last[L + 4] === eg && last[L + 5] === eb) continue;
+        last[L] = c.r; last[L + 1] = c.g; last[L + 2] = c.b; last[L + 3] = er; last[L + 4] = eg; last[L + 5] = eb;
+        for (let k = r0[b], k1 = r0[b] + rn[b]; k < k1; k++) { col[k * 3] = c.r; col[k * 3 + 1] = c.g; col[k * 3 + 2] = c.b; em[k * 3] = er; em[k * 3 + 1] = eg; em[k * 3 + 2] = eb; }
+        dirty = true;
+      }
+      if (dirty) { geo.attributes.color.needsUpdate = true; geo.attributes.aEm.needsUpdate = true; }
+    };
+    skel.update();
+    return mesh;
+  }
+  // 載入時把所有材質（含之後才出現的物件）和影子用的變體都先編譯、畫一次，進遊戲才不會卡
+  function precompileScene(scene, camera) {
+    const hidden = [], counts = [], culled = [];
+    scene.traverse(o => {
+      if (!o.visible) { hidden.push(o); o.visible = true; }
+      if (o.frustumCulled) { culled.push(o); o.frustumCulled = false; }
+      if (o.isInstancedMesh && o.count === 0) { counts.push(o); o.count = 1; }
+    });
+    renderer.compile(scene, camera);
+    renderer.render(scene, camera);
+    for (const o of hidden) o.visible = false;
+    for (const o of culled) o.frustumCulled = true;
+    for (const o of counts) o.count = 0;
+  }
+
   // 光
   const hemi = new THREE.HemisphereLight(0xaac4ff, 0x2c4a22, 0.75);
   scene.add(hemi);
@@ -632,7 +763,7 @@ function main() {
   sun.position.set(-16, 32, 26);
   sun.target.position.set(0, 0, 6);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(small ? 1024 : 2048, small ? 1024 : 2048);
+  sun.shadow.mapSize.set(small ? 512 : 2048, small ? 512 : 2048);
   const sc0 = sun.shadow.camera;
   sc0.left = -16; sc0.right = 16; sc0.top = 22; sc0.bottom = -14; sc0.near = 5; sc0.far = 90;
   sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.02;
@@ -774,6 +905,8 @@ function main() {
     st.position.set(s * (SIDE0 - 0.6), roofY - 0.9, 25);
     scene.add(st);
   }
+  mergeMeshes(scene.children.filter(o => o.material === roofMat));
+  mergeMeshes(scene.children.filter(o => o.material === stripMat));
 
   /* ---------- 觀眾（每種衣服顏色一個 InstancedMesh） ---------- */
   const SHIRTS = ['#d7263d', '#1f6fe0', '#f4c430', '#f2f2f2', '#1e9e52', '#ff7a1a', '#7b3fe4', '#24262e'];
@@ -793,33 +926,31 @@ function main() {
   const crowdU = { uTime: { value: 0 }, uJump: { value: 0 } };
   crowdMat.onBeforeCompile = sh => {
     sh.uniforms.uTime = crowdU.uTime; sh.uniforms.uJump = crowdU.uJump;
-    sh.vertexShader = 'uniform float uTime; uniform float uJump;\n' + sh.vertexShader.replace('#include <begin_vertex>',
+    sh.vertexShader = 'uniform float uTime; uniform float uJump; attribute float aShirt;\n' + sh.vertexShader.replace('#include <uv_vertex>', '#include <uv_vertex>\n  vMapUv.x = (aShirt + vMapUv.x) / ' + SHIRTS.length + '.0;').replace('#include <begin_vertex>',
       '#include <begin_vertex>\n  float sd = fract(sin(dot(instanceMatrix[3].xz, vec2(12.9898, 78.233))) * 43758.5453);\n' +
       '  transformed.y += uJump * max(0.0, sin(uTime * (8.0 + sd * 3.0) + sd * 6.283)) * (0.25 + sd * 0.3) + sin(uTime * 1.6 + sd * 20.0) * 0.025;\n' +
       '  transformed.x += sin(uTime * 2.2 + sd * 9.0) * 0.03;');
   };
   const crowdMeshes = [];
   {
-    const buckets = SHIRTS.map(() => []);
-    CROWD.forEach(p => buckets[Math.floor(Math.random() * SHIRTS.length)].push(p));
+    // 全部觀眾一個 InstancedMesh（一次 draw call），每個人的衣服用 aShirt 選貼圖的哪一格
     const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(1, 1, 1), v = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
-    buckets.forEach((list, i) => {
-      const g = new THREE.PlaneGeometry(0.5, 0.75);
-      const uv = g.attributes.uv;
-      for (let k = 0; k < uv.count; k++) uv.setX(k, (i + uv.getX(k)) / SHIRTS.length);
-      const im = new THREE.InstancedMesh(g, crowdMat, list.length);
-      list.forEach((p, k) => {
-        q.setFromAxisAngle(up, p[3]);
-        const sc = 0.9 + Math.random() * 0.2;
-        s.set(sc, sc, 1);
-        m4.compose(v.set(p[0], p[1], p[2]), q, s);
-        im.setMatrixAt(k, m4);
-      });
-      im.userData.full = list.length;
-      im.frustumCulled = false;
-      scene.add(im);
-      crowdMeshes.push(im);
+    const g = new THREE.PlaneGeometry(0.5, 0.75);
+    const shirt = new Float32Array(CROWD.length);
+    const im = new THREE.InstancedMesh(g, crowdMat, CROWD.length);
+    CROWD.forEach((p, k) => {
+      shirt[k] = Math.floor(Math.random() * SHIRTS.length);
+      q.setFromAxisAngle(up, p[3]);
+      const sc = 0.9 + Math.random() * 0.2;
+      s.set(sc, sc, 1);
+      m4.compose(v.set(p[0], p[1], p[2]), q, s);
+      im.setMatrixAt(k, m4);
     });
+    g.setAttribute('aShirt', new THREE.InstancedBufferAttribute(shirt, 1));
+    im.userData.full = CROWD.length;
+    im.frustumCulled = false;
+    scene.add(im);
+    crowdMeshes.push(im);
   }
 
   /* ---------- 廣告看板（LED） ---------- */
@@ -849,6 +980,7 @@ function main() {
   adBoard(46, 0, -5.4, 0);
   adBoard(46, -25, -5.4, 0); adBoard(46, 25, -5.4, 0);
   for (const s of [-1, 1]) adBoard(60, s * 36, 26, s * Math.PI / 2);
+  mergeMeshes(scene.children.filter(o => o.material === adMat));
 
   /* ---------- 照明燈塔 ---------- */
   const glowTex = canvasTex(128, 128, (c, w, h) => {
@@ -880,6 +1012,8 @@ function main() {
     gl.position.set(x * 0.985, 41, z + (z < 0 ? 0.6 : -0.6));
     scene.add(gl);
   }
+  mergeMeshes(scene.children.filter(o => o.material === poleMat));
+  mergeMeshes(scene.children.filter(o => o.material === lampMat));
 
   /* ---------- 球門 ---------- */
   const woodMat = std(0xffffff, 0.32, 0.05);
@@ -909,6 +1043,8 @@ function main() {
     }
     tubeBetween(-X, 0.03, NBOT, X, 0.03, NBOT, 0.025, sup, false);
     tubeBetween(-X, GH + 0.02, NTOP, X, GH + 0.02, NTOP, 0.025, sup, false);
+    mergeMeshes(goalG.children.filter(o => o.material === woodMat));
+    mergeMeshes(goalG.children.filter(o => o.material === sup));
   }
 
   /* ---------- 球網（頂點動畫：碰撞凹陷＋波紋） ---------- */
@@ -1090,6 +1226,7 @@ function main() {
   const kicker = makeFigure(false);
   const wallFigs = [];
   for (let i = 0; i < 5; i++) { const f = makeFigure(false); f.root.visible = false; wallFigs.push(f); }
+  for (const f of [keeper, kicker, ...wallFigs]) skinRig(f.root);   // 每個人一次 draw call
 
   /* ---------- 圓環 ---------- */
   const ringGeo = new THREE.TorusGeometry(1, 0.05, 8, 48);
@@ -1107,6 +1244,8 @@ function main() {
     return { bx: cx, cx, cy, r, amp: amp || 0, freq: freq || 0, ph: Math.random() * TAU, hit: false, hitT: 0, g, mat, dm };
   }
   function clearRings() { RINGS.forEach(r => { scene.remove(r.g); r.mat.dispose(); r.dm.dispose(); }); RINGS.length = 0; }
+  // 留一個看不見的圓環：載入時就把圓環的著色器編譯好，而且一直有人用，丟掉關卡圓環時不會被釋放、下一關又重新編譯
+  makeRing(0, -50, 1).g.visible = false;
 
   /* ---------- 獎盃 ---------- */
   const trophy = (() => {
@@ -2540,14 +2679,14 @@ function main() {
   }
 
   /* ---------- 大小與自動畫質 ---------- */
-  const QKEY = 'quality:' + location.pathname.split('/').filter(Boolean).slice(-1)[0];
-  const baseRatio = Math.min(window.devicePixelRatio || 1, small ? 1.75 : 2);
+  const QKEY = 'quality:' + location.pathname.split('/').filter(Boolean).slice(-1)[0] + ':v2';   // 等級表改過：換新的 key
+  const baseRatio = Math.min(window.devicePixelRatio || 1, small ? 1.5 : 2);
   const QLEVELS = [
-    { ratio: baseRatio, shadow: true, crowd: 1 },
-    { ratio: Math.min(baseRatio, 1.4), shadow: true, crowd: 1 },
-    { ratio: Math.min(baseRatio, 1.1), shadow: true, crowd: 0.8 },
-    { ratio: 1, shadow: false, crowd: 0.6 },
-    { ratio: 0.8, shadow: false, crowd: 0.45 }
+    { ratio: baseRatio, shadow: true, crowd: 1, sm: small ? 512 : 2048 },
+    { ratio: Math.min(baseRatio, 1.4), shadow: true, crowd: 1, sm: small ? 512 : 1024 },
+    { ratio: Math.min(baseRatio, 1.1), shadow: true, crowd: 0.8, sm: 512 },
+    { ratio: 1, shadow: false, crowd: 0.6, sm: 512 },
+    { ratio: 0.8, shadow: false, crowd: 0.45, sm: 512 }
   ];
   let qLevel = clamp(KG.store.get(QKEY, KG.lowEnd ? 2 : 0) | 0, 0, QLEVELS.length - 1);
   const perf = { last: 0, n: 0, sum: 0, cool: 2.5 };
@@ -2559,11 +2698,29 @@ function main() {
     hud.width = Math.round(W * dpr); hud.height = Math.round(H * dpr);
     cam.aspect = W / H; cam.updateProjectionMatrix();
   }
+  // 遊戲中途要關影子時，不切換 shadowMap.enabled（所有材質會重新編譯、卡半秒），
+  // 改成把影子圖清空（影子相機移到沒有東西的地方）、之後不再畫影子；下次開遊戲才真的關掉。
+  let booted = false, shadowFrozen = false;
+  function freezeShadows(light) {
+    shadowFrozen = true;
+    const c = light.shadow.camera;
+    c.near = 1e5; c.far = 1e5 + 1; c.updateProjectionMatrix();
+    light.shadow.mapSize.set(8, 8);
+    if (light.shadow.map) { light.shadow.map.dispose(); light.shadow.map = null; }
+    renderer.shadowMap.needsUpdate = true;
+    renderer.shadowMap.autoUpdate = false;
+  }
   function applyQuality() {
     const q = QLEVELS[qLevel];
     renderer.setPixelRatio(q.ratio);
     renderer.setSize(W, H, false);
-    if (renderer.shadowMap.enabled !== q.shadow) {
+    if (sun.shadow.mapSize.x !== q.sm && !shadowFrozen) {
+      sun.shadow.mapSize.set(q.sm, q.sm);
+      if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
+    }
+    if (renderer.shadowMap.enabled !== q.shadow && !q.shadow && booted) {
+      if (!shadowFrozen) freezeShadows(sun);
+    } else if (renderer.shadowMap.enabled !== q.shadow) {
       renderer.shadowMap.enabled = q.shadow;
       scene.traverse(o => { if (o.material) [].concat(o.material).forEach(m => { m.needsUpdate = true; }); });
     }
@@ -2577,7 +2734,8 @@ function main() {
     perf.cool -= dt;
     if (perf.cool > 0) return;
     perf.sum += dt; perf.n++;
-    if (perf.n >= 60) {
+    // 每 60 幀或 1.2 秒（幀很慢時）檢查一次，持續太慢約 2 秒內就降一級
+    if (perf.n >= 60 || (perf.sum >= 1.2 && perf.n >= 6)) {
       if (perf.sum / perf.n > 1 / 45) {
         qLevel++;
         KG.store.set(QKEY, qLevel);
@@ -2607,6 +2765,8 @@ function main() {
   applyQuality();
   toMenu();
   camSnap();
+  precompileScene(scene, cam);
+  booted = true;
   requestAnimationFrame(frame);
 
   /* =========================================================
@@ -2614,6 +2774,7 @@ function main() {
    * ========================================================= */
   const DIRS = { L: [-2.8, 1.0], R: [2.8, 1.0], C: [0, 1.1], UL: [-2.9, 2.0], UR: [2.9, 2.0], DL: [-2.8, 0.35], DR: [2.8, 0.35], U: [0, 2.1], D: [0, 0.4] };
   window.__pk = {
+    _gl: { renderer, scene, camera: cam, gov: on => { perf.cool = on ? 1 : 1e9; } },
     state: () => ({
       phase: S.phase, mode: S.mode, lv: S.lv, A: S.A, B: S.B, first: S.first, ka: S.ka.slice(), kb: S.kb.slice(), who: S.who, userShoots: S.userShoots, outcome: S.outcome,
       decided: S.decided, ball: { x: B.x, y: B.y, z: B.z, vx: B.vx, vy: B.vy, vz: B.vz, live: B.live, caught: B.caught, inGoal: B.inGoal },

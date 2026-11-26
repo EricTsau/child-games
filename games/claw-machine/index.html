@@ -174,7 +174,8 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 let renderer = null;
 try {
-  renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gl'), antialias: true, powerPreference: 'high-performance' });
+  // 手機一開始不開發光（直接畫到畫面，用 MSAA 抗鋸齒）；大螢幕開發光，發光本身就柔，不用 MSAA
+  renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gl'), antialias: Math.min(innerWidth, innerHeight) < 600, powerPreference: 'high-performance' });
 } catch (e) {
   renderer = null;
 }
@@ -193,9 +194,11 @@ function main() {
    * 娃娃種類（單位：公分，臉朝 +z，y 往上）
    * ========================================================= */
   const S = 0.01;
+  // 手機上娃娃很小：球面切少一點（三角形少四成），大螢幕維持原樣
+  const LOWPOLY = Math.min(innerWidth, innerHeight) < 600;
   const GEO = {
-    sph: new THREE.SphereGeometry(1, 18, 13),
-    sphS: new THREE.SphereGeometry(1, 10, 7),
+    sph: LOWPOLY ? new THREE.SphereGeometry(1, 14, 10) : new THREE.SphereGeometry(1, 18, 13),
+    sphS: LOWPOLY ? new THREE.SphereGeometry(1, 8, 6) : new THREE.SphereGeometry(1, 10, 7),
     cone: new THREE.ConeGeometry(1, 1, 14, 1),
     cyl: new THREE.CylinderGeometry(1, 1, 1, 14),
     arc: new THREE.TorusGeometry(1, 0.17, 5, 12, Math.PI)
@@ -555,12 +558,15 @@ function main() {
    * ========================================================= */
   let W = innerWidth, H = innerHeight;
   const small = Math.min(W, H) < 600;
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, small ? 1.75 : 2));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, small ? 1.5 : 2));
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 0.92;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  // 只有娃娃或夾子動了才重畫影子貼圖（標題畫面、等待時都不用每幀畫）
+  renderer.shadowMap.autoUpdate = false;
+  renderer.shadowMap.needsUpdate = true;
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x1a0d2e);
   const pmrem = new THREE.PMREMGenerator(renderer);
@@ -661,9 +667,44 @@ function main() {
   const glassMat = new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.03, metalness: 0, transparent: true, opacity: 0.06, envMapIntensity: 1.0, depthWrite: false, side: THREE.DoubleSide });
   const plasticMat = new THREE.MeshPhysicalMaterial({ color: 0xd8f0ff, roughness: 0.05, transparent: true, opacity: 0.16, envMapIntensity: 1.2, depthWrite: false });
   const ledMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(2, 0.6, 1.4), toneMapped: false });
+  // 把同一種材質、不會各自動的網格合成一個（少很多 draw call）
+  const _mInv = new THREE.Matrix4(), _mRel = new THREE.Matrix4();
+  function mergeMeshes(parent, meshes) {
+    meshes = meshes.filter(Boolean);
+    if (meshes.length < 2) return meshes[0] || null;
+    parent.updateMatrixWorld(true);
+    _mInv.copy(parent.matrixWorld).invert();
+    const parts = meshes.map(m => {
+      let g = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone();
+      _mRel.multiplyMatrices(_mInv, m.matrixWorld);
+      g.applyMatrix4(_mRel);
+      return g;
+    });
+    const names = ['position', 'normal', 'uv'];
+    const out = new THREE.BufferGeometry();
+    names.forEach(n => {
+      const len = parts.reduce((a, g) => a + g.attributes.position.count, 0) * (n === 'uv' ? 2 : 3);
+      const arr = new Float32Array(len);
+      let o = 0;
+      parts.forEach(g => { if (g.attributes[n]) arr.set(g.attributes[n].array, o); o += g.attributes[n] ? g.attributes[n].array.length : g.attributes.position.count * (n === 'uv' ? 2 : 3); });
+      out.setAttribute(n, new THREE.BufferAttribute(arr, n === 'uv' ? 2 : 3));
+    });
+    out.computeBoundingSphere();
+    parts.forEach(g => g.dispose());
+    const merged = new THREE.Mesh(out, meshes[0].material);
+    merged.castShadow = meshes.some(m => m.castShadow);
+    merged.receiveShadow = meshes.some(m => m.receiveShadow);
+    merged.renderOrder = meshes[0].renderOrder;
+    meshes.forEach(m => { m.parent.remove(m); m.geometry.dispose(); });
+    parent.add(merged);
+    return merged;
+  }
+  const STATIC_CHROME = [];
   const box = (w, h, d, mat, x, y, z, r) => {
     const m = new THREE.Mesh(r ? new RoundedBoxGeometry(w, h, d, 3, r) : new THREE.BoxGeometry(w, h, d), mat);
-    m.position.set(x, y, z); cab.add(m); return m;
+    m.position.set(x, y, z); cab.add(m);
+    if (mat === chrome) STATIC_CHROME.push(m);
+    return m;
   };
   // 下層機身
   const lower = box(1.16, 0.86, 0.9, bodyMat, 0, -0.43, 0.01, 0.035);
@@ -711,11 +752,13 @@ function main() {
   btnTop.scale.y = 0.5;
   btnTop.position.set(0.34, 0.05, 0.01);
   deck.add(btnTop);
+  mergeMeshes(deck, [joyBase, btnBase]);
   // 柱子（鍍鉻邊）
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
     const p = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 1.14, 12), chrome);
     p.position.set(sx * 0.53, 0.56, sz * 0.41 + 0.01);
     cab.add(p);
+    STATIC_CHROME.push(p);
   }
   // 頂部招牌
   const header = box(1.2, 0.3, 0.92, bodyMat, 0, 1.27, 0.01, 0.04);
@@ -790,10 +833,14 @@ function main() {
   guardB.position.set((-HW + HX1 + GUARD_T) / 2, GUARD_H / 2, HZ0 - GUARD_T / 2); guardB.renderOrder = 4; cab.add(guardB);
   const gtA = new THREE.Mesh(new THREE.BoxGeometry(GUARD_T + 0.004, 0.008, HD - HZ0), chrome); gtA.position.set(HX1 + GUARD_T / 2, GUARD_H, (HZ0 + HD) / 2); cab.add(gtA);
   const gtB = new THREE.Mesh(new THREE.BoxGeometry(HX1 + HW + GUARD_T, 0.008, GUARD_T + 0.004), chrome); gtB.position.set((-HW + HX1 + GUARD_T) / 2, GUARD_H, HZ0 - GUARD_T / 2); cab.add(gtB);
+  STATIC_CHROME.push(gtA, gtB);
   const holeGlow = new THREE.Mesh(new THREE.PlaneGeometry(HX1 + HW - 0.01, HD - HZ0 - 0.01), new THREE.MeshBasicMaterial({ color: new THREE.Color(1.2, 0.8, 0.2), transparent: true, opacity: 0.0, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }));
   holeGlow.rotation.x = -Math.PI / 2; holeGlow.position.set(CHUTE.x, -0.02, CHUTE.z); cab.add(holeGlow);
   // 天車軌道
   for (const s of [-1, 1]) box(2 * HW, 0.014, 0.02, chrome, 0, 1.078, s * (HD - 0.02));
+  mergeMeshes(cab, STATIC_CHROME);
+  // 其他不會動的機身零件：同材質合成一個
+  for (const mat of [ledMat, glassMat, darkMat, floorMat, bodyMat, plasticMat]) mergeMeshes(cab, cab.children.filter(o => o.isMesh && o.material === mat && o !== flap));
   const bridge = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.018, 2 * HD - 0.02), chrome);
   bridge.position.y = 1.064; cab.add(bridge);
   const carriage = new THREE.Mesh(new RoundedBoxGeometry(0.075, 0.04, 0.075, 2, 0.01), trimMat);
@@ -900,6 +947,7 @@ function main() {
     const joint = new THREE.Mesh(new THREE.SphereGeometry(0.013, 10, 8), chrome); kn.add(joint);
     const fing = new THREE.Mesh(fingGeo, chrome); fing.position.y = -L2 / 2; fing.castShadow = true; kn.add(fing);
     const tip = new THREE.Mesh(new THREE.SphereGeometry(0.014, 10, 8), tipMat); tip.position.y = -L2; kn.add(tip);
+    mergeMeshes(inner, [arm, joint, fing]);
     clawG.add(outer);
     prongs.push(inner);
   }
@@ -916,6 +964,21 @@ function main() {
   /* ---------- 娃娃材質與閃亮粒子 ---------- */
   const plushMat = new THREE.MeshPhysicalMaterial({ vertexColors: true, roughness: 0.86, metalness: 0, sheen: 1, sheenRoughness: 0.5, sheenColor: new THREE.Color(0.32, 0.3, 0.32), envMapIntensity: 0.45 });
   const goldMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.3, metalness: 0.8, emissive: 0x4a2c00, emissiveIntensity: 0.6, envMapIntensity: 1.4 });
+  // 所有娃娃形狀先做好、放進 BatchedMesh（載入時做，不在遊戲中建）
+  const BATCH_MAX = 64;
+  function makeBatch(gold) {
+    let nv = 0, ni = 0;
+    KINDS.forEach((k, i) => { const g = kindGeo(i, gold); nv += g.attributes.position.count; ni += g.index.count; });
+    const bm = new THREE.BatchedMesh(BATCH_MAX, nv, ni, gold ? goldMat : plushMat);
+    bm.castShadow = true; bm.receiveShadow = true;
+    bm.sortObjects = false;
+    bm.frustumCulled = false;   // 娃娃會被夾來夾去，整體範圍一直變；每隻還是各自裁切
+    bm.ids = KINDS.map((k, i) => bm.addGeometry(kindGeo(i, gold)));
+    cab.add(bm);
+    return bm;
+  }
+  const batchPlush = makeBatch(false), batchGold = makeBatch(true);
+  const batchGeoId = (ki, gold) => (gold ? batchGold : batchPlush).ids[ki];
   const MAX_SPARK = 48;
   const sparkTex = makeTex(64, 64, (c, w, h) => {
     const g = c.createRadialGradient(32, 32, 0, 32, 32, 32);
@@ -966,10 +1029,9 @@ function main() {
     b.cons = [];
     for (let i = 0; i < b.ps.length; i++) for (let j = i + 1; j < b.ps.length; j++) b.cons.push([i, j, K.rest[i].distanceTo(K.rest[j])]);
     if (b.ps.length === 2) b.axisPrev.set(b.ps[1].x - b.ps[0].x, b.ps[1].y - b.ps[0].y, b.ps[1].z - b.ps[0].z).normalize();
-    const mesh = new THREE.Mesh(kindGeo(ki, gold), gold ? goldMat : plushMat);
-    mesh.castShadow = true; mesh.receiveShadow = true; mesh.matrixAutoUpdate = false;
-    cab.add(mesh);
-    b.mesh = mesh;
+    // 全部娃娃畫在兩個 BatchedMesh 裡（一般／金色），一隻娃娃不再是一個 draw call
+    const bm = gold ? batchGold : batchPlush;
+    b.mesh = { bm, id: bm.addInstance(batchGeoId(ki, gold)), matrix: new THREE.Matrix4() };
     bodies.push(b);
     rebuildParts();
     syncBody(b);
@@ -977,7 +1039,8 @@ function main() {
   }
   function removeBody(b) {
     b.removed = true;
-    cab.remove(b.mesh);
+    b.mesh.bm.deleteInstance(b.mesh.id);
+    renderer.shadowMap.needsUpdate = true;
     const i = bodies.indexOf(b);
     if (i >= 0) bodies.splice(i, 1);
     rebuildParts();
@@ -1211,7 +1274,7 @@ function main() {
     _v2.copy(_c).sub(_v1);
     const sc = b.born > 0 ? 1 - 0.6 * b.born : 1;
     b.mesh.matrix.compose(_v2, b.q, _v3.set(sc, sc, sc));
-    b.mesh.matrixWorldNeedsUpdate = true;
+    b.mesh.bm.setMatrixAt(b.mesh.id, b.mesh.matrix);
   }
 
   /* ---------- 堆娃娃 ---------- */
@@ -2046,17 +2109,21 @@ function main() {
   /* =========================================================
    * 每幀同步 3D
    * ========================================================= */
-  const tmpCol = new THREE.Color();
+  const tmpCol = new THREE.Color(), ledCol = new THREE.Color();
   let bulbT = 0;
+  let clawSig = NaN;
   function sync3D(dt) {
     for (const b of bodies) {
       if (b.born > 0) b.born = Math.max(0, b.born - dt * 3);
-      if (!b.asleep || b.born > 0 || b.dirty) { syncBody(b); b.dirty = false; }
+      if (!b.asleep || b.born > 0 || b.dirty) { syncBody(b); b.dirty = false; renderer.shadowMap.needsUpdate = true; }
     }
     // 夾子
     clawG.position.set(claw.hx, claw.y, claw.hz);
     clawG.rotation.set(claw.sz * 3, 0, -claw.sx * 3);
     for (let k = 0; k < 3; k++) prongs[k].rotation.z = claw.ang[k];
+    // 夾子移動不到約半個影子像素就不重畫
+    const csig = Math.round(claw.hx * 2000) * 3 + Math.round(claw.y * 2000) * 7 + Math.round(claw.hz * 2000) * 11 + Math.round(claw.sx * 3000) * 13 + Math.round(claw.sz * 3000) * 17 + Math.round((claw.ang[0] + claw.ang[1] * 2 + claw.ang[2] * 3) * 500) * 19;
+    if (csig !== clawSig) { clawSig = csig; renderer.shadowMap.needsUpdate = true; }
     bridge.position.x = claw.x;
     carriage.position.set(claw.x, 1.04, claw.z);
     const top = 1.02, bot = claw.y + 0.05;
@@ -2088,7 +2155,7 @@ function main() {
     if (bulbT > 0.09) {
       bulbT = 0;
       const step = Math.floor(clock * 10);
-      const lc = new THREE.Color(M.led);
+      const lc = ledCol.setHex(M.led);
       for (let i = 0; i < BULBS.length; i++) {
         const on = (i + step) % 4 < 2;
         if (on) tmpCol.setRGB(2.4, 2.0, 1.2); else tmpCol.setRGB(lc.r * 0.6, lc.g * 0.6, lc.b * 0.6);
@@ -2097,7 +2164,7 @@ function main() {
       bulbMesh.instanceColor.needsUpdate = true;
     }
     const lp = 0.75 + 0.25 * Math.sin(clock * 2.2);
-    const lc2 = new THREE.Color(M.led);
+    const lc2 = ledCol.setHex(M.led);
     ledMat.color.setRGB(lc2.r * 2.2 * lp, lc2.g * 2.2 * lp, lc2.b * 2.2 * lp);
     coinLight.material.color.setRGB(claw.phase === 'idle' && save.coins > 0 ? 2.4 * (0.6 + 0.4 * Math.sin(clock * 6)) : 0.4, 0.3, 0.3);
     // 操作台搖桿與按鈕
@@ -2170,9 +2237,16 @@ function main() {
   window.addEventListener('resize', resize);
 
   /* ---------- 自動畫質：太卡就一步步降低（解析度 → 發光 → 影子），並記住 ---------- */
-  const QKEY = 'quality:' + location.pathname.split('/').filter(Boolean).slice(-1)[0];
-  const baseRatio = Math.min(window.devicePixelRatio || 1, small ? 1.75 : 2);
-  const QLEVELS = [
+  const QKEY = 'quality2:' + (small ? 'p:' : 'd:') + location.pathname.split('/').filter(Boolean).slice(-1)[0];
+  const baseRatio = Math.min(window.devicePixelRatio || 1, small ? 1.5 : 2);
+  // 手機：不開發光、解析度最高 1.5；大螢幕才開發光
+  const QLEVELS = small ? [
+    { ratio: baseRatio, bloom: false, shadow: true },
+    { ratio: Math.min(baseRatio, 1.25), bloom: false, shadow: true },
+    { ratio: 1, bloom: false, shadow: true },
+    { ratio: 1, bloom: false, shadow: false },
+    { ratio: 0.8, bloom: false, shadow: false }
+  ] : [
     { ratio: baseRatio, bloom: true, shadow: true },
     { ratio: Math.min(baseRatio, 1.35), bloom: true, shadow: true },
     { ratio: 1, bloom: true, shadow: true },
@@ -2180,7 +2254,7 @@ function main() {
     { ratio: 1, bloom: false, shadow: false },
     { ratio: 0.8, bloom: false, shadow: false }
   ];
-  let qLevel = clamp(KG.store.get(QKEY, KG.lowEnd ? 2 : 0) | 0, 0, QLEVELS.length - 1);
+  let qLevel = clamp(KG.store.get(QKEY, KG.lowEnd ? (small ? 1 : 2) : 0) | 0, 0, QLEVELS.length - 1);
   const perf = { last: 0, n: 0, sum: 0, cool: 2.5 };
   function applyQuality() {
     const q = QLEVELS[qLevel];
@@ -2190,6 +2264,7 @@ function main() {
     composer.setSize(W, H);
     if (renderer.shadowMap.enabled !== q.shadow) {
       renderer.shadowMap.enabled = q.shadow;
+      renderer.shadowMap.needsUpdate = true;
       scene.traverse(o => { if (o.material) [].concat(o.material).forEach(m => { m.needsUpdate = true; }); });
     }
   }
@@ -2201,7 +2276,7 @@ function main() {
     perf.cool -= dt;
     if (perf.cool > 0) return;
     perf.sum += dt; perf.n++;
-    if (perf.n >= 60) {
+    if (perf.n >= 60 || perf.sum >= 1.5) {   // 很卡時（張數少）也要在 1.5 秒內判斷
       if (perf.sum / perf.n > 1 / 45) {
         qLevel++;
         KG.store.set(QKEY, qLevel);
@@ -2230,6 +2305,19 @@ function main() {
   for (const c of CS) { c.px = c.x; c.py = c.y; c.pz = c.z; }
   resize();
   applyQuality();
+  // 先把所有材質（含得獎展示的一般／金色娃娃、光芒）的 shader 編好，進遊戲不會卡一下
+  {
+    updateCamera(0);
+    if (QLEVELS[qLevel].bloom) renderer.setRenderTarget(composer.readBuffer);
+    const sv = show.visible, rv = rays.visible;
+    show.visible = rays.visible = true;
+    renderer.compile(scene, camera);
+    show.material = goldMat;
+    renderer.compile(scene, camera);
+    show.material = plushMat;
+    show.visible = sv; rays.visible = rv;
+    renderer.setRenderTarget(null);
+  }
   $('title').classList.remove('hide');
   updateTitle();
   requestAnimationFrame(frame);

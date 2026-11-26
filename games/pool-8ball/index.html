@@ -609,7 +609,8 @@ const Core = (() => {
 
 let renderer = null;
 try {
-  renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gl'), antialias: true, powerPreference: 'high-performance' });
+  // 手機一開始不開發光（直接畫到畫面，用 MSAA 抗鋸齒）；大螢幕開發光，發光本身就柔，不用 MSAA
+  renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gl'), antialias: Math.min(innerWidth, innerHeight) < 600, powerPreference: 'high-performance' });
 } catch (e) {
   renderer = null;
 }
@@ -640,12 +641,15 @@ function main() {
    * ========================================================= */
   let VW = innerWidth, VH = innerHeight;
   const small = Math.min(VW, VH) < 600;
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, small ? 1.75 : 2));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, small ? 1.5 : 2));
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 0.95;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  // 球檯不動：只有球或球桿動了才重畫影子貼圖（見 sync3D）
+  renderer.shadowMap.autoUpdate = false;
+  renderer.shadowMap.needsUpdate = true;
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0b0908);
   scene.fog = new THREE.Fog(0x0b0908, 5, 11);
@@ -655,6 +659,38 @@ function main() {
   const camera = new THREE.PerspectiveCamera(45, 1, 0.03, 30);
   scene.add(new THREE.HemisphereLight(0xffe6c4, 0x1a120c, 0.35));
 
+  // 把同一種材質、不會各自動的網格合成一個（少很多 draw call）
+  const _mInv = new THREE.Matrix4(), _mRel = new THREE.Matrix4();
+  function mergeMeshes(parent, meshes) {
+    meshes = meshes.filter(Boolean);
+    if (meshes.length < 2) return meshes[0] || null;
+    parent.updateMatrixWorld(true);
+    _mInv.copy(parent.matrixWorld).invert();
+    const parts = meshes.map(m => {
+      let g = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone();
+      _mRel.multiplyMatrices(_mInv, m.matrixWorld);
+      g.applyMatrix4(_mRel);
+      return g;
+    });
+    const names = ['position', 'normal', 'uv'];
+    const out = new THREE.BufferGeometry();
+    names.forEach(n => {
+      const len = parts.reduce((a, g) => a + g.attributes.position.count, 0) * (n === 'uv' ? 2 : 3);
+      const arr = new Float32Array(len);
+      let o = 0;
+      parts.forEach(g => { if (g.attributes[n]) arr.set(g.attributes[n].array, o); o += g.attributes[n] ? g.attributes[n].array.length : g.attributes.position.count * (n === 'uv' ? 2 : 3); });
+      out.setAttribute(n, new THREE.BufferAttribute(arr, n === 'uv' ? 2 : 3));
+    });
+    out.computeBoundingSphere();
+    parts.forEach(g => g.dispose());
+    const merged = new THREE.Mesh(out, meshes[0].material);
+    merged.castShadow = meshes.some(m => m.castShadow);
+    merged.receiveShadow = meshes.some(m => m.receiveShadow);
+    merged.renderOrder = meshes[0].renderOrder;
+    meshes.forEach(m => { m.parent.remove(m); m.geometry.dispose(); });
+    parent.add(merged);
+    return merged;
+  }
   function makeTex(w, h, draw, srgb = true) {
     const c = document.createElement('canvas');
     c.width = w; c.height = h;
@@ -711,6 +747,7 @@ function main() {
   bed.receiveShadow = true;
   table.add(bed);
   // 庫邊（橡膠＋布）
+  const cushions = [];
   for (const cu of Core.cushions) {
     const sh = new THREE.Shape(cu.pts.map(p => new THREE.Vector2(p[0], p[1])));
     const g = toXZ(new THREE.ExtrudeGeometry(sh, { depth: 0.036, bevelEnabled: true, bevelThickness: 0.004, bevelSize: 0.003, bevelSegments: 2, curveSegments: 1 }));
@@ -718,7 +755,9 @@ function main() {
     m.position.y = 0.004;
     m.castShadow = true; m.receiveShadow = true;
     table.add(m);
+    cushions.push(m);
   }
+  mergeMeshes(table, cushions);
   // 木框（含袋口缺口）
   const PK = Core.pockets;
   const pc = [PK[2], PK[3], PK[1], PK[0]]; // 依序：右上、右下、左下、左上（2D）
@@ -777,6 +816,8 @@ function main() {
     cap.position.set(p.hx, RH + 0.0006, -p.hy); cap.rotation.y = start + 0.125;
     table.add(cap);
   }
+  // 六個袋口：同材質合成一個
+  for (const mat of [holeMat, leatherMat, chromeMat]) mergeMeshes(table, table.children.filter(o => o.isMesh && o.material === mat));
   // 菱形定位點
   {
     const ds = new THREE.Shape([new THREE.Vector2(0, 0.011), new THREE.Vector2(0.0055, 0), new THREE.Vector2(0, -0.011), new THREE.Vector2(-0.0055, 0)]);
@@ -801,6 +842,7 @@ function main() {
       leg.position.set(x * (OX - 0.2), -0.48, z * (OY - 0.17));
       table.add(leg);
     }
+    mergeMeshes(table, table.children.filter(o => o.isMesh && o.material === woodDark));
   }
   // 地毯、牆面、壁燈
   {
@@ -852,13 +894,14 @@ function main() {
       const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, 1.6, 6), brass); rod.position.set(s * 0.6, 0.85, 0); lamp.add(rod);
     }
     const trim = new THREE.Mesh(new THREE.BoxGeometry(1.72, 0.012, 0.36), brass); trim.position.y = -0.05; lamp.add(trim);
+    mergeMeshes(lamp, lamp.children.filter(o => o.material === brass));
     lamp.position.y = 1.02;
     scene.add(lamp);
   }
   const key = new THREE.SpotLight(0xffe7c2, 4.2, 0, 1.12, 0.85, 1.6);
   key.position.set(0, 1.0, 0); key.target.position.set(0, 0, 0);
   key.castShadow = true;
-  key.shadow.mapSize.set(small ? 1024 : 2048, small ? 1024 : 2048);
+  key.shadow.mapSize.set(small ? 512 : 1024, small ? 512 : 1024);
   key.shadow.camera.near = 0.5; key.shadow.camera.far = 2.2;
   key.shadow.bias = -0.0004; key.shadow.normalBias = 0.012; key.shadow.radius = 4;
   scene.add(key, key.target);
@@ -913,7 +956,8 @@ function main() {
     sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nattribute vec2 aTile;')
       .replace('#include <uv_vertex>', '#include <uv_vertex>\n#ifdef USE_MAP\nvMapUv = vMapUv * vec2(' + (TW / AW).toFixed(6) + ', ' + (TH / AH).toFixed(6) + ') + aTile;\n#endif');
   };
-  const ballGeo = new THREE.SphereGeometry(R, 40, 28);
+  // 手機上球比較小：切少一點（三角形少四成）
+  const ballGeo = small ? new THREE.SphereGeometry(R, 32, 20) : new THREE.SphereGeometry(R, 40, 28);
   const tile = new Float32Array(32);
   for (let id = 0; id < 16; id++) {
     const ox = (id % 4) * (TW + 2 * GP) + GP, oy = Math.floor(id / 4) * (TH + 2 * GP) + GP;
@@ -1604,7 +1648,9 @@ function main() {
   /* =========================================================
    * 畫面同步
    * ========================================================= */
+  let shSig = 0, shLast = NaN;
   function sync3D(now) {
+    shSig = 0;
     for (let i = 0; i < N; i++) {
       let x, y, z = R, s = 1;
       if (W.on[i]) { x = W.x[i]; y = W.y[i]; z = R + lift[i] * 0.03; }
@@ -1614,6 +1660,7 @@ function main() {
         else s = 0;
       }
       if (s) _p.set(x, z, -y); else _p.set(0, -5, 0);
+      shSig += Math.round(_p.x * 800) * (i + 1) * 7 + Math.round(_p.y * 800) * (i + 3) * 13 + Math.round(_p.z * 800) * (i + 5) * 17 + (s ? 1 : 0) * (i + 1);
       _s.setScalar(s || 0.0001);
       _m.compose(_p, quats[i], _s);
       balls.setMatrixAt(i, _m);
@@ -1643,7 +1690,10 @@ function main() {
       // 右塞：桿頭打在母球右側（相對擊球方向）
       cue.position.set(ox + dy * sxo, R + syo + 0.004 + lift[0] * 0.03, -(oy - dx * sxo));
       cue.rotation.set(0, a, -0.075, 'YZX');
+      // 影子貼圖一格約 2～4 mm：球桿移動不到一格就不用重畫
+      shSig += Math.round(cue.position.x * 500) * 31 + Math.round(cue.position.y * 500) * 41 + Math.round(cue.position.z * 500) * 43 + Math.round(a * 400) * 47 + 1e6;
     }
+    if (shSig !== shLast) { shLast = shSig; renderer.shadowMap.needsUpdate = true; }
     // 瞄準線
     const showGuide = phase === 'aim' && isHuman() && W.on[0] === 1 || (phase === 'ai' && ai && ai.stage === 'pull');
     const glen = guideLen();
@@ -1827,9 +1877,16 @@ function main() {
     lastPow = -1;
   }
   window.addEventListener('resize', resize);
-  const QKEY = 'quality:' + location.pathname.split('/').filter(Boolean).slice(-1)[0];
-  const baseRatio = Math.min(window.devicePixelRatio || 1, small ? 1.75 : 2);
-  const QLEVELS = [
+  const QKEY = 'quality2:' + (small ? 'p:' : 'd:') + location.pathname.split('/').filter(Boolean).slice(-1)[0];
+  const baseRatio = Math.min(window.devicePixelRatio || 1, small ? 1.5 : 2);
+  // 手機：不開發光、解析度最高 1.5；大螢幕才開發光
+  const QLEVELS = small ? [
+    { ratio: baseRatio, bloom: false, shadow: true },
+    { ratio: Math.min(baseRatio, 1.25), bloom: false, shadow: true },
+    { ratio: 1, bloom: false, shadow: true },
+    { ratio: 1, bloom: false, shadow: false },
+    { ratio: 0.8, bloom: false, shadow: false }
+  ] : [
     { ratio: baseRatio, bloom: true, shadow: true },
     { ratio: Math.min(baseRatio, 1.35), bloom: true, shadow: true },
     { ratio: 1, bloom: true, shadow: true },
@@ -1837,7 +1894,7 @@ function main() {
     { ratio: 1, bloom: false, shadow: false },
     { ratio: 0.8, bloom: false, shadow: false }
   ];
-  let qLevel = clamp(KG.store.get(QKEY, KG.lowEnd ? 2 : 0) | 0, 0, QLEVELS.length - 1);
+  let qLevel = clamp(KG.store.get(QKEY, KG.lowEnd ? (small ? 1 : 2) : 0) | 0, 0, QLEVELS.length - 1);
   const perf = { last: 0, n: 0, sum: 0, cool: 2.5 };
   function applyQuality() {
     const q = QLEVELS[qLevel];
@@ -1847,6 +1904,7 @@ function main() {
     composer.setSize(VW, VH);
     if (renderer.shadowMap.enabled !== q.shadow) {
       renderer.shadowMap.enabled = q.shadow;
+      renderer.shadowMap.needsUpdate = true;
       scene.traverse(o => { if (o.material) [].concat(o.material).forEach(m => { m.needsUpdate = true; }); });
     }
   }
@@ -1858,7 +1916,7 @@ function main() {
     perf.cool -= dt;
     if (perf.cool > 0) return;
     perf.sum += dt; perf.n++;
-    if (perf.n >= 60) {
+    if (perf.n >= 60 || perf.sum >= 1.5) {   // 很卡時（張數少）也要在 1.5 秒內判斷
       if (perf.sum / perf.n > 1 / 45) {
         qLevel++;
         KG.store.set(QKEY, qLevel);
@@ -1886,6 +1944,29 @@ function main() {
   rackFor('std');
   resize();
   applyQuality();
+  // 先把所有材質的 shader 編好（包括球桿、瞄準線這些一開始藏起來的），開球時不會卡一下
+  (function prewarm() {
+    computeCamera(0);
+    const hidden = [];
+    scene.traverse(o => { if (!o.visible) { hidden.push(o); o.visible = true; } });
+    if (QLEVELS[qLevel].bloom) renderer.setRenderTarget(composer.readBuffer);
+    renderer.compile(scene, camera);
+    // 影子貼圖用的深度 shader 不會被 compile 編到：用一張 1×1 的小圖把影子畫一次（主畫面用最簡單的材質）
+    const culled = [];
+    scene.traverse(o => { if (o.frustumCulled) { culled.push(o); o.frustumCulled = false; } });
+    const rt = new THREE.WebGLRenderTarget(1, 1);
+    const om = new THREE.MeshBasicMaterial();
+    scene.overrideMaterial = om;
+    renderer.shadowMap.needsUpdate = true;
+    renderer.setRenderTarget(rt);
+    renderer.render(scene, camera);
+    scene.overrideMaterial = null;
+    renderer.setRenderTarget(null);
+    rt.dispose(); om.dispose();
+    culled.forEach(o => { o.frustumCulled = true; });
+    hidden.forEach(o => { o.visible = false; });
+    renderer.shadowMap.needsUpdate = true;
+  })();
   drawSpin();
   $('title').classList.remove('hide');
   updateTitle();

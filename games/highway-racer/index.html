@@ -33,7 +33,8 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 let renderer = null;
 try {
-  renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gl'), antialias: true, powerPreference: 'high-performance' });
+  // 手機一開始不開發光（直接畫到畫面，用 MSAA 抗鋸齒）；大螢幕開發光，發光本身就柔，不用 MSAA
+  renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gl'), antialias: Math.min(innerWidth, innerHeight) < 600, powerPreference: 'high-performance' });
 } catch (e) {
   renderer = null;
 }
@@ -114,7 +115,7 @@ function main() {
    * ========================================================= */
   let W = innerWidth, H = innerHeight;
   const small = Math.min(W, H) < 600;
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, small ? 1.6 : 2));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, small ? 1.5 : 2));
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.0;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -132,6 +133,38 @@ function main() {
   scene.add(sun, sun.target);
   const maxAniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
 
+  // 把同一種材質、不會各自動的網格合成一個（少很多 draw call）
+  const _mInv = new THREE.Matrix4(), _mRel = new THREE.Matrix4();
+  function mergeMeshes(parent, meshes) {
+    meshes = meshes.filter(Boolean);
+    if (meshes.length < 2) return meshes[0] || null;
+    parent.updateMatrixWorld(true);
+    _mInv.copy(parent.matrixWorld).invert();
+    const parts = meshes.map(m => {
+      let g = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone();
+      _mRel.multiplyMatrices(_mInv, m.matrixWorld);
+      g.applyMatrix4(_mRel);
+      return g;
+    });
+    const names = ['position', 'normal', 'uv'];
+    const out = new THREE.BufferGeometry();
+    names.forEach(n => {
+      const len = parts.reduce((a, g) => a + g.attributes.position.count, 0) * (n === 'uv' ? 2 : 3);
+      const arr = new Float32Array(len);
+      let o = 0;
+      parts.forEach(g => { if (g.attributes[n]) arr.set(g.attributes[n].array, o); o += g.attributes[n] ? g.attributes[n].array.length : g.attributes.position.count * (n === 'uv' ? 2 : 3); });
+      out.setAttribute(n, new THREE.BufferAttribute(arr, n === 'uv' ? 2 : 3));
+    });
+    out.computeBoundingSphere();
+    parts.forEach(g => g.dispose());
+    const merged = new THREE.Mesh(out, meshes[0].material);
+    merged.castShadow = meshes.some(m => m.castShadow);
+    merged.receiveShadow = meshes.some(m => m.receiveShadow);
+    merged.renderOrder = meshes[0].renderOrder;
+    meshes.forEach(m => { m.parent.remove(m); m.geometry.dispose(); });
+    parent.add(merged);
+    return merged;
+  }
   function makeTex(w, h, draw, srgb) {
     const c = document.createElement('canvas');
     c.width = w; c.height = h;
@@ -246,24 +279,29 @@ function main() {
   ground.position.set(0, -0.04, -300);
   scene.add(ground);
   // 護欄
+  const railMeshes = [];
   const railMat = new THREE.MeshStandardMaterial({ color: 0xc9ced6, metalness: 0.7, roughness: 0.35 });
   [-1, 1].forEach(s => {
     const r = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.32, 360), railMat);
     r.position.set(s * 7.9, 0.62, -160);
     scene.add(r);
+    railMeshes.push(r);
   });
+  mergeMeshes(scene, railMeshes);
 
   /* ---------- 共用：InstancedMesh 小工具 ---------- */
   function inst(geo, mat, n, color) {
     const m = new THREE.InstancedMesh(geo, mat, n);
     m.frustumCulled = false;
     m.count = 0;
+    m.visible = false;   // 沒有東西時不要送出空的 draw call
     if (color) { const c = new THREE.Color(); for (let i = 0; i < n; i++) m.setColorAt(i, c.setHex(color)); }
     scene.add(m);
     return m;
   }
   function flush(m, n) {
     m.count = n;
+    m.visible = n > 0;
     m.instanceMatrix.needsUpdate = true;
     if (m.instanceColor) m.instanceColor.needsUpdate = true;
   }
@@ -352,6 +390,7 @@ function main() {
     const fr = new THREE.Mesh(bbFrameGeo, bbFrameMat); fr.position.y = 7.3;
     const face = new THREE.Mesh(bbFaceGeo, bbMats[i]); face.position.set(0, 7.3, 0.16);
     g.add(p1, p2, fr, face);
+    mergeMeshes(g, [p1, p2, fr]);
     scene.add(g);
     billboards.push({ g, face, z: -70 - i * 130, side: i % 2 ? 1 : -1 });
   }
@@ -369,6 +408,8 @@ function main() {
   [-1, 1].forEach(s => { const p = new THREE.Mesh(new THREE.BoxGeometry(0.4, 7.6, 0.4).translate(0, 3.8, 0), bbFrameMat); p.position.x = s * 8.6; gantry.add(p); });
   const beam = new THREE.Mesh(new THREE.BoxGeometry(17.6, 0.5, 0.5), bbFrameMat); beam.position.y = 7.2; gantry.add(beam);
   [-3.4, 3.4].forEach(x => { const s = new THREE.Mesh(new THREE.PlaneGeometry(5.6, 2.8), signMat); s.position.set(x, 6.1, 0.28); gantry.add(s); });
+  mergeMeshes(gantry, gantry.children.filter(o => o.material === bbFrameMat));
+  mergeMeshes(gantry, gantry.children.filter(o => o.material === signMat));
   scene.add(gantry);
   const gantryO = { z: -260 };
 
@@ -393,6 +434,13 @@ function main() {
   const pTailMat = new THREE.MeshBasicMaterial({ color: 0xff2020, toneMapped: false });
   const flameMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(1.2, 2.2, 4), transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
   const wheelGeo = new THREE.CylinderGeometry(0.34, 0.34, 0.28, 22, 1).rotateZ(Math.PI / 2);
+  // 兩面輪框是同一個材質：合成一組，一個輪子少一個 draw call
+  {
+    const gr = wheelGeo.groups;
+    wheelGeo.clearGroups();
+    wheelGeo.addGroup(gr[0].start, gr[0].count, 0);
+    wheelGeo.addGroup(gr[1].start, gr[1].count + gr[2].count, 1);
+  }
   const flameGeo = new THREE.ConeGeometry(0.11, 0.9, 10, 1, true).rotateX(-Math.PI / 2).translate(0, 0, 0.45);
 
   function extrude(shape, depth, bev) {
@@ -481,6 +529,10 @@ function main() {
     const sh = new THREE.Mesh(flatPlane, shadowMat);
     sh.scale.set(Wd + 0.7, 1, L + 0.9); sh.position.y = 0.015;
     root.add(sh);
+    // 車身上不會各自動的零件：同材質合成一個（火焰會開關，不合）
+    for (const mat of new Set(body.children.filter(o => o.isMesh && !flames.includes(o)).map(o => o.material))) {
+      mergeMeshes(body, body.children.filter(o => o.isMesh && o.material === mat && !flames.includes(o)));
+    }
     let glow = null;
     if (def.glow) {
       glow = new THREE.Mesh(flatPlane, addMat(glowTex, new THREE.Color(def.glow).multiplyScalar(1.6), 0.9));
@@ -623,6 +675,7 @@ function main() {
       m.position.set(p.pos[0], p.pos[1], p.pos[2]);
       g.add(m);
     });
+    mergeMeshes(g, g.children.filter(o => o.material === paint));
     g.visible = false;
     scene.add(g);
     return { type, T, g, paint, trailer, active: false, lane: 0, tLane: 0, x: 0, y: 0, z: 0, speed: 0, base: 0, yaw: 0, shift: -1, blinkT: 0, willChange: false, changeAt: 0, passed: false, wreck: null };
@@ -1572,7 +1625,8 @@ function main() {
   }
   function txt(s, x, y, size, color, opt) {
     opt = opt || {};
-    ctx.font = font(opt.weight || 800, size);
+    // 字級取整數：動畫縮放時才不會每幀都用新字級重畫字形（很貴）
+    ctx.font = font(opt.weight || 800, Math.round(size));
     ctx.textAlign = opt.align || 'center';
     ctx.textBaseline = 'middle';
     if (opt.glow) { ctx.save(); ctx.shadowColor = opt.glow; ctx.shadowBlur = opt.blur || 14; }
@@ -2093,16 +2147,23 @@ function main() {
   /* =========================================================
    * 主迴圈與自動畫質
    * ========================================================= */
-  const QKEY = 'quality:' + location.pathname.split('/').filter(Boolean).slice(-1)[0];
-  const baseRatio = Math.min(window.devicePixelRatio || 1, small ? 1.6 : 2);
-  const QLEVELS = [
+  const QKEY = 'quality2:' + (small ? 'p:' : 'd:') + location.pathname.split('/').filter(Boolean).slice(-1)[0];
+  const baseRatio = Math.min(window.devicePixelRatio || 1, small ? 1.5 : 2);
+  // 手機：不開發光、解析度最高 1.5（衝刺的放射模糊只在衝刺時才走後製）；大螢幕才開發光
+  const QLEVELS = small ? [
+    { ratio: baseRatio, bloom: false, blur: true },
+    { ratio: Math.min(baseRatio, 1.25), bloom: false, blur: true },
+    { ratio: 1, bloom: false, blur: true },
+    { ratio: 1, bloom: false, blur: false },
+    { ratio: 0.8, bloom: false, blur: false }
+  ] : [
     { ratio: baseRatio, bloom: true, blur: true },
     { ratio: Math.min(baseRatio, 1.35), bloom: true, blur: true },
     { ratio: 1, bloom: true, blur: false },
     { ratio: 1, bloom: false, blur: false },
     { ratio: 0.8, bloom: false, blur: false }
   ];
-  let qLevel = clamp(KG.store.get(QKEY, KG.lowEnd ? 2 : 0) | 0, 0, QLEVELS.length - 1);
+  let qLevel = clamp(KG.store.get(QKEY, KG.lowEnd ? (small ? 1 : 2) : 0) | 0, 0, QLEVELS.length - 1);
   const perf = { last: 0, n: 0, sum: 0, cool: 2.5 };
   function applyQuality() {
     const q = QLEVELS[qLevel];
@@ -2115,14 +2176,15 @@ function main() {
   function renderFrame() {
     const q = QLEVELS[qLevel];
     blurPass.enabled = q.blur && blurPass.uniforms.uStrength.value > 0.002;
-    if (q.bloom) composer.render(); else renderer.render(scene, camera);
+    bloom.enabled = q.bloom;
+    if (q.bloom || blurPass.enabled) composer.render(); else renderer.render(scene, camera);
     const now = performance.now(), dt = perf.last ? Math.min(0.5, (now - perf.last) / 1000) : 0;
     perf.last = now;
     if (document.hidden || qLevel >= QLEVELS.length - 1) return;
     perf.cool -= dt;
     if (perf.cool > 0) return;
     perf.sum += dt; perf.n++;
-    if (perf.n >= 60) {
+    if (perf.n >= 60 || perf.sum >= 1.5) {   // 很卡時（張數少）也要在 1.5 秒內判斷
       if (perf.sum / perf.n > 1 / 45) {
         qLevel++;
         KG.store.set(QKEY, qLevel);
@@ -2148,6 +2210,22 @@ function main() {
   resize();
   applyQuality();
   updateEnv(0);
+  // 先把所有材質的 shader 編好、貼圖傳上去（包括還沒出現的車、道具、粒子），開車時不會卡一下
+  (function prewarm() {
+    updateCamera(0);
+    const hidden = [];
+    scene.traverse(o => { if (!o.visible) { hidden.push(o); o.visible = true; } });
+    // 畫面（手機）和 composer 貼圖（發光／衝刺模糊）兩種 shader 都要
+    renderer.compile(scene, camera);
+    if (QLEVELS.some(q => q.bloom || q.blur)) {
+      renderer.setRenderTarget(composer.readBuffer);
+      renderer.compile(scene, camera);
+      renderer.setRenderTarget(null);
+    }
+    const seen = new Set();
+    scene.traverse(o => { if (o.material) [].concat(o.material).forEach(m => { for (const k in m) { const t = m[k]; if (t && t.isTexture && !seen.has(t)) { seen.add(t); renderer.initTexture(t); } } }); });
+    hidden.forEach(o => { o.visible = false; });
+  })();
   requestAnimationFrame(frame);
 
   window.__hr = {

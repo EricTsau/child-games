@@ -39,6 +39,7 @@
   .toggle input::after { content: ''; position: absolute; left: 3px; top: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; transition: left .2s; box-shadow: 0 1px 3px rgba(0,0,0,.3); }
   .toggle input:checked { background: #2a8fe0; }
   .toggle input:checked::after { left: 23px; }
+  .sndrow { display: flex; gap: 18px; justify-content: center; flex-wrap: wrap; }
   #title .head { display: flex; flex-direction: column; align-items: center; }
   #title .col { display: contents; }
   @media (orientation: landscape) and (max-height: 560px) {
@@ -163,6 +164,7 @@
         <button class="btn" id="bRand">隨機模式</button>
       </div>
       <label class="toggle"><input type="checkbox" id="perfectT"> 完美規則（不能漏水）</label>
+      <div class="sndrow"><label class="toggle"><input type="checkbox" id="optMus"> <span>音樂 開</span></label><label class="toggle"><input type="checkbox" id="optSfx"> <span>音效 開</span></label></div>
       <div class="tstat"><span id="tStars">★ 0</span><span id="tDaily"></span></div>
     </div>
   </div>
@@ -187,6 +189,7 @@
 <div class="modal" id="mPause"><div class="card">
   <h2>休息一下</h2><p id="pInfo"></p>
   <label class="toggle" style="justify-content:center;margin:8px 0"><input type="checkbox" id="perfectP"> 完美規則（不能漏水）</label>
+  <div class="sndrow" style="margin:0 0 8px"><label class="toggle"><input type="checkbox" id="optMus2"> <span>音樂 開</span></label><label class="toggle"><input type="checkbox" id="optSfx2"> <span>音效 開</span></label></div>
   <div class="acts">
     <button class="btn primary" id="pResume">繼續</button>
     <div class="row"><button class="btn" id="pRestart">重新開始</button><button class="btn" id="pMap">關卡地圖</button></div>
@@ -214,6 +217,7 @@
 </div></div>
 
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
 <script>
 'use strict';
 (function () {
@@ -715,33 +719,130 @@ function burst(x, y, n, cols, sp, type) {
   for (let i = 0; i < n; i++) { const a = Math.random() * 6.283, v = sp * (0.4 + Math.random() * 0.8); spawn(x, y, Math.cos(a) * v, Math.sin(a) * v - sp * 0.3, 0.6 + Math.random() * 0.5, 2 + Math.random() * 3, cols[i % cols.length], type || 0, 300); }
 }
 
-/* ================= 音效 ================= */
-let lastGurgle = 0;
-function sClick(dir) { KG.note(dir > 0 ? 560 + Math.random() * 60 : 430 + Math.random() * 40, 0.05, 'triangle', 0.13); KG.note(dir > 0 ? 1250 : 980, 0.03, 'square', 0.035, 0.025); }
-function sGurgle() { const now = performance.now(); if (now - lastGurgle < 70) return; lastGurgle = now; const f = 220 + Math.random() * 260; KG.note(f, 0.11, 'sine', 0.07, 0, f * (1.7 + Math.random() * 0.6)); }
-function sLocked() { KG.note(150, 0.1, 'square', 0.07, 0, 100); KG.note(120, 0.12, 'triangle', 0.1, 0.05); }
-function sSink(st) {
-  if (st === FLOWER) { [988, 1319, 1568].forEach((f, i) => KG.note(f, 0.14, 'sine', 0.09, i * 0.06)); }
-  else if (st === POND) { KG.sound('splash'); KG.note(700, 0.2, 'sine', 0.08, 0.1, 1400); }
-  else { KG.note(784, 0.18, 'triangle', 0.1); KG.note(1047, 0.3, 'triangle', 0.1, 0.12); }
+/* ================= 音樂與音效（kg-music.js） ================= */
+const M = KG.music, SX = KG.sfx;
+let sfxOn = store.get('sfx', true) !== false;
+const sfxLast = Object.create(null);
+/** 播放音效：音效關掉就不播；同一種 40ms 內只播一次；音高隨機 ±4% */
+function snd(name, o) {
+  if (!sfxOn || !SX) return;
+  const now = performance.now();
+  if (now - (sfxLast[name] || 0) < 40) return;
+  sfxLast[name] = now;
+  const pitch = ((o && o.pitch) || 1) * (o && o.exact ? 1 : 0.96 + Math.random() * 0.08);
+  SX.play(name, { vol: o ? o.vol : undefined, pitch, pan: o ? o.pan : undefined });
 }
-// 背景音樂
-const MEL = [523, 0, 659, 784, 0, 659, 587, 0, 523, 0, 440, 523, 0, 587, 659, 0, 784, 0, 880, 784, 0, 659, 587, 0, 659, 0, 587, 523, 0, 440, 523, 0];
-const BAS = [131, 131, 110, 110, 147, 147, 98, 131];
-let bgmT = 0, bgmStep = 0;
-function bgm(dt) {
-  if (KG.isMuted() || document.hidden || !(state === 'play' || state === 'title' || state === 'map' || state === 'won')) return;
-  bgmT += dt;
-  const step = 0.3;
-  if (bgmT > 1) bgmT = step;
-  while (bgmT >= step) {
-    bgmT -= step;
-    const m = MEL[bgmStep % MEL.length];
-    if (m) KG.note(m, 0.32, 'triangle', 0.035);
-    if (bgmStep % 4 === 0) KG.note(BAS[(bgmStep / 4 | 0) % BAS.length], 0.9, 'sine', 0.055);
-    if (bgmStep % 8 === 6) KG.note(m ? m * 2 : 1568, 0.12, 'sine', 0.015);
-    bgmStep++;
-  }
+function cellPan(i) { if (!L || i < 0) return 0; const p = cellCenterDisp(i); return Math.max(-1, Math.min(1, p[0] / Math.max(1, VW) * 2 - 1)) * 0.6; }
+if (SX) {
+  // 轉水管：金屬棘輪「喀啦」
+  SX.define('pc_click', (p, s) => {
+    s.noise(0.025, { vol: 0.2, freq: 3200 * p, q: 3 });
+    s.noise(0.025, { vol: 0.14, freq: 2400 * p, q: 3, delay: 0.035 });
+    s.tone(560 * p, 0.05, { type: 'triangle', vol: 0.11 });
+    s.tone(1250 * p, 0.03, { type: 'square', vol: 0.025, delay: 0.025 });
+  });
+  // 鎖住：悶悶的鐵「咚」
+  SX.define('pc_locked', (p, s) => { s.tone(150 * p, 0.1, { type: 'square', vol: 0.06, slide: 100 }); s.tone(120 * p, 0.12, { type: 'triangle', vol: 0.1, delay: 0.05 }); s.noise(0.04, { vol: 0.08, freq: 900 * p, q: 4 }); });
+  // 水流進新的一段：咕嚕
+  SX.define('pc_gurgle', (p, s) => { const f = (220 + Math.random() * 260) * p; s.tone(f, 0.11, { vol: 0.08, slide: f * (1.7 + Math.random() * 0.6) }); });
+  // 漏水：嘶一聲＋水滴
+  SX.define('pc_leak', (p, s) => { s.noise(0.3, { vol: 0.09, freq: 2600 * p, sweep: 1500, q: 2 }); s.tone(1300 * p, 0.08, { vol: 0.06, slide: 600 * p, delay: 0.12 }); });
+  SX.define('pc_drip', (p, s) => { s.tone(1500 * p, 0.06, { vol: 0.05, slide: 700 * p }); });
+  // 終點：花、池塘、房子
+  SX.define('pc_flower', (p, s) => { [988, 1319, 1568].forEach((f, i) => s.tone(f * p, 0.14, { vol: 0.09, delay: i * 0.06 })); });
+  SX.define('pc_pond', (p, s) => { s.noise(0.35, { vol: 0.16, freq: 1300 * p, sweep: 400, q: 0.6 }); s.tone(700 * p, 0.2, { vol: 0.08, slide: 1400 * p, delay: 0.1 }); });
+  SX.define('pc_house', (p, s) => { s.tone(784 * p, 0.18, { type: 'triangle', vol: 0.1 }); s.tone(1047 * p, 0.3, { type: 'triangle', vol: 0.1, delay: 0.12 }); });
+}
+function sClick(dir, i) { snd('pc_click', { pitch: dir > 0 ? 1 : 0.78, pan: cellPan(i) }); }
+let lastGurgle = 0;
+function sGurgle(i) { const now = performance.now(); if (now - lastGurgle < 70) return; lastGurgle = now; snd('pc_gurgle', { pan: cellPan(i) }); }
+function sLocked(i) { snd('pc_locked', { pan: cellPan(i) }); }
+function sSink(st, i) { snd(st === FLOWER ? 'pc_flower' : st === POND ? 'pc_pond' : 'pc_house', { pan: cellPan(i) }); }
+// 標題：蒸汽龐克的發條鐘（C 小調 80）
+const MEL_TITLE = [
+  'G4 . C5 . Eb5 - D5 .',
+  'C5 - - . Ab4 . . .',
+  'F4 . Ab4 . C5 - Eb5 .',
+  'D5 - - . B4 . G4 .',
+  'Eb5 . G5 . C5 - Eb5 .',
+  'Bb4 - G4 . Eb5 - . .',
+  'Ab4 . C5 . F5 - Eb5 .',
+  'D5 - B4 . G4 - . .'
+];
+const SONG_TITLE = {
+  bpm: 80, steps: 16, swing: 0,
+  chords: ['Cm', 'Ab', 'Fm', 'G', 'Cm', 'Eb', 'Fm7', 'G7'],
+  tracks: [
+    { inst: 'tom', pat: 'x.......x.......', pitch: 90, vol: 0.26 },
+    { inst: 'rim', pat: 'x.o.x.o.x.o.x.o.', vol: 0.22 },
+    { inst: 'sub', chord: 'R.......5.......', vol: 0.42 },
+    { inst: 'brass', chord: 'hold', oct: 4, vol: 0.3 },
+    { inst: 'pad', chord: 'hold', oct: 3, vol: 0.3 },
+    { inst: 'kalimba', arp: 'up', rate: 2, oct: 4, span: 1, vol: 0.32 },
+    { inst: 'bell', seq: MEL_TITLE, vol: 0.62 },
+    { inst: 'flute', seq: MEL_TITLE, vol: 0.55 }
+  ]
+};
+// 遊戲中：蒸汽風琴 shuffle（G 小調 112）
+const MEL_PLAY = [
+  'D5 . G5 . Bb5 - A5 G5',
+  'G5 - Eb5 . Bb4 - . .',
+  'C5 . Eb5 . G5 - F5 Eb5',
+  'F#5 - - . A5 . D5 .',
+  'Bb4 . D5 . G5 - F5 .',
+  'F5 - D5 . Bb4 - . .',
+  'Eb5 . G5 . C5 - D5 Eb5',
+  'D5 - - . F#4 . A4 .'
+];
+const SONG_PLAY = {
+  bpm: 112, steps: 16, swing: 0.22,
+  chords: ['Gm', 'Eb', 'Cm', 'D7', 'Gm', 'Bb', 'Cm', 'D7'],
+  layers: { progress: false },
+  tracks: [
+    { inst: 'kick', pat: 'x.......x.......', vol: 0.36 },
+    { inst: 'rim', pat: '....x.......x...', vol: 0.32 },
+    { inst: 'shaker', pat: '..x...x...x...x.', vol: 0.45 },
+    { inst: 'sub', chord: 'R...5...R...5...', vol: 0.38 },
+    { inst: 'organ', chord: '..R...R...R...R.', oct: 4, vol: 0.3 },
+    { inst: 'organ', chord: '..3...3...3...3.', oct: 4, vol: 0.26 },
+    { inst: 'organ', chord: '..5...5...5...5.', oct: 4, vol: 0.26 },
+    { inst: 'chip', seq: MEL_PLAY, vol: 0.6, legato: 0.8 },
+    { inst: 'flute', seq: MEL_PLAY, vol: 0.5 },
+    { inst: 'brass', chord: '....R.......R...', oct: 4, layer: 'progress', vol: 0.3 },
+    { inst: 'brass', chord: '....3.......3...', oct: 4, layer: 'progress', vol: 0.26 },
+    { inst: 'ohat', pat: '......x.......x.', layer: 'progress', vol: 0.35 }
+  ]
+};
+let audioOk = false, progOn = false, fastOn = false, prevLeaks = 0, lastDrip = 0, flowLoop = null, flowLvl = -1;
+function playSong(song, vol) { if (!M) return; const fresh = M.current() !== song || !M.isPlaying(); M.play(song); M.setVolume(vol); if (song === SONG_PLAY && fresh) resetProgress(); }
+function resetProgress() { progOn = fastOn = false; if (M) { M.setLayer('progress', false); M.setTempo(1); } }
+/** 有水的水管越多加越多樂器、快接好時加快 */
+function musicProgress() {
+  if (!M || !L || !F || state !== 'play') return;
+  let pipes = 0, wet = 0;
+  for (let i = 0; i < L.N; i++) if (L.cells[i].k !== SRC) pipes++;
+  const seen = wBuf2 && wBuf2.length === L.N ? wBuf2 : (wBuf2 = new Uint8Array(L.N));
+  seen.fill(0);
+  for (const n of F.order) { const i = n >> 1; if (!seen[i] && L.cells[i].k !== SRC) { seen[i] = 1; wet++; } }
+  const f = pipes ? wet / pipes : 0;
+  const on = f >= 0.6 || F.solved, fast = f >= 0.9 && !F.solved;
+  if (on !== progOn) { progOn = on; M.setLayer('progress', on); }
+  if (fast !== fastOn) { fastOn = fast; M.setTempo(fast ? 1.05 : 1); }
+}
+let wBuf2 = null;
+/** 水在水管裡流動時的持續水聲（只在遊戲中） */
+function setFlowSound(lvl) {
+  if (!sfxOn || state !== 'play' || !SX || !M || !(audioOk || (audioOk = !!M._nodes()))) { if (flowLoop) stopFlowSound(); return; }
+  if (lvl <= 0) { if (flowLoop && flowLvl !== 0) { flowLoop.set(0, 0); flowLvl = 0; } return; }
+  if (!flowLoop) { flowLoop = SX.loop('water'); flowLvl = -1; }
+  if (Math.abs(lvl - flowLvl) > 0.05) { flowLvl = lvl; flowLoop.set(0.25 + lvl * 0.35, 0.05 + lvl * 0.05); }
+}
+/** 暫停、離開遊戲、過關、關掉音效時把水聲停掉 */
+function stopFlowSound() { if (flowLoop) { flowLoop.stop(); flowLoop = null; } flowLvl = 0; }
+function syncSnd() {
+  const m = M ? M.isEnabled() : false;
+  for (const id of ['optMus', 'optMus2']) { $(id).checked = m; $(id).nextElementSibling.textContent = '音樂 ' + (m ? '開' : '關'); }
+  for (const id of ['optSfx', 'optSfx2']) { $(id).checked = sfxOn; $(id).nextElementSibling.textContent = '音效 ' + (sfxOn ? '開' : '關'); }
 }
 
 /* ================= 遊戲流程 ================= */
@@ -759,7 +860,13 @@ function recompute() {
   for (const n of F.order) { lastEntry[n] = F.entry[n]; lastOwner[n] = F.owner[n]; }
   if (state === 'play' && F.solved && !winPending) { winPending = true; winTimer = 0; }
   if (state === 'play' && !F.solved) winPending = false;
+  if (state === 'play') {
+    const nl = F.leaks.length;
+    if (nl > prevLeaks) snd('pc_leak', { pan: cellPan((F.leaks[nl - 1] >> 2) >> 1) });
+    prevLeaks = nl;
+  } else prevLeaks = F.leaks.length;
   updateHud();
+  musicProgress();
 }
 function startLevel(sp, restore) {
   spec = sp;
@@ -772,6 +879,7 @@ function startLevel(sp, restore) {
   }
   resetVisual();
   state = 'play';
+  playSong(SONG_PLAY, 0.42); resetProgress(); prevLeaks = 1e9;
   showScreen(null);
   $('hud').classList.add('on'); $('tools').classList.add('on'); $('pauseBtn').classList.add('on');
   updateHud();
@@ -786,7 +894,7 @@ function startLevel(sp, restore) {
   }
   if (perfect) tipText = tipText ? tipText : '完美規則：所有水管都不能漏水';
   showTip(tipText, 4200);
-  KG.sound('pop');
+  snd('pop'); snd('whoosh', { vol: 0.7 });
 }
 function saveCur() {
   if (!L || !spec || spec.mode === 'demo') return;
@@ -795,10 +903,10 @@ function saveCur() {
 function rotateCell(i, dir, byHint) {
   if (state !== 'play' || winPending || i < 0) return false;
   const c = L.cells[i];
-  if (!rotatable(c)) { shake[i] = 1; sLocked(); KG.vibrate(15); return false; }
+  if (!rotatable(c)) { shake[i] = 1; sLocked(i); KG.vibrate(15); return false; }
   c.r = (c.r + dir + 4) & 3; rv[i] += dir; vel[i] += dir * 3;
   layerDirty = true;
-  if (!byHint) { moves++; sClick(dir); KG.vibrate(8); }
+  if (!byHint) { moves++; sClick(dir, i); KG.vibrate(8); }
   tutorial = false;
   if (hintGlow === i) hintGlow = -1;
   const p = cellCenterDisp(i);
@@ -810,7 +918,7 @@ function rotateCell(i, dir, byHint) {
 function useHint() {
   if (state !== 'play' || winPending) return;
   const h = hintState();
-  if (h.n <= 0) { const m = Math.ceil((HINT_RECH - (Date.now() - h.t)) / 60000); KG.toast('提示用完了，' + m + ' 分鐘後補充'); KG.sound('wrong'); return; }
+  if (h.n <= 0) { const m = Math.ceil((HINT_RECH - (Date.now() - h.t)) / 60000); KG.toast('提示用完了，' + m + ' 分鐘後補充'); snd('error'); return; }
   let best = -1, bd = 1e9;
   for (let i = 0; i < L.N; i++) {
     const c = L.cells[i];
@@ -827,7 +935,7 @@ function useHint() {
   const dir = steps > 0 ? 1 : -1;
   for (let k = 0; k < Math.abs(steps); k++) rotateCell(best, dir, true);
   hintGlow = best; hintGlowT = 1.6;
-  KG.sound('sparkle');
+  snd('sparkle', { pan: cellPan(best) }); snd('pc_click', { pan: cellPan(best) });
   const p = cellCenterDisp(best);
   burst(p[0], p[1], 14, ['#fff6a8', '#ffd23f', '#ffffff'], 120, 1);
   updateHud();
@@ -841,7 +949,15 @@ function celebrate() {
   celebrated = true;
   state = 'won';
   boardBounce = 1;
-  KG.sound('win');
+  stopFlowSound();
+  if (M) {
+    M.stop(0.3);
+    if (sfxOn) {
+      M.jingle({ bpm: 150, inst: 'marimba', vol: 0.36, notes: [['D5', 1], ['G5', 1], ['Bb5', 1], ['A5', 1], ['F5', 1], ['A5', 1], ['G5+Bb5+D5', 4]], bass: [['G2', 4, 0], ['D3', 2, 4], ['G2', 4, 6]], bassVol: 0.34 });
+      M.jingle({ bpm: 150, inst: 'brass', vol: 0.22, notes: [['x', 6], ['G4+D5', 4]] });
+    }
+    setTimeout(() => { if (state === 'won') playSong(SONG_TITLE, 0.75); }, 2600);
+  }
   KG.vibrate([30, 40, 60]);
   for (const i of L.sinks) { const p = cellCenterDisp(i); burst(p[0], p[1], 10, [PETALS[L.cells[i].pt], '#ffffff', '#fff6a8'], 160, 1); }
   for (const s of L.srcs) { const p = cellCenterDisp(s); burst(p[0], p[1], 16, ['#bfeaff', '#ffffff', '#3db5ff'], 200, 0); }
@@ -876,7 +992,7 @@ function celebrate() {
     const ws = $('wStars'); ws.innerHTML = '';
     for (let k = 0; k < 3; k++) {
       ws.insertAdjacentHTML('beforeend', '<svg viewBox="0 0 24 24"><path d="M12 2.6l2.9 6 6.5.8-4.8 4.5 1.2 6.5L12 17.3l-5.8 3.1 1.2-6.5L2.6 9.4l6.5-.8z" fill="' + (k < st ? '#ffcf3f' : '#e5ddd0') + '" stroke="' + (k < st ? '#c48a12' : '#c9bfae') + '" stroke-width="1.3" stroke-linejoin="round"/></svg>');
-      setTimeout(() => { const el = ws.children[k]; if (el) { el.classList.add('pop'); if (k < st) KG.note(880 + k * 220, 0.15, 'triangle', 0.15); } }, 180 + k * 220);
+      setTimeout(() => { const el = ws.children[k]; if (el) { el.classList.add('pop'); if (k < st) snd('star', { pitch: Math.pow(1.122, k), exact: true }); } }, 180 + k * 220);
     }
     $('mWin').classList.add('on');
     KG.confetti(VW / 2, VH * 0.35, 90);
@@ -912,6 +1028,8 @@ function showScreen(id) {
 function goTitle() {
   ['mPause', 'mWin', 'mRand'].forEach(m => $(m).classList.remove('on'));
   state = 'title';
+  stopFlowSound(); syncSnd();
+  playSong(SONG_TITLE, 0.75);
   showScreen('title');
   L = makeLevel({ mode: 'demo' });
   L.cells.forEach(c => c.r = c.sol);
@@ -933,6 +1051,8 @@ let mapCh = 0;
 function goMap(ch) {
   ['mPause', 'mWin', 'mRand'].forEach(m => $(m).classList.remove('on'));
   state = 'map';
+  stopFlowSound();
+  playSong(SONG_TITLE, 0.75);
   showScreen('map');
   L = null; boardOn = false;
   if (ch == null) { let nx = 0; while (nx < NLV - 1 && prog.s[nx] > 0) nx++; ch = Math.floor(nx / PER); }
@@ -949,7 +1069,7 @@ function renderMap() {
     const lock = !unlocked(k * PER);
     b.className = 'chip' + (k === mapCh ? ' sel' : '') + (lock ? ' lock' : '');
     b.innerHTML = '<b>' + (k + 1) + '. ' + c.name + '</b><small>' + (lock ? '尚未解鎖' : '★ ' + s + '/' + PER * 3) + '</small>';
-    b.onclick = () => { KG.sound('click'); mapCh = k; renderMap(); };
+    b.onclick = () => { snd('ui'); mapCh = k; renderMap(); };
     chips.appendChild(b);
   });
   const sel = chips.children[mapCh]; if (sel && sel.scrollIntoView) sel.scrollIntoView({ inline: 'center', block: 'nearest' });
@@ -963,7 +1083,7 @@ function renderMap() {
     b.className = 'lv' + (un ? '' : ' lock') + (i === nextI ? ' next' : '');
     b.style.animationDelay = (k * 0.015) + 's';
     b.innerHTML = '<span class="n">' + (k + 1) + '</span><span class="st">' + (un ? '<i>' + '★'.repeat(s) + '</i>' + '★'.repeat(3 - s) : '<svg width="16" height="16" viewBox="0 0 24 24"><path d="M7 11V8a5 5 0 0 1 10 0v3" fill="none" stroke="#888" stroke-width="2.6"/><rect x="4.5" y="10.5" width="15" height="11" rx="3" fill="#999"/></svg>') + '</span>';
-    b.onclick = () => { if (!un) { KG.sound('wrong'); KG.toast('先完成前一關喔'); return; } KG.sound('click'); startLevel({ mode: 'lv', i }); };
+    b.onclick = () => { if (!un) { snd('error'); KG.toast('先完成前一關喔'); return; } snd('select'); startLevel({ mode: 'lv', i }); };
     grid.appendChild(b);
   }
 }
@@ -971,10 +1091,12 @@ function pauseGame() {
   if (state !== 'play') return;
   state = 'paused';
   $('pInfo').textContent = L.full + '　步數 ' + moves;
-  $('perfectP').checked = perfect;
+  $('perfectP').checked = perfect; syncSnd();
   $('mPause').classList.add('on');
+  stopFlowSound();
+  if (M) M.pause();
 }
-function resumeGame() { if (state !== 'paused') return; $('mPause').classList.remove('on'); state = 'play'; recompute(); }
+function resumeGame() { if (state !== 'paused') return; $('mPause').classList.remove('on'); state = 'play'; if (M) M.resume(); recompute(); }
 function setPerfect(v) { perfect = !!v; store.set('perfect', perfect); $('perfectT').checked = perfect; $('perfectP').checked = perfect; }
 
 let rSize = store.get('rsize', 1) | 0;
@@ -983,32 +1105,36 @@ function openRand() {
   RSIZES.forEach((s, k) => {
     const b = document.createElement('button'); b.className = 'sz' + (k === rSize ? ' sel' : '');
     b.innerHTML = s[2] + '<small>' + s[0] + ' × ' + s[1] + '</small>';
-    b.onclick = () => { rSize = k; store.set('rsize', k); KG.sound('click'); openRand(); };
+    b.onclick = () => { rSize = k; store.set('rsize', k); snd('ui'); openRand(); };
     sz.appendChild(b);
   });
   const b = KG.best(SLUG + '-rand'); $('rBest').textContent = b ? '已完成 ' + (store.get('randN', 0) | 0) + ' 題' : '';
   $('mRand').classList.add('on');
 }
 
-$('bPlay').onclick = () => { KG.sound('click'); goMap(); };
-$('bCont').onclick = () => { const cur = store.get('cur', null); if (cur && cur.spec) { KG.sound('click'); startLevel(cur.spec); } };
-$('bDaily').onclick = () => { KG.sound('click'); startLevel({ mode: 'daily', d: todayNum() }); };
-$('bRand').onclick = () => { KG.sound('click'); openRand(); };
-$('rGo').onclick = () => { KG.sound('click'); $('mRand').classList.remove('on'); startLevel({ mode: 'rand', seed: (Date.now() ^ (Math.random() * 1e9)) >>> 0, size: rSize, sp: $('spT').checked }); };
-$('rBack').onclick = () => { KG.sound('click'); $('mRand').classList.remove('on'); };
-$('perfectT').onchange = e => { setPerfect(e.target.checked); KG.sound('click'); };
-$('perfectP').onchange = e => { setPerfect(e.target.checked); KG.sound('click'); };
-$('backBtn').onclick = () => { KG.sound('click'); goTitle(); };
-$('pauseBtn').onclick = () => { KG.sound('click'); pauseGame(); };
-$('pResume').onclick = () => { KG.sound('click'); resumeGame(); };
-$('pRestart').onclick = () => { KG.sound('click'); $('mPause').classList.remove('on'); restartLevel(); };
-$('pMap').onclick = () => { KG.sound('click'); if (spec && spec.mode === 'lv') goMap(Math.floor(spec.i / PER)); else goMap(); };
-$('pTitle').onclick = () => { KG.sound('click'); goTitle(); };
-$('wNext').onclick = () => { KG.sound('click'); nextFromWin(); };
-$('wAgain').onclick = () => { KG.sound('click'); $('mWin').classList.remove('on'); restartLevel(); };
-$('wMap').onclick = () => { KG.sound('click'); if (spec && spec.mode === 'lv') goMap(Math.floor(spec.i / PER)); else goMap(); };
+$('bPlay').onclick = () => { snd('ui'); goMap(); };
+$('bCont').onclick = () => { const cur = store.get('cur', null); if (cur && cur.spec) { snd('ui'); startLevel(cur.spec); } };
+$('bDaily').onclick = () => { snd('ui'); startLevel({ mode: 'daily', d: todayNum() }); };
+$('bRand').onclick = () => { snd('ui'); openRand(); };
+$('rGo').onclick = () => { snd('ui'); $('mRand').classList.remove('on'); startLevel({ mode: 'rand', seed: (Date.now() ^ (Math.random() * 1e9)) >>> 0, size: rSize, sp: $('spT').checked }); };
+$('rBack').onclick = () => { snd('ui'); $('mRand').classList.remove('on'); };
+$('perfectT').onchange = e => { setPerfect(e.target.checked); snd('ui'); };
+$('perfectP').onchange = e => { setPerfect(e.target.checked); snd('ui'); };
+$('backBtn').onclick = () => { snd('ui'); goTitle(); };
+$('pauseBtn').onclick = () => { snd('ui'); pauseGame(); };
+$('pResume').onclick = () => { snd('ui'); resumeGame(); };
+$('pRestart').onclick = () => { snd('ui'); $('mPause').classList.remove('on'); restartLevel(); };
+$('pMap').onclick = () => { snd('ui'); if (spec && spec.mode === 'lv') goMap(Math.floor(spec.i / PER)); else goMap(); };
+$('pTitle').onclick = () => { snd('ui'); goTitle(); };
+$('wNext').onclick = () => { snd('ui'); nextFromWin(); };
+$('wAgain').onclick = () => { snd('ui'); $('mWin').classList.remove('on'); restartLevel(); };
+$('wMap').onclick = () => { snd('ui'); if (spec && spec.mode === 'lv') goMap(Math.floor(spec.i / PER)); else goMap(); };
 $('tHint').onclick = () => useHint();
-$('tReset').onclick = () => { if (state !== 'play') return; KG.sound('whoosh'); restartLevel(); };
+$('tReset').onclick = () => { if (state !== 'play') return; snd('swoosh'); restartLevel(); };
+function toggleMus(e) { if (M) M.setEnabled(e.target.checked); syncSnd(); snd('ui'); }
+function toggleSfx(e) { sfxOn = e.target.checked; store.set('sfx', sfxOn); if (!sfxOn) stopFlowSound(); syncSnd(); snd('ui'); }
+$('optMus').onchange = toggleMus; $('optMus2').onchange = toggleMus;
+$('optSfx').onchange = toggleSfx; $('optSfx2').onchange = toggleSfx;
 
 /* ===== 輸入 ===== */
 let press = null;
@@ -1042,7 +1168,7 @@ window.addEventListener('keydown', e => {
       if (k === 'ArrowUp') dy = -1; if (k === 'ArrowDown') dy = 1; if (k === 'ArrowLeft') dx = -1; if (k === 'ArrowRight') dx = 1;
       if (brot) { const t = dx; dx = dy; dy = -t; }
       kbd.x = Math.max(0, Math.min(L.W - 1, kbd.x + dx)); kbd.y = Math.max(0, Math.min(L.H - 1, kbd.y + dy));
-      KG.note(900, 0.03, 'sine', 0.05);
+      snd('tick');
     } else if (k === ' ' || k === 'Enter' || k === 'x' || k === 'X') { e.preventDefault(); kbd.on = true; rotateCell(kbd.y * L.W + kbd.x, 1); }
     else if (k === 'z' || k === 'Z') { kbd.on = true; rotateCell(kbd.y * L.W + kbd.x, -1); }
     else if (k === 'h' || k === 'H') useHint();
@@ -1059,7 +1185,6 @@ window.addEventListener('orientationchange', () => setTimeout(layout, 120));
 /* ================= 更新 ================= */
 function update(dt) {
   time += dt;
-  bgm(dt);
   if (!L || !boardOn) { updateParts(dt); return; }
   anyAnim = false;
   for (let i = 0; i < L.N; i++) {
@@ -1076,6 +1201,7 @@ function update(dt) {
     const sp = 9;
     if (!wBuf || wBuf.length !== L.N * 2) wBuf = new Uint8Array(L.N * 2);
     const watered = wBuf; watered.fill(0);
+    let flowing = 0;
     for (const n of F.order) {
       watered[n] = 1;
       const i = n >> 1, p = F.par[n];
@@ -1083,16 +1209,18 @@ function update(dt) {
       if (fill[n] < 1 && settled && (p < 0 || fill[p] >= 1)) {
         if (fill[n] === 0) sGurgleMaybe(n);
         fill[n] = Math.min(1, fill[n] + dt * sp);
+        flowing++;
       }
     }
     for (let n = 0; n < L.N * 2; n++) if (!watered[n] && fill[n] > 0) fill[n] = Math.max(0, fill[n] - dt * 7);
+    if (state === 'play') { flowHold = flowing ? 0.25 : Math.max(0, flowHold - dt); setFlowSound(flowHold > 0 ? Math.min(1, 0.4 + flowing * 0.15) : 0); }
     // 終點
     for (const i of L.sinks) {
       const c = L.cells[i], ok = F.owner[i * 2] === c.c && fill[i * 2] >= 1;
       const was = sinkB[i];
       sinkB[i] += ((ok ? 1 : 0) - sinkB[i]) * Math.min(1, dt * (ok ? 4 : 3));
       if (ok && was < 0.05 && sinkB[i] >= 0.05 && state !== 'title') {
-        sSink(c.st);
+        sSink(c.st, i);
         const p = cellCenterDisp(i);
         burst(p[0], p[1] - T * 0.2, 8, c.st === FLOWER ? [PETALS[c.pt], '#fff'] : c.st === POND ? ['#bfeaff', '#3db5ff'] : ['#ffe58a', '#fff'], 110, c.st === FLOWER ? 2 : 0);
       }
@@ -1107,6 +1235,7 @@ function update(dt) {
         if (fill[n] < 1) continue;
         const i = n >> 1, x = i % L.W, y = (i / L.W) | 0;
         const p = toDisp((x + 0.5 + DX[d] * 0.5) * T, (y + 0.5 + DY[d] * 0.5) * T);
+        if (time - lastDrip > 0.22) { lastDrip = time; snd('pc_drip', { pan: Math.max(-1, Math.min(1, p[0] / Math.max(1, VW) * 2 - 1)) * 0.6 }); }
         spawn(p[0] + (Math.random() - 0.5) * 3, p[1], (Math.random() - 0.5) * 20, 10, 0.55, Math.max(1.6, T * 0.06), WATER[F.owner[n]] || WATER[0], 3, 520);
       }
     }
@@ -1120,8 +1249,8 @@ function update(dt) {
   if (hintGlowT > 0) hintGlowT -= dt; else hintGlow = -1;
   updateParts(dt);
 }
-let leakAcc = 0, wBuf = null;
-function sGurgleMaybe(n) { if (state === 'title') return; const c = L.cells[n >> 1]; if (c.k !== SRC) sGurgle(); }
+let leakAcc = 0, wBuf = null, flowHold = 0;
+function sGurgleMaybe(n) { if (state === 'title') return; const c = L.cells[n >> 1]; if (c.k !== SRC) sGurgle(n >> 1); }
 function updateParts(dt) {
   for (let i = 0; i < PMAX; i++) {
     const p = parts[i]; if (!p.on) continue;

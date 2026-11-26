@@ -21,6 +21,7 @@
 <canvas id="gl"></canvas>
 <canvas id="ui" aria-label="極速公路遊戲畫面"></canvas>
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
 <script type="module">
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
@@ -903,80 +904,145 @@ function main() {
   }
 
   /* =========================================================
-   * 音效與音樂
+   * 音效與音樂（共用引擎 kg-music.js）
    * ========================================================= */
-  const eng = { ac: null, idle: 1, lastSet: 0 };
-  function engineInit() {
-    if (eng.ac) return;
-    const AC = window.AudioContext || window.webkitAudioContext;
-    if (!AC) return;
-    try {
-      const ac = new AC();
-      const o1 = ac.createOscillator(); o1.type = 'sawtooth'; o1.frequency.value = 60;
-      const o2 = ac.createOscillator(); o2.type = 'square'; o2.frequency.value = 30;
-      const g2 = ac.createGain(); g2.gain.value = 0.45;
-      const f = ac.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 600; f.Q.value = 3;
-      const g = ac.createGain(); g.gain.value = 0;
-      o1.connect(f); o2.connect(g2); g2.connect(f); f.connect(g); g.connect(ac.destination);
-      o1.start(); o2.start();
-      Object.assign(eng, { ac, o1, o2, f, g, idle: 0, lastSet: 1 });
-    } catch (e) { eng.ac = null; }
+  const SFX_KEY = 'highway-racer:sfx';
+  let sfxOn = KG.store.get(SFX_KEY, true) !== false;
+  // 標題：夜晚的合成器浪潮（A 小調、100 bpm，鋪底＋低音）
+  const SONG_TITLE = {
+    bpm: 100, steps: 16, swing: 0,
+    chords: ['Am', 'Fmaj7', 'C', 'G', 'Am', 'Fmaj7', 'Dm7', 'Esus4'],
+    tracks: [
+      { inst: 'kick', pat: 'x.......x.......', vol: 0.5 },
+      { inst: 'snare', pat: '........x.......', vol: 0.4 },
+      { inst: 'hat', pat: '..x...x...x...x.', vol: 0.28 },
+      { inst: 'sub', chord: 'R.......R...R...', vol: 0.55 },
+      { inst: 'pad', chord: 'hold', vol: 0.5 },
+      { inst: 'pluck', arp: 'up', rate: 2, oct: 4, vol: 0.16 },
+      { inst: 'lead', vol: 0.5, seq: [
+        'A4 - - - C5 - E5 -', 'E5 - - - - - D5 C5', 'G4 - - - C5 - E5 -', 'D5 - - - - - B4 -',
+        'A4 - - - C5 - E5 -', 'A5 - - - G5 - F5 E5', 'F5 - - - E5 - D5 C5', 'B4 - - - - - - .'] }
+    ]
+  };
+  // 遊戲中：奔馳的合成器浪潮（E 小調、140 bpm，四拍大鼓＋分解和弦＋主旋律）
+  const SONG_RACE = {
+    bpm: 140, steps: 16, swing: 0,
+    chords: ['Em', 'D', 'C', 'D', 'Em', 'D', 'C', 'B7', 'Am', 'Em', 'C', 'D', 'Am', 'Em', 'Cmaj7', 'B7'],
+    layers: { nitro: false },
+    tracks: [
+      { inst: 'kick', pat: 'X...X...X...X...', vol: 0.8 },
+      { inst: 'snare', pat: ['....X.......X...', '....X.......X.oo'], vol: 0.5 },
+      { inst: 'hat', pat: '..x...x...x...x.', vol: 0.4 },
+      { inst: 'bass', chord: 'R.R.R.R.R.R.8.R.', vol: 0.55 },
+      { inst: 'pad', chord: 'hold', vol: 0.24 },
+      { inst: 'pluck', arp: 'updown', rate: 2, oct: 4, vol: 0.2 },
+      { inst: 'lead', vol: 0.55, seq: [
+        'B4 - E5 - G5 - F#5 E5', 'F#5 - - - D5 - A4 -', 'G4 - C5 - E5 - D5 C5', 'D5 - - - - - . .',
+        'B4 - E5 - G5 - B5 -', 'A5 - F#5 - D5 - F#5 -', 'G5 - E5 - C5 - E5 G5', 'F#5 - - - D#5 - B4 -',
+        'C5 - E5 - A5 - G5 -', 'G5 - - - E5 - B4 -', 'C5 - E5 - G5 - A5 -', 'F#5 - - - A5 - F#5 -',
+        'E5 - A5 - C5 - E5 -', 'B4 - E5 - G5 - E5 -', 'B4 - C5 - E5 - G5 -', 'F#5 - D#5 - B4 - - .'] },
+      // 氮氣加速：加開放鈸和閃亮的十六分音符
+      { inst: 'ohat', pat: '..x...x...x...x.', vol: 0.34, layer: 'nitro' },
+      { inst: 'chip', arp: 'up', rate: 1, oct: 5, span: 1, vol: 0.13, layer: 'nitro' },
+      { inst: 'crash', pat: ['X...............', '................'], vol: 0.3, layer: 'nitro' }
+    ]
+  };
+  const J_GO = { bpm: 220, inst: 'lead', vol: 0.28, notes: [['E5', 1], ['G5', 1], ['B5', 2]], bass: [['E2', 4, 0]], bassVol: 0.25 };
+  const J_KM = { bpm: 200, inst: 'bell', vol: 0.3, notes: [['B4', 1], ['E5', 1], ['G5', 1], ['B5', 3]], bass: [['E2', 6, 0]], bassVol: 0.22 };
+  const J_OVER = { bpm: 110, inst: 'lead', vol: 0.26, notes: [['B4', 1], ['A4', 1], ['G4', 1], ['F#4', 1], ['E4', 4]], bass: [['E2', 8, 0]], bassVol: 0.25 };
+  const J_BEST = { bpm: 150, inst: 'brass', vol: 0.32, notes: [['E5', 1], ['G5', 1], ['B5', 1], ['E5+B5', 2], ['D5', 1], ['E5+G5+B5', 4]], bass: [['E2', 4, 0], ['B2', 2, 4], ['E2', 4, 6]], bassVol: 0.28 };
+  const J_BUY = { bpm: 170, inst: 'bell', vol: 0.32, notes: [['E5', 1], ['G5', 1], ['B5', 1], ['E5+G5', 3]], bass: [['E2', 6, 0]], bassVol: 0.22 };
+
+  const SF = KG.sfx;
+  SF.define('hr_count', (p, s) => { s.tone(587 * p, 0.15, { type: 'square', vol: 0.07 }); s.tone(1174 * p, 0.1, { vol: 0.05 }); });
+  SF.define('hr_go', (p, s) => { s.tone(1174 * p, 0.45, { type: 'square', vol: 0.07 }); s.tone(587 * p, 0.45, { type: 'triangle', vol: 0.12 }); s.tone(880 * p, 0.45, { vol: 0.07 }); });
+  SF.define('hr_lane', (p, s) => { s.noise(0.22, { vol: 0.2, freq: 700 * p, sweep: 2600 * p, q: 1.2 }); s.tone(380 * p, 0.12, { vol: 0.05, slide: 620 * p }); });
+  SF.define('hr_edge', (p, s) => { for (let i = 0; i < 4; i++) s.tone(110 * p, 0.04, { type: 'square', vol: 0.05, delay: i * 0.035 }); s.noise(0.12, { vol: 0.1, freq: 300, type: 'lowpass' }); });
+  SF.define('hr_near', (p, s) => { s.noise(0.25, { vol: 0.24, freq: 3000 * p, sweep: 700 * p, q: 1.4 }); s.tone(880 * p, 0.08, { type: 'triangle', vol: 0.11, delay: 0.04 }); s.tone(1320 * p, 0.16, { type: 'triangle', vol: 0.1, delay: 0.1 }); });
+  SF.define('hr_coin', (p, s) => { s.tone(1046 * p, 0.06, { type: 'square', vol: 0.05 }); s.tone(1568 * p, 0.15, { type: 'square', vol: 0.045, delay: 0.055 }); });
+  SF.define('hr_pick', (p, s) => { s.tone(660 * p, 0.1, { type: 'square', vol: 0.05 }); s.tone(990 * p, 0.1, { type: 'square', vol: 0.05, delay: 0.05 }); s.tone(1320 * p, 0.16, { type: 'triangle', vol: 0.1, delay: 0.1 }); });
+  SF.define('hr_shield', (p, s) => { [660, 880, 1100, 1320].forEach((f, i) => s.tone(f * p, 0.28, { vol: 0.07, delay: i * 0.05 })); s.tone(220 * p, 0.4, { type: 'triangle', vol: 0.1, slide: 440 * p }); });
+  SF.define('hr_nitro', (p, s) => { s.noise(0.7, { vol: 0.32, freq: 300 * p, sweep: 3200 * p, q: 0.9 }); s.tone(70 * p, 0.8, { type: 'sawtooth', vol: 0.09, slide: 260 * p }); s.tone(140 * p, 0.6, { type: 'square', vol: 0.035, slide: 520 * p, delay: 0.05 }); s.tone(55, 0.25, { vol: 0.3, slide: 40 }); });
+  SF.define('hr_empty', (p, s) => { s.noise(0.16, { vol: 0.12, freq: 1200 * p, sweep: 300, q: 1 }); s.tone(180 * p, 0.12, { type: 'square', vol: 0.04, slide: 120 * p }); });
+  SF.define('hr_crash', (p, s) => {
+    s.tone(80 * p, 0.6, { vol: 0.5, slide: 30 }); s.noise(0.9, { vol: 0.45, freq: 1200 * p, sweep: 90, type: 'lowpass', q: 0.7 });
+    s.noise(0.35, { vol: 0.3, freq: 2400 * p, q: 0.9 }); s.tone(90 * p, 0.7, { type: 'sawtooth', vol: 0.08, slide: 30 });
+    s.noise(0.3, { vol: 0.25, freq: 900 * p, q: 1, delay: 0.12 }); s.tone(150 * p, 0.2, { vol: 0.3, slide: 50, delay: 0.12 });
+    for (let i = 0; i < 6; i++) s.tone((2600 + i * 410) * p, 0.07, { type: 'triangle', vol: 0.03, delay: 0.08 + i * 0.05 });
+  });
+  SF.define('hr_smash', (p, s) => { s.tone(170 * p, 0.2, { vol: 0.38, slide: 55 }); s.noise(0.22, { vol: 0.3, freq: 900 * p, q: 0.9 }); s.tone(900 * p, 0.12, { type: 'triangle', vol: 0.06, slide: 1500 * p, delay: 0.05 }); });
+  SF.define('hr_shieldhit', (p, s) => { s.noise(0.25, { vol: 0.2, freq: 4200 * p, q: 2 }); [1760, 1320, 990].forEach((f, i) => s.tone(f * p, 0.12, { type: 'triangle', vol: 0.08, delay: i * 0.04 })); s.tone(170 * p, 0.18, { vol: 0.3, slide: 60 }); });
+  SF.define('hr_clunk', (p, s) => { s.tone(120 * p, 0.12, { vol: 0.22, slide: 60 }); s.noise(0.08, { vol: 0.14, freq: 1500 * p, q: 1.5 }); });
+  SF.define('hr_chime', (p, s) => { s.tone(988 * p, 0.3, { vol: 0.07 }); s.tone(1319 * p, 0.4, { vol: 0.06, delay: 0.09 }); });
+
+  const lastS = Object.create(null);
+  const SO = { vol: 1, pitch: 1, pan: 0 };
+  function sfx(name, vol, pitch, pan, gap) {
+    if (!sfxOn || KG.isMuted()) return;
+    const t = performance.now();
+    if (t - (lastS[name] || 0) < (gap || 40)) return;
+    lastS[name] = t;
+    SO.vol = vol == null ? 1 : vol; SO.pitch = pitch || 1; SO.pan = pan || 0;
+    KG.sfx.play(name, SO);
   }
-  function engineUpdate(rdt) {
-    const ac = eng.ac;
-    if (!ac) return;
-    const want = !KG.isMuted() && !document.hidden && (phase === 'play' || phase === 'ready');
-    if (want) {
-      if (ac.state === 'suspended') ac.resume();
-      eng.idle = 0;
-      eng.lastSet += rdt;
-      if (eng.lastSet < 0.05) return;
-      eng.lastSet = 0;
-      const t = ac.currentTime;
-      const gear = Math.min(5, Math.floor(speed / 15)), within = clamp((speed - gear * 15) / 15, 0, 1.5);
-      const fr = 44 + within * 50 + gear * 7 + boostAmt * 30;
-      eng.o1.frequency.setTargetAtTime(fr, t, 0.06);
-      eng.o2.frequency.setTargetAtTime(fr * 0.5, t, 0.06);
-      eng.f.frequency.setTargetAtTime(450 + within * 450 + boostAmt * 900, t, 0.08);
-      eng.g.gain.setTargetAtTime(0.05 + boostAmt * 0.035, t, 0.08);
-    } else {
-      if (eng.idle === 0) { eng.g.gain.cancelScheduledValues(ac.currentTime); eng.g.gain.setTargetAtTime(0, ac.currentTime, 0.04); }
-      eng.idle += rdt;
-      if (eng.idle > 0.3 && ac.state === 'running') ac.suspend();
+  const jit = a => 1 + (Math.random() - 0.5) * (a || 0.1);
+  const panX = x => clamp((x - carX) / 7, -0.8, 0.8);
+  function jingle(def) { if (sfxOn) KG.music.jingle(def); }
+  function sfxLane(dir) { sfx('hr_lane', 0.9, jit(0.1), (dir || 0) * 0.55, 90); }
+  function sfxCoin(x) { sfx('hr_coin', 1, Math.pow(1.06, Math.min(10, coinChain)) * jit(0.04), panX(x)); }
+  function sfxNitro() { sfx('hr_nitro', 1, jit(0.05)); }
+  function sfxCrash() { sfx('hr_crash', 1, jit(0.06)); }
+  function sfxSmash(x, why) { sfx(why === 'shield' ? 'hr_shieldhit' : 'hr_smash', 1, jit(0.08), panX(x)); }
+  function sfxNear(x) { sfx('hr_near', 1, Math.pow(1.06, Math.min(5, nearChain - 1)) * jit(0.05), panX(x)); }
+  function sfxPick(kind) { sfx(kind === 'nitro' ? 'hr_pick' : 'hr_shield', 1, jit(0.05)); }
+
+  // 持續的聲音：引擎（跟速度走）、風切（氮氣）、雨聲
+  const loops = { eng: null, wind: null, rain: null, t: 0, on: false };
+  function updateLoops(rdt) {
+    loops.t -= rdt;
+    if (loops.t > 0) return;
+    loops.t = 0.05;
+    const active = sfxOn && (phase === 'play' || phase === 'ready' || phase === 'crash');
+    if (!active) {
+      if (loops.on) { loops.eng.set(0, 0); loops.wind.set(0, 0); loops.rain.set(0, 0); loops.on = false; }
+      return;
     }
+    if (!loops.eng) {
+      if (!KG.music._nodes()) return;
+      loops.eng = KG.sfx.loop('engine'); loops.wind = KG.sfx.loop('wind'); loops.rain = KG.sfx.loop('water');
+    }
+    loops.on = true;
+    const gear = Math.min(5, Math.floor(speed / 15)), within = clamp((speed - gear * 15) / 15, 0, 1.5);
+    const fr = 44 + within * 50 + gear * 7 + boostAmt * 30;
+    const crashing = phase === 'crash';
+    loops.eng.set(clamp((fr - 50) / 170, 0, 1), crashing ? 0.03 : 0.08 + boostAmt * 0.04);
+    loops.wind.set(0.3 + boostAmt * 0.6, crashing ? 0 : clamp(speed / 72, 0, 1) * 0.025 + boostAmt * 0.07);
+    loops.rain.set(0.2, rainAmt * 0.06);
   }
-  const BASS = [55, 43.65, 65.41, 49];
-  const CHORDS = [[220, 261.6, 329.6], [174.6, 220, 261.6], [261.6, 329.6, 392], [196, 246.9, 293.7]];
-  const LEAD = [659, 0, 0, 587, 0, 0, 523, 0, 587, 0, 659, 0, 784, 0, 659, 0];
-  let musicTimer = 0, mStep = 0;
-  function startMusic() {
-    if (musicTimer) return;
-    musicTimer = setInterval(() => {
-      if (KG.isMuted() || document.hidden || !(phase === 'play' || phase === 'ready')) return;
-      const bar = Math.floor(mStep / 16) % 4, s = mStep % 16, sec = Math.floor(mStep / 64) % 2;
-      if (s % 2 === 0) KG.note(BASS[bar] * (s % 4 === 2 ? 4 : 2), 0.11, 'sawtooth', 0.03);
-      if (s % 2 === 1) KG.note(CHORDS[bar][(s >> 1) % 3] * 2, 0.08, 'triangle', 0.016);
-      if (s % 4 === 0) KG.note(120, 0.12, 'sine', 0.1, 0, 42);
-      if (s % 8 === 4) KG.note(260, 0.08, 'triangle', 0.035, 0, 150);
-      if (s % 2 === 1) KG.note(7200, 0.02, 'square', 0.005);
-      if (sec === 1 && LEAD[s]) KG.note(LEAD[s] * (bar === 3 ? 0.89 : 1), 0.2, 'square', 0.014);
-      mStep++;
-    }, 118);
+  // 氮氣時加樂器；高速或連續閃過時加快
+  let nitroOn = false, rushOn = false;
+  function updateMusic() {
+    const n = phase === 'play' && boosting;
+    if (n !== nitroOn) { nitroOn = n; KG.music.setLayer('nitro', n); }
+    const r = phase === 'play' && (speed > 62 || (nearChain >= 3 && nearT > 0));
+    if (r !== rushOn) { rushOn = r; KG.music.setTempo(r ? 1.06 : 1); }
   }
-  function stopMusic() { clearInterval(musicTimer); musicTimer = 0; }
-  let lastWhoosh = 0;
-  function sfxLane() { const n = performance.now(); if (n - lastWhoosh > 90) { lastWhoosh = n; KG.sound('whoosh'); KG.note(420, 0.1, 'sine', 0.05, 0, 700); } }
-  function sfxCoin() { const p = Math.min(10, coinChain); KG.note(1046 * Math.pow(1.06, p), 0.07, 'square', 0.06); KG.note(1568 * Math.pow(1.06, p), 0.16, 'square', 0.05, 0.06); }
-  function sfxNitro() { KG.note(70, 0.9, 'sawtooth', 0.12, 0, 280); KG.note(140, 0.7, 'square', 0.05, 0.05, 560); KG.sound('whoosh'); }
-  function sfxCrash() { KG.sound('hit'); KG.note(90, 0.8, 'sawtooth', 0.16, 0, 30); KG.note(1900, 0.3, 'square', 0.04, 0.03, 300); setTimeout(() => KG.sound('hit'), 120); }
-  function sfxSmash() { KG.sound('hit'); KG.note(240, 0.25, 'square', 0.07, 0, 80); KG.note(900, 0.12, 'triangle', 0.06, 0.05, 1500); }
-  function sfxNear() { KG.note(880, 0.08, 'triangle', 0.12); KG.note(1320, 0.16, 'triangle', 0.12, 0.07); }
-  function sfxPick() { [660, 990, 1320].forEach((f, i) => KG.note(f, 0.1, 'square', 0.06, i * 0.05)); }
+  // 標題曲是安靜的鋪底，音量拉高一點
+  function musicTitle() { KG.music.setVolume(0.32); KG.music.play(SONG_TITLE); }
+  function musicRace() { KG.music.setVolume(0.24); KG.music.play(SONG_RACE, { restart: true }); nitroOn = rushOn = false; }
+  function toggleMusic() { KG.music.setEnabled(!KG.music.isEnabled()); sfx('click'); }
+  function toggleSfx() { sfxOn = !sfxOn; KG.store.set(SFX_KEY, sfxOn); sfx('click'); }
+  function toggleRow(x, y, w, h) {
+    const bw = (w - 10) / 2, m = KG.music.isEnabled();
+    button('tgMusic', x, y, bw, h, '音樂 ' + (m ? '開' : '關'), m ? 'gold' : 'ghost', toggleMusic);
+    button('tgSfx', x + bw + 10, y, bw, h, '音效 ' + (sfxOn ? '開' : '關'), sfxOn ? 'gold' : 'ghost', toggleSfx);
+  }
+  musicTitle();
 
   /* =========================================================
    * 遊戲流程
    * ========================================================= */
-  function showBanner(title, sub, color) { banner = { title, sub, color: color || '#ffffff', t: 0 }; }
+  function showBanner(title, sub, color) { banner = { title, sub, color: color || '#ffffff', t: 0 }; if (title.indexOf('公里') < 0 && title.indexOf('繼續') < 0) sfx('hr_chime', 0.8, jit(0.04)); }
   function addFloat(text, color, size, wx, wy, wz) {
     const p = toScreen(wx || carX, wy == null ? 2.4 : wy, wz || 0);
     floats.push({ x: p[0], y: p[1], text, color, size: size || 20, life: 1.1 });
@@ -993,7 +1059,6 @@ function main() {
     debris.forEach(p => { p.life = 0; });
   }
   function startRun() {
-    engineInit();
     setCarModel(curDef(), save.paint);
     resetWorld();
     dist = 0; speed = 0; bonus = 0; runCoins = 0; score = 0;
@@ -1006,8 +1071,8 @@ function main() {
     phase = 'ready'; readyT = 0; readyDur = 2.4; stateT = 0; hintT = 0;
     banner = null;
     floats.length = 0;
-    startMusic();
-    KG.sound('click');
+    musicRace();
+    sfx('click');
   }
   function continueRun() {
     if (continued || save.coins < 50) return;
@@ -1018,31 +1083,33 @@ function main() {
     carX = LANES[lane]; speed = 0; boosting = false;
     invT = 3; shieldT = 0;
     phase = 'ready'; readyT = 0; readyDur = 1.6;
-    KG.sound('sparkle');
+    sfx('powerup', 0.8);
+    musicRace();
     showBanner('繼續衝刺！', '花費 50 金幣', '#ffd23a');
   }
   function toTitle() {
-    phase = 'title'; stopMusic();
+    phase = 'title';
+    musicTitle();
     resetWorld();
     boosting = false; boostAmt = 0; shieldT = 0; invT = 0; speed = 0; spinYaw = 0; carY = 0;
     setCarModel(curDef(), save.paint);
     persist();
   }
   function togglePause() {
-    if (phase === 'pause') { phase = pausedFrom; KG.sound('click'); }
-    else if (phase === 'play' || phase === 'ready') { pausedFrom = phase; phase = 'pause'; KG.sound('click'); persist(); }
+    if (phase === 'pause') { phase = pausedFrom; sfx('select'); KG.music.resume(); }
+    else if (phase === 'play' || phase === 'ready') { pausedFrom = phase; phase = 'pause'; sfx('back'); KG.music.pause(); persist(); }
   }
   function steer(dir) {
     if (phase !== 'play') return;
     const nl = clamp(lane + dir, 0, 3);
-    if (nl === lane) { KG.note(110, 0.08, 'square', 0.05); shake = Math.max(shake, 0.12); return; }
+    if (nl === lane) { sfx('hr_edge', 1, jit(0.08), dir * 0.6, 120); shake = Math.max(shake, 0.12); return; }
     dodgeLane = lane; dodgeAt = clock;
     lane = nl;
-    sfxLane();
+    sfxLane(dir);
   }
   function tryNitro() {
     if (phase !== 'play' || boosting) return;
-    if (nitro < 0.2) { KG.note(180, 0.1, 'square', 0.05); return; }
+    if (nitro < 0.2) { sfx('hr_empty', 1, jit(0.08), 0, 150); return; }
     boosting = true;
     sfxNitro();
     shake = Math.max(shake, 0.25);
@@ -1063,6 +1130,7 @@ function main() {
     KG.vibrate(220);
     persist();
   }
+  let overTO = 0;
   function toOver() {
     phase = 'over'; stateT = 0;
     score = Math.floor(dist) + bonus;
@@ -1071,7 +1139,12 @@ function main() {
     newBest = score > prev && score > 0;
     if (dist > (save.bestDist || 0)) save.bestDist = Math.floor(dist);
     persist();
-    if (newBest) { KG.sound('win'); } else KG.sound('lose');
+    // 結束：音樂停、播短樂句，過一下回到標題音樂
+    KG.music.stop(0.3);
+    jingle(newBest ? J_BEST : J_OVER);
+    if (newBest) setTimeout(() => sfx('star', 0.8), 900);
+    clearTimeout(overTO);
+    overTO = setTimeout(() => { if (phase === 'over') musicTitle(); }, 3000);
   }
   function smash(v, why) {
     const side = Math.sign(v.x - carX) || (Math.random() < 0.5 ? -1 : 1);
@@ -1083,7 +1156,7 @@ function main() {
     spawnSparks(v.x, 0.9, v.z + v.T.len / 2, 40, why === 'shield' ? 0x40ffd0 : 0xffa030, 10);
     spawnDebris(v.x, 1, v.z + v.T.len / 2, 10, v.paint.color.getHex());
     shake = Math.max(shake, 0.45);
-    sfxSmash();
+    sfxSmash(v.x, why);
     KG.vibrate(50);
   }
   function hitVehicle(v) {
@@ -1104,7 +1177,7 @@ function main() {
     bonus += pts;
     addFloat('驚險閃過！ +' + pts, nearChain > 1 ? '#ff7ad8' : '#7fe8ff', 22 + Math.min(4, nearChain) * 2, (carX + v.x) / 2, 2.2, 0);
     nitro = Math.min(1, nitro + 0.06);
-    sfxNear();
+    sfxNear(v.x);
   }
 
   /* ---------- 生成 ---------- */
@@ -1228,8 +1301,8 @@ function main() {
     if (phase === 'ready') {
       readyT += rdt;
       const before = Math.ceil((readyDur - readyT + rdt) / 0.6), after = Math.ceil((readyDur - readyT) / 0.6);
-      if (after !== before && after >= 1 && after <= 3) KG.note(523, 0.14, 'square', 0.08);
-      if (readyT >= readyDur) { phase = 'play'; stateT = 0; KG.note(1046, 0.4, 'square', 0.09); KG.note(1568, 0.4, 'triangle', 0.06, 0.05); }
+      if (after !== before && after >= 1 && after <= 3) sfx('hr_count', 1, 1 + (3 - after) * 0.06);
+      if (readyT >= readyDur) { phase = 'play'; stateT = 0; sfx('hr_go'); jingle(J_GO); }
     }
     if (phase === 'crash') {
       crashT += rdt;
@@ -1250,7 +1323,7 @@ function main() {
         const km = Math.round(nextKm / 1000);
         bonus += 500; nextKm += 1000;
         showBanner(km + ' 公里！', '里程獎勵 +500', '#ffd23a');
-        KG.sound('sparkle');
+        jingle(J_KM);
       }
       score = Math.floor(dist) + bonus;
     }
@@ -1316,7 +1389,7 @@ function main() {
         const w = v.wreck;
         w.t += dt;
         v.x += w.vx * dt; v.y += w.vy * dt; w.vy -= 24 * dt;
-        if (v.y < 0) { v.y = 0; w.vy = Math.abs(w.vy) * 0.35; w.vx *= 0.6; if (w.vy > 1.5) spawnSparks(v.x, 0.2, v.z, 8, 0xffa030, 6); }
+        if (v.y < 0) { v.y = 0; w.vy = Math.abs(w.vy) * 0.35; w.vx *= 0.6; if (w.vy > 1.5) { spawnSparks(v.x, 0.2, v.z, 8, 0xffa030, 6); sfx('hr_clunk', clamp(w.vy / 4, 0.3, 1) * clamp(1 + v.z / 120, 0.2, 1), jit(0.1), panX(v.x), 80); } }
         w.ax += w.rx * dt; w.ay += w.ry * dt; w.az += w.rz * dt;
         v.speed = damp(v.speed, 0, 0.8, dt);
         v.z += (speed - v.speed) * dt;
@@ -1383,7 +1456,7 @@ function main() {
         const val = curDef().coinMul;
         runCoins += val; save.coins += val; bonus += 10 * val;
         coinChain++; coinChainT = 0.8;
-        sfxCoin();
+        sfxCoin(c.x);
         spawnSparks(c.x, 1.1, c.z, 5, 0xffc830, 4, 2.2);
       }
     }
@@ -1393,7 +1466,7 @@ function main() {
       if (p.z > 8) { p.active = false; p.g.visible = false; continue; }
       if (phase === 'play' && Math.abs(p.x - carX) < 1.6 && Math.abs(p.z) < 2.6) {
         p.active = false; p.g.visible = false;
-        sfxPick();
+        sfxPick(p.kind);
         if (p.kind === 'nitro') { nitro = Math.min(1, nitro + 0.36); addFloat('氮氣 +', '#6cc8ff', 22); }
         else { shieldT = 15; addFloat('護盾啟動！', '#7fffd8', 22); }
         spawnSparks(p.x, 1.1, p.z, 18, p.kind === 'nitro' ? 0x50a0ff : 0x40ffb0, 6, 2.5);
@@ -1885,8 +1958,9 @@ function main() {
     txt('最高分 ' + fmt(best), cx, by - 8, 13, 'rgba(255,220,190,.7)', { weight: 700 });
     const bh = Math.round(clamp(54 * S, 46, 60));
     button('start', cx - bw / 2, by + 8, bw, bh, '開始', 'primary', startRun);
-    button('garage', cx - bw / 2, by + 8 + bh + 12, bw, bh - 8, '車庫', 'ghost', () => { KG.sound('click'); phase = 'garage'; garageIdx = Math.max(0, CARS.findIndex(c => c.id === save.car)); });
-    const hy = Math.min(H - 20, by + 8 + bh * 2 + 40);
+    button('garage', cx - bw / 2, by + 8 + bh + 12, bw, bh - 8, '車庫', 'ghost', () => { sfx('click'); phase = 'garage'; garageIdx = Math.max(0, CARS.findIndex(c => c.id === save.car)); });
+    toggleRow(cx - bw / 2, by + 8 + bh * 2 + 14, bw, 36);
+    const hy = Math.min(H - 20, by + 8 + bh * 2 + 74);
     const hint = touchUsed ? '點左右或滑動換車道 · 上滑加速' : '← → 換車道 · ↑ 氮氣 · Enter 開始 · G 車庫';
     ctx.font = font(600, 12);
     const hw = ctx.measureText(hint).width + 24;
@@ -1908,7 +1982,7 @@ function main() {
       ctx.save(); rr(x, ay - 28, 48, 56, 14); ctx.fillStyle = hover === id ? 'rgba(255,160,80,.4)' : 'rgba(8,10,26,.6)'; ctx.fill();
       ctx.strokeStyle = 'rgba(255,190,130,.6)'; ctx.lineWidth = 1.5; ctx.stroke(); ctx.restore();
       txt(ch, x + 24, ay - 2, 40, '#ffe8d0', { weight: 900 });
-      HITS.push({ id, x, y: ay - 28, w: 48, h: 56, up: () => { garageIdx = (garageIdx + d + CARS.length) % CARS.length; KG.sound('click'); } });
+      HITS.push({ id, x, y: ay - 28, w: 48, h: 56, up: () => { garageIdx = (garageIdx + d + CARS.length) % CARS.length; sfx('click', 1, 1 + d * 0.04); } });
     });
     // 標題
     const hdrY = mf.wide ? 34 : Math.max(36, H * 0.05);
@@ -1969,40 +2043,41 @@ function main() {
       button('buy', px + 24, y, bw, bh, '購買  ' + def.price + ' 金幣', can ? 'gold' : 'ghost', () => buyCar(def), !can);
       if (!can) txt('還差 ' + (def.price - save.coins) + ' 金幣，快去收集吧！', cx, y + bh + 10, 12, 'rgba(255,200,170,.8)', { weight: 700 });
     } else if (using) {
-      button('using', px + 24, y, bw, bh, '使用中 ✓', 'ghost', () => { KG.sound('click'); });
+      button('using', px + 24, y, bw, bh, '使用中 ✓', 'ghost', () => { sfx('click'); });
     } else {
-      button('use', px + 24, y, bw, bh, '選用這台', 'primary', () => { save.car = def.id; persist(); KG.sound('correct'); });
+      button('use', px + 24, y, bw, bh, '選用這台', 'primary', () => { save.car = def.id; persist(); sfx('correct'); });
     }
     y += bh + (owned ? 10 : 22);
     const backH = Math.round(40 * k);
-    button('back', px + 24, Math.min(y, py + ph - backH - 10), bw, backH, '返回', 'ghost', () => { KG.sound('click'); phase = 'title'; setCarModel(curDef(), save.paint); });
+    button('back', px + 24, Math.min(y, py + ph - backH - 10), bw, backH, '返回', 'ghost', () => { sfx('back'); phase = 'title'; setCarModel(curDef(), save.paint); });
   }
   function choosePaint(i) {
-    if (save.paints.includes(i)) { save.paint = i; persist(); KG.sound('pop'); return; }
+    if (save.paints.includes(i)) { save.paint = i; persist(); sfx('pop', 1, jit(0.08)); return; }
     const p = PAINTS[i];
-    if (save.coins < p.price) { KG.sound('wrong'); showToastText('金幣不夠喔！需要 ' + p.price + ' 金幣'); return; }
+    if (save.coins < p.price) { sfx('wrong'); showToastText('金幣不夠喔！需要 ' + p.price + ' 金幣'); return; }
     save.coins -= p.price; save.paints.push(i); save.paint = i; persist();
-    KG.sound('sparkle');
+    sfx('sparkle');
     showToastText('解鎖烤漆：' + p.name);
   }
   function buyCar(def) {
-    if (save.coins < def.price) { KG.sound('wrong'); return; }
+    if (save.coins < def.price) { sfx('wrong'); return; }
     save.coins -= def.price; save.owned.push(def.id); save.car = def.id; persist();
-    KG.sound('win');
+    jingle(J_BUY);
     KG.confetti(W / 2, H * 0.3, 90);
     showToastText('獲得新車：' + def.name);
   }
   function showToastText(t) { KG.toast(t); }
   function drawPause() {
     dim(0.55);
-    const w = Math.min(340, W - 32), h = 270;
+    const w = Math.min(340, W - 32), h = 320;
     const x = (W - w) / 2, y = (H - h) / 2;
     panel(x, y, w, h);
     txt('暫停', W / 2, y + 44, 32, '#ffffff', { weight: 900 });
     txt(km(dist) + ' · ' + fmt(score) + ' 分', W / 2, y + 78, 14, '#ffd0a8', { weight: 700 });
-    button('resume', x + 28, y + 100, w - 56, 48, '繼續', 'primary', togglePause);
-    button('restart', x + 28, y + 158, w - 56, 42, '重新開始', 'ghost', () => { startRun(); });
-    button('quit', x + 28, y + 210, w - 56, 40, '回到標題', 'ghost', () => { KG.sound('click'); toTitle(); });
+    toggleRow(x + 28, y + 100, w - 56, 40);
+    button('resume', x + 28, y + 150, w - 56, 48, '繼續', 'primary', togglePause);
+    button('restart', x + 28, y + 208, w - 56, 42, '重新開始', 'ghost', () => { startRun(); });
+    button('quit', x + 28, y + 260, w - 56, 40, '回到標題', 'ghost', () => { sfx('back'); toTitle(); });
   }
   function drawOver() {
     const a = clamp(stateT / 0.4, 0, 1);
@@ -2034,7 +2109,7 @@ function main() {
       let bx = x + 24;
       if (!continued) { button('cont', bx, yy, bw, 48, '繼續 (50 金幣)', 'gold', continueRun, !canCont); bx += bw + 10; }
       button('retry', bx, yy, bw, 48, '再玩一次', 'primary', startRun); bx += bw + 10;
-      button('title', bx, yy, bw, 48, '回標題', 'ghost', () => { KG.sound('click'); toTitle(); });
+      button('title', bx, yy, bw, 48, '回標題', 'ghost', () => { sfx('back'); toTitle(); });
     } else {
       if (!continued) {
         button('cont', x + 28, yy, w - 56, 50, '繼續衝刺  50 金幣', 'gold', continueRun, !canCont);
@@ -2043,7 +2118,7 @@ function main() {
       }
       button('retry', x + 28, yy, w - 56, 50, '再玩一次', 'primary', startRun);
       yy += 60;
-      button('title', x + 28, yy, w - 56, 42, '回標題', 'ghost', () => { KG.sound('click'); toTitle(); });
+      button('title', x + 28, yy, w - 56, 42, '回標題', 'ghost', () => { sfx('back'); toTitle(); });
     }
     ctx.globalAlpha = 1;
   }
@@ -2106,15 +2181,15 @@ function main() {
     if (k === ' ' || k.startsWith('Arrow')) e.preventDefault();
     if (e.repeat) return;
     if (phase === 'garage') {
-      if (isLeft(k)) { garageIdx = (garageIdx + CARS.length - 1) % CARS.length; KG.sound('click'); }
-      else if (isRight(k)) { garageIdx = (garageIdx + 1) % CARS.length; KG.sound('click'); }
-      else if (k === 'Enter') { const d = CARS[garageIdx]; if (!save.owned.includes(d.id)) buyCar(d); else { save.car = d.id; persist(); KG.sound('correct'); } }
-      else if (k === 'Escape' || k === 'Backspace') { phase = 'title'; setCarModel(curDef(), save.paint); }
+      if (isLeft(k)) { garageIdx = (garageIdx + CARS.length - 1) % CARS.length; sfx('click', 1, 0.96); }
+      else if (isRight(k)) { garageIdx = (garageIdx + 1) % CARS.length; sfx('click', 1, 1.04); }
+      else if (k === 'Enter') { const d = CARS[garageIdx]; if (!save.owned.includes(d.id)) buyCar(d); else { save.car = d.id; persist(); sfx('correct'); } }
+      else if (k === 'Escape' || k === 'Backspace') { sfx('back'); phase = 'title'; setCarModel(curDef(), save.paint); }
       return;
     }
     if (phase === 'title') {
       if (k === 'Enter' || k === ' ') startRun();
-      else if (k === 'g' || k === 'G') { phase = 'garage'; garageIdx = Math.max(0, CARS.findIndex(c => c.id === save.car)); KG.sound('click'); }
+      else if (k === 'g' || k === 'G') { phase = 'garage'; garageIdx = Math.max(0, CARS.findIndex(c => c.id === save.car)); sfx('click'); }
       return;
     }
     if (phase === 'over') {
@@ -2140,7 +2215,6 @@ function main() {
     if (document.hidden) {
       if (phase === 'play' || phase === 'ready') togglePause();
       persist();
-      if (eng.ac && eng.ac.state === 'running') { eng.g.gain.value = 0; eng.ac.suspend(); eng.idle = 1; }
     }
   });
 
@@ -2203,7 +2277,8 @@ function main() {
     sync3D();
     renderFrame();
     drawHUD();
-    engineUpdate(rdt);
+    updateLoops(rdt);
+    updateMusic();
     if (first) { first = false; const m = document.getElementById('msg'); if (m) m.remove(); }
     requestAnimationFrame(frame);
   }
@@ -2245,7 +2320,10 @@ function main() {
     hits: () => HITS.map(h => ({ id: h.id, x: Math.round(h.x + h.w / 2), y: Math.round(h.y + h.h / 2) })),
     peek: () => ({ v: traffic.filter(v => v.active && !v.wreck).map(v => [v.lane, v.tLane, +v.z.toFixed(1), v.T.len, +v.x.toFixed(2)]), c: coins.filter(c => c.active).map(c => [+c.x.toFixed(2), +c.z.toFixed(1)]) }),
     quality: n => { qLevel = clamp(n, 0, QLEVELS.length - 1); perf.cool = 1e9; applyQuality(); },
-    info: () => ({ calls: renderer.info.render.calls, tris: renderer.info.render.triangles })
+    info: () => ({ calls: renderer.info.render.calls, tris: renderer.info.render.triangles }),
+    songs: () => [SONG_TITLE, SONG_RACE],
+    audio: () => ({ nitro: nitroOn, rush: rushOn, loops: loops.on, sfx: sfxOn, music: KG.music.isPlaying(), bpm: KG.music.current() && KG.music.current().bpm }),
+    pause: () => togglePause()
   };
 }
 </script>

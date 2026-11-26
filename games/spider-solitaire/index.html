@@ -131,6 +131,9 @@
   body.short .sgrid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 16px; }
   body.short .sgrid .note { grid-column: 1 / -1; margin: 0 0 6px; }
   body.short .sgrid .frow label { width: 58px; font-size: 12px; }
+  .snd2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 8px; }
+  .snd2 .frow { margin-bottom: 0; gap: 6px; }
+  .snd2 .frow label { width: auto; }
   .dinfo { font-size: 12px; color: var(--mut); letter-spacing: 1px; margin-bottom: 10px; }
   .dinfo b { color: var(--gold); font-family: var(--nf); }
 </style>
@@ -178,6 +181,7 @@
   <div class="card glass">
     <h2>暫停</h2>
     <div class="dinfo" id="pInfo"></div>
+    <div class="snd2"><div class="frow"><label>音樂</label><div class="seg" id="pMus"><button data-v="1">開</button><button data-v="0">關</button></div></div><div class="frow"><label>音效</label><div class="seg" id="pSfx"><button data-v="1">開</button><button data-v="0">關</button></div></div></div>
     <div class="acts col">
       <button class="gbtn pri" id="pResume">繼續</button>
       <button class="gbtn" id="pRestart">重玩本局</button>
@@ -199,7 +203,7 @@
     <div class="frow"><label>空列發牌</label><div class="seg" id="sEmpty"><button data-v="0">禁止（標準）</button><button data-v="1">允許</button></div></div>
     <div class="frow"><label>牌背</label><div class="backs" id="sBack"></div></div>
     <div class="frow"><label>音效</label><div class="seg" id="sSound"><button data-v="1">開</button><button data-v="0">關</button></div></div>
-    <div class="frow"><label>背景音樂</label><div class="seg" id="sMusic"><button data-v="1">開</button><button data-v="0">關</button></div></div>
+    <div class="frow"><label>音樂</label><div class="seg" id="sMusic"><button data-v="1">開</button><button data-v="0">關</button></div></div>
     </div>
     <div class="acts" style="margin-top:10px"><button class="gbtn pri" id="sClose">完成</button></div>
   </div>
@@ -232,6 +236,7 @@
 </div>
 
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
 <script>
 /*SOLVER-START*/
 function SSolverFactory() {
@@ -539,111 +544,117 @@ function SSolverFactory() {
   const SUITN = { 1: '單色', 2: '雙色', 4: '四色' };
 
   /* =========================================================
-   * 音效（WebAudio，遵守靜音）
+   * 音效與音樂（共用引擎 kg-music.js）
    * ========================================================= */
-  const AU = { c: null, m: null, mus: null, nb: null };
-  function A() {
-    if (!AU.c) {
-      const AC = window.AudioContext || window.webkitAudioContext;
-      if (!AC) return null;
-      const c = AU.c = new AC();
-      AU.m = c.createGain(); AU.m.gain.value = 0.9; AU.m.connect(c.destination);
-      AU.mus = c.createGain(); AU.mus.gain.value = 1; AU.mus.connect(AU.m);
-      const len = c.sampleRate, b = c.createBuffer(1, len, c.sampleRate), d = b.getChannelData(0);
-      for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
-      AU.nb = b;
-    }
-    if (AU.c.state === 'suspended') AU.c.resume();
-    return AU.c;
-  }
-  window.addEventListener('pointerdown', () => { A(); }, { capture: true });
-  window.addEventListener('keydown', () => { A(); }, { capture: true });
-  function tone(f, dur, type, vol, delay, o) {
-    if (KG.isMuted()) return;
-    const c = A(); if (!c) return;
-    o = o || {};
-    const t = c.currentTime + (delay || 0);
-    const os = c.createOscillator(), g = c.createGain();
-    os.type = type || 'sine';
-    os.frequency.setValueAtTime(f, t);
-    if (o.slide) os.frequency.exponentialRampToValueAtTime(o.slide, t + dur);
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(vol, t + (o.att || 0.006));
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    os.connect(g); g.connect(o.dest || AU.m);
-    os.start(t); os.stop(t + dur + 0.05);
-  }
-  function nz(dur, vol, delay, type, freq, q, dest) {
-    if (KG.isMuted()) return;
-    const c = A(); if (!c) return;
-    const t = c.currentTime + (delay || 0);
-    const src = c.createBufferSource(); src.buffer = AU.nb;
-    const f = c.createBiquadFilter(); f.type = type || 'bandpass'; f.frequency.value = freq || 1500; f.Q.value = q || 0.8;
-    const g = c.createGain();
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(vol, t + 0.004);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    src.connect(f); f.connect(g); g.connect(dest || AU.m);
-    src.start(t, Math.random() * 0.5, dur + 0.05);
-  }
-  const PENTA = [0, 2, 3, 5, 7, 8, 10, 12, 14, 15, 17, 19, 20];
-  const SFX = {
-    flick(d) { nz(0.06, 0.3, d, 'bandpass', 3400, 0.8); nz(0.025, 0.1, (d || 0) + 0.03, 'highpass', 6200); },
-    slide(d) { nz(0.1, 0.2, d, 'bandpass', 1700, 0.6); tone(170, 0.07, 'sine', 0.07, (d || 0) + 0.05, { slide: 110 }); },
-    flip(d) { nz(0.045, 0.2, d, 'bandpass', 2600, 1.2); tone(880, 0.08, 'sine', 0.025, d); },
-    chime(r, d) {
-      const f = 440 * Math.pow(2, PENTA[r] / 12);
-      tone(f, 0.6, 'sine', 0.07, d); tone(f * 2, 0.28, 'sine', 0.022, d); tone(f * 3, 0.12, 'triangle', 0.01, d);
-    },
-    shuffle() {
-      for (let i = 0; i < 24; i++) nz(0.022, 0.16, i * 0.021, 'bandpass', 2600 + Math.random() * 1600, 0.9);
-      nz(0.22, 0.12, 0.56, 'lowpass', 1100, 0.7);
-    },
-    bad() { tone(150, 0.14, 'sine', 0.16, 0, { slide: 95 }); nz(0.06, 0.12, 0, 'lowpass', 500, 0.7); },
-    hint() { tone(1318.5, 0.35, 'sine', 0.06); tone(1760, 0.45, 'sine', 0.05, 0.09); },
-    undo() { nz(0.12, 0.13, 0, 'bandpass', 1300, 0.7); tone(620, 0.12, 'sine', 0.04, 0, { slide: 420 }); },
-    click() { tone(1100, 0.04, 'triangle', 0.05); },
-    complete(d) {
-      d = d || 0;
-      [0, 4, 7, 12, 16].forEach((s, i) => tone(523.25 * Math.pow(2, s / 12), 0.5, 'triangle', 0.06, d + 0.5 + i * 0.07));
-      tone(1046.5, 1.2, 'sine', 0.04, d + 0.9); tone(1568, 1.0, 'sine', 0.025, d + 0.95);
-    },
-    bounce(v) { tone(260 + Math.random() * 300, 0.09, 'sine', 0.03 * v, 0, { slide: 140 }); },
-    win() {
-      const seq = [440, 523, 659, 880, 659, 880, 1047, 1319];
-      seq.forEach((f, i) => { tone(f, 0.5, 'triangle', 0.07, i * 0.11); tone(f * 2, 0.2, 'sine', 0.02, i * 0.11); });
-      [440, 554, 659, 880].forEach(f => tone(f, 1.8, 'sine', 0.05, 0.95));
-      tone(1760, 1.2, 'sine', 0.025, 1.0);
-    }
+  const SFX_KEY = 'spider:sfx';
+  let sfxOn = KG.store.get(SFX_KEY, true) !== false;
+  // 三拍子：每小節 12 格（十六分音符），bpm 要乘 4/3 才是每分鐘的四分音符數
+  // 標題：〈月光蛛網〉D 小調圓舞曲，♩=84，音樂盒鐘琴 + 拇指琴「蹦－恰－恰」
+  const SONG_TITLE = {
+    bpm: 112, steps: 12, swing: 0,
+    chords: ['Dm', 'Gm', 'C', 'F', 'Bb', 'Gm', 'A7', 'Dm'],
+    tracks: [
+      { inst: 'sub', chord: 'R...........', vol: 0.5 },
+      { inst: 'kalimba', chord: '....3...3...', vol: 0.32 },
+      { inst: 'kalimba', chord: '....5...5...', vol: 0.3 },
+      { inst: 'pad', chord: 'hold', vol: 0.2 },
+      { inst: 'bell', vol: 0.75, seq: [
+        'A4 - D5 - F5 -', 'G5 - - - Bb4 D5', 'E5 - - - C5 E5', 'F5 - - - - .',
+        'D5 - F5 - Bb5 -', 'A5 - G5 - F5 -', 'E5 - C#5 - A4 -', 'D5 - - - - .'] }
+    ]
   };
-  // 背景音樂：小調慢板（撥奏貝斯 + 柔和和弦 + 鋼片琴點綴）
-  const PROG = [
-    { v: [57, 60, 64, 71], walk: [45, 52, 48, 52] },
-    { v: [53, 57, 60, 64], walk: [41, 48, 45, 48] },
-    { v: [50, 53, 57, 60], walk: [38, 45, 41, 45] },
-    { v: [52, 56, 59, 62], walk: [40, 47, 44, 47] }
-  ];
-  const CEL = [69, 72, 74, 76, 79, 81, 84];
-  const mf = m => 440 * Math.pow(2, (m - 69) / 12);
-  let musT = 0, musBeat = 0;
-  function musicOn() { return settings.music && !KG.isMuted() && !document.hidden && !paused; }
-  function musicTick() {
-    const c = AU.c;
-    if (!c || !musicOn()) { if (c) musT = c.currentTime + 0.2; return; }
-    const beat = 60 / 66;
-    if (musT < c.currentTime) musT = c.currentTime + 0.1;
-    while (musT < c.currentTime + 0.6) {
-      const d = musT - c.currentTime, bar = Math.floor(musBeat / 4) % 4, b = musBeat % 4, ch = PROG[bar];
-      tone(mf(ch.walk[b]), beat * 0.55, 'triangle', 0.07, d, { dest: AU.mus, att: 0.01 });
-      if (b === 0 || (b === 2 && Math.random() < 0.5)) {
-        ch.v.forEach((m, i) => tone(mf(m), b === 0 ? 2.8 : 1.3, 'sine', b === 0 ? 0.022 : 0.013, d + i * 0.03, { dest: AU.mus, att: 0.05 }));
-      }
-      if (Math.random() < 0.3) tone(mf(CEL[(Math.random() * CEL.length) | 0]), 0.9, 'sine', 0.016, d + beat * 0.5, { dest: AU.mus });
-      if (b === 1 || b === 3) nz(0.12, 0.012, d, 'highpass', 6500, 0.5, AU.mus);
-      musT += beat; musBeat++;
-    }
+  // 遊戲中：〈織網的夜〉G 小調室內樂圓舞曲，♩=108，弦樂 + 木琴主旋律 + 撥奏低音；收得越多組，鐘琴越亮
+  const SONG_PLAY = {
+    bpm: 144, steps: 12, swing: 0,
+    chords: ['Gm', 'Cm', 'F', 'Bb', 'Eb', 'Cm', 'D7', 'Gm'],
+    layers: { web: false },
+    tracks: [
+      { inst: 'bass', chord: 'R.......5...', vol: 0.42 },
+      { inst: 'strings', chord: '....3...3...', vol: 0.3 },
+      { inst: 'strings', chord: '....5...5...', vol: 0.28 },
+      { inst: 'marimba', vol: 0.62, seq: [
+        'D5 - G5 - Bb5 -', 'A5 - G5 - Eb5 -', 'F5 - - - C5 D5', 'D5 - - - - .',
+        'Eb5 - G5 - Bb5 -', 'G5 - Eb5 - C5 -', 'F#5 - A5 - D5 -', 'G5 - - - - .',
+        'Bb4 - D5 - G5 -', 'G5 - - F5 Eb5 -', 'C5 - F5 - A5 -', 'Bb4 - - - - .',
+        'G5 - F5 - Eb5 -', 'C5 - D5 - Eb5 -', 'D5 - C5 - A4 -', 'G4 - - - - .'] },
+      // 收牌三組以上：鐘琴分解和弦 + 沙鈴
+      { inst: 'bell', arp: 'updown', rate: 2, oct: 5, span: 1, vol: 0.32, layer: 'web' },
+      { inst: 'shaker', pat: '..x...x...x.', vol: 0.42, layer: 'web' }
+    ]
+  };
+  const J_WIN = { bpm: 140, inst: 'marimba', vol: 0.4, notes: [['D5', 1], ['G5', 1], ['Bb5', 1], ['D6', 2], ['C6', 1], ['G5+B5+D6', 4]], bass: [['G2', 4, 0], ['D2', 2, 4], ['G2', 4, 6]], bassVol: 0.13 };
+  const J_BEST = { bpm: 150, inst: 'bell', vol: 0.26, notes: [['G5', 1], ['B5', 1], ['D6', 1], ['G6', 3]] };
+
+  const S = KG.sfx, M = KG.music;
+  M.setVolume(0.55);  // 安靜的曲風，整體拉高一點
+  let DL = 0;                       // 這一聲往後排多久（秒）
+  const at = t => DL + (t || 0);
+  S.define('sp_flick', (p, s) => { s.noise(0.055, { vol: 0.24, freq: 3600 * p, q: 0.8, delay: at() }); s.noise(0.02, { vol: 0.07, freq: 6800 * p, q: 1.1, delay: at(0.028) }); });
+  S.define('sp_pick', (p, s) => { s.noise(0.05, { vol: 0.15, freq: 2600 * p, sweep: 4600 * p, q: 1, delay: at() }); });
+  S.define('sp_slide', (p, s) => { s.noise(0.13, { vol: 0.16, freq: 2000 * p, sweep: 800 * p, q: 0.6, delay: at() }); });
+  S.define('sp_snap', (p, s) => { s.noise(0.03, { vol: 0.19, freq: 2100 * p, q: 1.4, delay: at() }); s.tone(180 * p, 0.08, { vol: 0.12, slide: 110 * p, delay: at() }); });
+  S.define('sp_flip', (p, s) => { s.noise(0.045, { vol: 0.18, freq: 2600 * p, q: 1.2, delay: at() }); s.tone(880 * p, 0.08, { vol: 0.025, delay: at() }); });
+  // 收一組：G 小調音階一路往上的玻璃鈴
+  S.define('sp_chime', (p, s) => { const f = 392 * p; s.tone(f, 0.6, { vol: 0.07, delay: at() }); s.tone(f * 2, 0.28, { vol: 0.022, delay: at() }); s.tone(f * 3, 0.12, { type: 'triangle', vol: 0.01, delay: at() }); });
+  S.define('sp_complete', (p, s) => {
+    [0, 4, 7, 12, 16].forEach((k, i) => s.tone(392 * p * Math.pow(2, k / 12), 0.5, { type: 'triangle', vol: 0.06, delay: at(0.5 + i * 0.07) }));
+    s.tone(784 * p, 1.2, { vol: 0.04, delay: at(0.9) }); s.tone(1175 * p, 1.0, { vol: 0.025, delay: at(0.95) });
+    s.noise(0.5, { vol: 0.05, freq: 5000 * p, sweep: 9000, q: 2, delay: at(0.5) });
+  });
+  S.define('sp_shuffle', (p, s) => {
+    let t = 0;
+    for (let i = 0; i < 26; i++) { s.noise(0.02, { vol: 0.15, freq: (2800 + Math.random() * 1500) * p, q: 0.9, delay: at(t) }); t += 0.028 - i * 0.0006; }
+    s.noise(0.22, { vol: 0.12, freq: 1200 * p, sweep: 450, type: 'lowpass', q: 0.7, delay: at(t + 0.05) });
+  });
+  S.define('sp_bad', (p, s) => { s.tone(140 * p, 0.15, { vol: 0.16, slide: 90 * p }); s.noise(0.06, { vol: 0.12, freq: 500, type: 'lowpass' }); });
+  S.define('sp_hint', (p, s) => { s.tone(1175 * p, 0.35, { vol: 0.06 }); s.tone(1568 * p, 0.45, { vol: 0.05, delay: 0.09 }); });
+  S.define('sp_undo', (p, s) => { s.noise(0.12, { vol: 0.13, freq: 900 * p, sweep: 1800 * p, q: 0.7 }); s.tone(587 * p, 0.12, { vol: 0.04, slide: 392 * p }); });
+  S.define('sp_tap', (p, s) => { s.tone(988 * p, 0.045, { type: 'triangle', vol: 0.06 }); s.noise(0.015, { vol: 0.05, freq: 4200 * p, q: 2 }); });
+  S.define('sp_bounce', (p, s) => { s.tone((260 + Math.random() * 300) * p, 0.09, { vol: 0.08, slide: 140 * p }); s.noise(0.03, { vol: 0.05, freq: 1500 * p, q: 1.5 }); });
+
+  const SO = { vol: 1, pitch: 1, pan: 0 }, lastS = Object.create(null);
+  // 同一種聲音最多每 40 ms 一次（用排定的時間比，所以一次排好的一串不會被吃掉）
+  function sfx(name, vol, pitch, pan, delay, gap) {
+    if (!sfxOn || KG.isMuted()) return;
+    const tm = performance.now() + (delay || 0) * 1000;
+    if (Math.abs(tm - (lastS[name] || -1e9)) < (gap || 40)) return;
+    lastS[name] = tm;
+    SO.vol = vol == null ? 1 : vol; SO.pitch = pitch || 1; SO.pan = pan || 0; DL = delay || 0;
+    S.play(name, SO);
+    DL = 0;
   }
-  setInterval(musicTick, 150);
+  const jit = a => 1 + (Math.random() - 0.5) * 2 * (a == null ? 0.04 : a);
+  const panX = x => x == null || !W ? 0 : clamp(x / W * 2 - 1, -1, 1) * 0.55;
+  const colX = p => LY && LY.t[p] ? LY.t[p].x + LY.w / 2 : null;
+  function jingle(def) { if (sfxOn) M.jingle(def); }
+  const MINOR = [0, 2, 3, 5, 7, 8, 10, 12, 14, 15, 17, 19, 20];
+  const SFX = {
+    flick(d, x) { sfx('sp_flick', 1, jit(0.05), panX(x), d); },
+    pick(x) { sfx('sp_pick', 1, jit(0.05), panX(x)); },
+    slide(d, x) { sfx('sp_slide', 1, jit(0.05), panX(x), d); sfx('sp_snap', 1, jit(0.05), panX(x), (d || 0) + 0.1); },
+    flip(d, x) { sfx('sp_flip', 1, jit(0.05), panX(x), d); },
+    chime(r, d, x) { sfx('sp_chime', 1, Math.pow(2, MINOR[r] / 12), panX(x), d, 25); },
+    complete(d, x) { sfx('sp_complete', 1, 1, panX(x), Math.max(0, d || 0), 200); },
+    shuffle() { sfx('sp_shuffle', 1, jit(0.03)); },
+    bad() { sfx('sp_bad', 1, jit(0.04), 0, 0, 120); },
+    hint() { sfx('sp_hint'); },
+    undo() { sfx('sp_undo', 1, jit(0.04)); },
+    click() { sfx('sp_tap', 1, jit(0.05)); },
+    bounce(v, x) { sfx('sp_bounce', v, jit(0.06), panX(x), 0, 70); },
+    win() { M.stop(0.6); jingle(J_WIN); if (G && G.nb && (G.nb.time || G.nb.score)) setTimeout(() => jingle(J_BEST), 2100); }
+  };
+  function musicTitle() { M.play(SONG_TITLE); }
+  function musicPlay() {
+    if (M.current() !== SONG_PLAY) M.play(SONG_PLAY);
+    M.setLayer('web', false); M.setTempo(1);
+  }
+  // 收了三組加鐘琴；收了六組（最後衝刺）稍微加快
+  function musicMood() {
+    if (!G || G.won || M.current() !== SONG_PLAY) return;
+    const n = G.found.length;
+    M.setLayer('web', n >= 3);
+    M.setTempo(n >= 6 ? 1.06 : 1);
+  }
 
   /* =========================================================
    * 規則引擎
@@ -1226,6 +1237,7 @@ function SSolverFactory() {
     ver++;
     phase = 'play'; paused = false;
     showHUD(true);
+    musicPlay();
     const sx = LY.stock.x + 4 * LY.stock.o, sy = LY.stock.y;
     for (const v of VS) { v.x = v.fx = v.tx = sx; v.y = v.fy = v.ty = sy; v.anim = false; v.face = false; v.fto = false; v.ft = null; }
     const delays = {};
@@ -1234,7 +1246,7 @@ function SSolverFactory() {
     if (!instant) {
       busy = true;
       SFX.shuffle();
-      for (let i = 0; i < 54; i += 3) SFX.flick(0.2 + i * 0.022);
+      for (let i = 0; i < 54; i += 3) SFX.flick(0.2 + i * 0.022, colX(i % 10));
       clearTimeout(busyTimer);
       busyTimer = setTimeout(() => { busy = false; }, (0.2 + 54 * 0.022 + 0.4) * 1000);
     }
@@ -1294,6 +1306,7 @@ function SSolverFactory() {
     ver++;
     if (!G.won && isWon()) { G.won = true; onWin(); }
     updateHUD();
+    musicMood();
     if (!G.won) saveGame(); else KG.store.set('spider:save', null);
     if (!G.won && orderedAll()) { const v0 = ver; later(() => { if (v0 === ver && phase === 'play' && !paused) autoComplete(); }, instant ? 0 : 520); }
   }
@@ -1321,6 +1334,7 @@ function SSolverFactory() {
     G.tab.forEach((a, p) => a.forEach((c, i) => { delays[c] = (p + i * 10) * 0.004; }));
     sync({ delays, dur: 0.3 });
     SFX.shuffle();
+    musicPlay();
     afterChange();
     return true;
   }
@@ -1337,9 +1351,9 @@ function SSolverFactory() {
       for (let j = 0; j < 13; j++) delays[res.cards[12 - j]] = b0 + j * 0.035;
       if (res.flipped >= 0) delays[res.flipped] = b0 + 0.55;
       if (!quiet && !instant) {
-        for (let j = 0; j < 13; j++) SFX.chime(j, b0 + j * 0.035);
-        SFX.complete(b0);
-        const fp = foundPos(res.slot);
+        const fp = foundPos(res.slot), fx = fp.x + LY.w / 2;
+        for (let j = 0; j < 13; j++) SFX.chime(j, b0 + j * 0.035, fx);
+        SFX.complete(b0, fx);
         later(() => { sparkle(fp.x + LY.w / 2, fp.y + LY.h / 2, 22, 170); }, (b0 + 0.75) * 1000);
         later(() => showMsg('完成一組 ' + SL[su(V(res.cards[0]))] + ' K→A　<b>+100</b>', 1600), b0 * 1000);
       }
@@ -1355,7 +1369,7 @@ function SSolverFactory() {
     hist.push(snap());
     markStarted();
     const r = applyMove(p, idx, q);
-    if (!quiet) { SFX.slide(); if (r.flipped >= 0) SFX.flip(0.12); }
+    if (!quiet) { SFX.slide(0, colX(q)); if (r.flipped >= 0) SFX.flip(0.12, colX(p)); }
     finishStep([q], {}, 0.08, 0.3, quiet);
     return true;
   }
@@ -1367,7 +1381,7 @@ function SSolverFactory() {
     hist.push(snap());
     markStarted();
     const cards = applyDeal(), delays = {};
-    cards.forEach((c, i) => { delays[c] = i * 0.05; if (!instant) SFX.flick(i * 0.05); });
+    cards.forEach((c, i) => { delays[c] = i * 0.05; if (!instant) SFX.flick(i * 0.05, colX(i)); });
     tapCyc = null;
     finishStep([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], delays, 0.1, 0.8, false);
     return true;
@@ -1381,6 +1395,7 @@ function SSolverFactory() {
     for (const v of VS) { v.gone = false; v.next = null; }
     trailOn = false; winFx = null;
     SFX.undo();
+    if (M.current() !== SONG_PLAY) musicPlay();
     sync({ flipDelay: 0 });
     afterChange();
     return true;
@@ -1410,14 +1425,14 @@ function SSolverFactory() {
       if (!fullRun(col)) return;
       const res = completeRun(col);
       res.cards.forEach((c, j) => { delays[c] = k * gap + (12 - j) * 0.025; });
-      if (!instant) SFX.complete(k * gap - 0.4);
+      if (!instant) { const fp = foundPos(res.slot); SFX.complete(k * gap - 0.4, fp.x + LY.w / 2); }
       k++;
     };
     for (const m of moves) {
       if (m[0] === -1) {
         if (dealBlock()) break;
         const cs = applyDeal();
-        cs.forEach((c, i) => { delays[c] = k * gap + i * 0.03; });
+        cs.forEach((c, i) => { delays[c] = k * gap + i * 0.03; if (!instant && i % 2 === 0) SFX.flick(k * gap + i * 0.03, colX(i)); });
         k++;
         for (let i = 0; i < 10; i++) comp(i);
         continue;
@@ -1426,7 +1441,7 @@ function SSolverFactory() {
       if (!legal(p, idx, q)) break;
       const r = applyMove(p, idx, q);
       r.cards.forEach(c => { delays[c] = k * gap; });
-      if (!instant && k < 60) SFX.slide(k * gap);
+      if (!instant && k < 60) SFX.slide(k * gap, colX(q));
       k++;
       comp(q);
     }
@@ -1546,7 +1561,7 @@ function SSolverFactory() {
       a.t += dt; a.vy += g * dt; a.x += a.vx * dt; a.y += a.vy * dt; a.a += a.va * dt;
       if (a.y + h > H) {
         a.y = H - h; a.vy = -Math.abs(a.vy) * 0.72; a.vx *= 0.9; a.va *= -0.8; a.b++;
-        if (F.bt <= 0 && Math.abs(a.vy) > 200) { SFX.bounce(0.8); F.bt = 0.09; sparkle(a.x + w / 2, H - 4, 3, 90); }
+        if (F.bt <= 0 && Math.abs(a.vy) > 200) { SFX.bounce(clamp(Math.abs(a.vy) / (900 * sc), 0.3, 1), a.x + w / 2); F.bt = 0.09; sparkle(a.x + w / 2, H - 4, 3, 90); }
       }
       if (a.x < 0) { a.x = 0; a.vx = Math.abs(a.vx) * 0.85; }
       if (a.x + w > W) { a.x = W - w; a.vx = -Math.abs(a.vx) * 0.85; }
@@ -1572,6 +1587,7 @@ function SSolverFactory() {
     $('wStats').innerHTML = rows.map(r => '<span>' + r[0] + '</span><span>' + r[1] + '</span>').join('');
     $('wSub').textContent = G.kind === 'daily' ? '每日挑戰完成 · ' + SUITN[G.suits] : SUITN[G.suits] + ' · 八組全部收齊';
     $('winOv').classList.remove('hide');
+    musicTitle();
   }
   function hideWin() { $('winOv').classList.add('hide'); clearTimeout(winTimer); }
 
@@ -1891,7 +1907,7 @@ function SSolverFactory() {
       drag = { p: h.p, idx: h.idx, cards, opts: destinations(h.p, h.idx), active: true, target: null, px: p.x, py: p.y, base: cards.map(c => ({ dx: VS[c].tx - down.x, dy: VS[c].ty - down.y })) };
       for (const c of cards) { const v = VS[c]; v.drag = true; v.anim = false; v.next = null; v.x = v.tx; v.y = v.ty; }
       hintFx = null;
-      SFX.flick();
+      SFX.pick(p.x);
     }
     drag.px = p.x; drag.py = p.y;
     drag.cards.forEach((c, i) => { const v = VS[c]; v.lx = p.x + drag.base[i].dx; v.ly = p.y + drag.base[i].dy; });
@@ -1975,8 +1991,12 @@ function SSolverFactory() {
   seg('sSuits', () => settings.suits, v => { settings.suits = +v; saveSettings(); if (settings.deal === 'solvable') pregen(settings.suits); });
   seg('sDeal', () => settings.deal, v => { settings.deal = v; saveSettings(); });
   seg('sEmpty', () => settings.emptyDeal ? 1 : 0, v => { settings.emptyDeal = v === '1'; saveSettings(); hintList = null; if (G) updateHUD(); });
-  seg('sSound', () => KG.isMuted() ? 0 : 1, v => { KG.setMuted(v === '0'); });
-  seg('sMusic', () => settings.music ? 1 : 0, v => { settings.music = v === '1'; saveSettings(); });
+  const setSfx = v => { sfxOn = v === '1'; KG.store.set(SFX_KEY, sfxOn); };
+  const setMus = v => { M.setEnabled(v === '1'); };
+  seg('sSound', () => sfxOn ? 1 : 0, setSfx);
+  seg('sMusic', () => M.isEnabled() ? 1 : 0, setMus);
+  seg('pSfx', () => sfxOn ? 1 : 0, setSfx);
+  seg('pMus', () => M.isEnabled() ? 1 : 0, setMus);
   seg('stTab', () => statTab, v => { statTab = +v; renderStats(); });
   const backs = $('sBack');
   BACKS.forEach((b, i) => {
@@ -2008,14 +2028,17 @@ function SSolverFactory() {
       $('title').classList.remove('hide');
       trailOn = false; winFx = null; clearLater();
       updateTitle();
+      musicTitle();
       titleAnchor = null;
       dirty = 3;
     } else $('title').classList.add('hide');
   }
   function togglePause(v) {
     if (phase !== 'play') return;
+    if (v && !paused) M.pause(); else if (!v && paused) M.resume();
     paused = v;
     $('pauseOv').classList.toggle('hide', !v);
+    if (v) syncAllSegs();
     if (v && G) {
       $('pInfo').innerHTML = (G.kind === 'daily' ? '每日挑戰 <b>' + G.daily.slice(4, 6) + '/' + G.daily.slice(6) + '</b> · ' : '') + SUITN[G.suits] + ' · ' + (G.kind === 'random' ? '隨機牌局' : '保證有解') + ' · 已收 <b>' + G.found.length + '/8</b> · 牌局 <b>#' + G.seed + '</b>';
       saveGame();
@@ -2054,7 +2077,7 @@ function SSolverFactory() {
   on('pNew', () => { togglePause(false); askNew(); });
   on('pSet', () => { SFX.click(); openSettings(); });
   on('pStats', () => { SFX.click(); openStats(); });
-  on('pTitle', () => { paused = false; $('pauseOv').classList.add('hide'); saveGame(); showTitle(true); });
+  on('pTitle', () => { SFX.click(); paused = false; $('pauseOv').classList.add('hide'); saveGame(); showTitle(true); });
   on('sClose', () => { SFX.click(); $('setOv').classList.add('hide'); if (phase === 'title') updateTitle(); });
   on('stClose', () => { SFX.click(); $('statOv').classList.add('hide'); });
   on('stReset', () => {

@@ -534,9 +534,22 @@
     /** 自己加音效：KG.sfx.define('zap', function (p, s) { s.tone(...); s.noise(...); }) */
     define: function (name, fn) { LIB[name] = function (p) { fn(p, KG.sfx); }; },
     list: function () { return Object.keys(LIB); },
-    /** 持續的聲音（引擎、風聲、水流）：h = loop('engine'|'wind'|'water'|'hum'); h.set(0~1); h.stop() */
+    /** 持續的聲音（引擎、風聲、水流）：h = loop('engine'|'wind'|'water'|'hum'); h.set(0~1, 音量); h.stop(); h.ready()
+     *  第一次點擊前就呼叫也沒關係：等可以出聲後的第一次 set() 才會真的開始 */
     loop: function (kind) {
-      var a = getCtx(); if (!a) return { set: function () {}, stop: function () {} };
+      // 使用者還沒點過畫面時還不能建立聲音：先回傳一個外殼，之後第一次 set() 時才真的建立
+      var inner = null, stopped = false;
+      function ensure() { if (!inner && !stopped && getCtx()) inner = makeLoop(kind); return inner; }
+      ensure();
+      return {
+        set: function (x, v) { var h = ensure(); if (h) h.set(x, v); },
+        stop: function () { stopped = true; if (inner) inner.stop(); },
+        ready: function () { return !!ensure(); }
+      };
+    },
+    setVolume: function (v) { sfxVol = Math.max(0, Math.min(1.5, v)); if (sfxBus) sfxBus.gain.value = sfxVol; }
+  };
+  function makeLoop(kind) {
       var g = A.createGain(); g.gain.value = 0.0001; g.connect(loopBus);
       var nodes = [], f = null, base = 1;
       if (kind === 'engine' || kind === 'hum') {
@@ -562,7 +575,5 @@
           nodes.forEach(function (n) { try { n.stop(t + 0.3); } catch (e) { /* 忽略 */ } });
         }
       };
-    },
-    setVolume: function (v) { sfxVol = Math.max(0, Math.min(1.5, v)); if (sfxBus) sfxBus.gain.value = sfxVol; }
-  };
+  }
 })();

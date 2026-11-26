@@ -157,6 +157,7 @@
     <div class="frow" id="rowDiff"><label>難度</label><div class="seg" id="segDiff"><button data-v="easy">入門</button><button data-v="normal">普通</button><button data-v="hard">困難</button></div></div>
     <div class="frow" id="rowFirst"><label>先手</label><div class="seg" id="segFirst"><button data-v="me">我先翻</button><button data-v="ai">電腦先</button><button data-v="rand">隨機</button></div></div>
     <div class="frow"><label>規則</label><div class="chips"><button class="chip" id="oChain"><i></i>連吃</button><button class="chip" id="oRook"><i></i>車直衝</button><button class="chip" id="oWarn"><i></i>威脅提示</button></div></div>
+    <div class="frow"><label>聲音</label><div class="seg tog" id="tSnd"><button data-k="m">音樂 開</button><button data-k="s">音效 開</button></div></div>
     <div class="tbtns"><button class="gbtn pri" id="tStart">開始對局</button><button class="gbtn hide" id="tResume">繼續上局</button><button class="gbtn" id="tRules">規則說明</button></div>
     <div class="rec" id="tRec"></div>
   </div>
@@ -198,7 +199,7 @@
 <div id="pauseOv" class="ov hide">
   <div class="card glass pcard">
     <h2>暫停</h2>
-    <div class="frow"><label>背景音樂</label><div class="seg" id="pMusic"><button data-v="on">開</button><button data-v="off">關</button></div></div>
+    <div class="frow"><label>聲音</label><div class="seg tog" id="pSnd"><button data-k="m">音樂 開</button><button data-k="s">音效 開</button></div></div>
     <div class="frow"><label>威脅提示</label><div class="seg" id="pWarn"><button data-v="on">顯示</button><button data-v="off">隱藏</button></div></div>
     <div class="stat" id="pStats"></div>
     <div class="acts">
@@ -227,6 +228,7 @@
   </div>
 </div>
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
 <script>
 /*ENGINE-START*/
 function DCEngine() {
@@ -592,7 +594,7 @@ function DCEngine() {
   for (const k of LV_KEYS) if (!stats[k]) stats[k] = { w: 0, l: 0, d: 0 };
   if (!stats.pvp) stats.pvp = 0;
   if (!stats.streak) stats.streak = 0;
-  const prefs = Object.assign({ mode: 'ai', level: 'normal', first: 'me', chain: false, rook: false, warn: true, music: true }, store.get('dc:prefs', {}));
+  const prefs = Object.assign({ mode: 'ai', level: 'normal', first: 'me', chain: false, rook: false, warn: true }, store.get('dc:prefs', {}));
   function savePrefs() { store.set('dc:prefs', prefs); }
   function saveStats() { store.set('dc:stats', stats); }
 
@@ -1072,40 +1074,145 @@ function DCEngine() {
     animating = draw(t);
   }
 
-  // ---------------- 音效 ----------------
-  const snd = {
-    select() { KG.note(1250, 0.03, 'triangle', 0.05); KG.note(520, 0.05, 'sine', 0.08, 0, 420); },
-    flip(red) { KG.note(260, 0.05, 'triangle', 0.18, 0, 520); KG.note(1700, 0.02, 'square', 0.03, 0.02); KG.note(red ? 740 : 494, 0.22, 'sine', 0.09, 0.2); KG.note(red ? 1110 : 740, 0.18, 'sine', 0.035, 0.22); },
-    clack() { KG.note(1900, 0.02, 'square', 0.035); KG.note(780, 0.06, 'triangle', 0.22, 0, 260); KG.note(190, 0.09, 'sine', 0.28, 0, 110); },
-    capture() { KG.sound('hit'); KG.note(140, 0.18, 'sine', 0.32, 0, 60); KG.note(1500, 0.03, 'square', 0.05, 0.015); KG.note(620, 0.07, 'triangle', 0.18, 0.02, 220); },
-    cannon() { KG.note(300, 0.25, 'sine', 0.14, 0, 700); KG.sound('whoosh'); },
-    chain() { [988, 1319, 1568].forEach((f, i) => KG.note(f, 0.12, 'triangle', 0.08, i * 0.06)); },
-    bad() { KG.note(240, 0.08, 'triangle', 0.08, 0, 180); },
-    warn() { KG.note(880, 0.08, 'sine', 0.05); KG.note(660, 0.1, 'sine', 0.05, 0.09); },
-    win() { [392, 440, 523, 587, 659, 784].forEach((f, i) => KG.note(f, 0.55, 'triangle', 0.12, i * 0.13)); KG.note(1047, 1.4, 'sine', 0.09, 0.8); KG.note(523, 1.6, 'sine', 0.06, 0.8); },
-    lose() { [440, 392, 330, 294, 220].forEach((f, i) => KG.note(f, 0.7, 'triangle', 0.11, i * 0.22)); KG.note(147, 1.6, 'sine', 0.08, 1.0); },
-    draw() { [330, 392, 330, 294].forEach((f, i) => KG.note(f, 0.6, 'triangle', 0.1, i * 0.2)); }
-  };
-  // 古箏風背景音樂（五聲音階）
-  const SCALE = [164.81, 185.0, 220.0, 246.94, 277.18, 329.63, 369.99, 440.0, 493.88, 554.37];
-  let musicT = 0, mIdx = 5, mStep = 0;
-  function musicTick() {
-    clearTimeout(musicT);
-    if (!prefs.music || document.hidden || S.paused) { musicT = setTimeout(musicTick, 800); return; }
-    if (!KG.isMuted()) {
-      mStep++;
-      if (mStep % 16 === 1) KG.note(82.41, 4.5, 'sine', 0.05);
-      if (mStep % 16 === 9) KG.note(110, 4, 'sine', 0.035);
-      if (Math.random() < 0.8) {
-        mIdx = clamp(mIdx + [-2, -1, -1, 1, 1, 2, 0][Math.floor(Math.random() * 7)], 0, SCALE.length - 1);
-        const f = SCALE[mIdx];
-        if (Math.random() < 0.2) KG.note(f, 1.3, 'triangle', 0.045, 0, f * (Math.random() < 0.5 ? 1.06 : 0.95));
-        else { KG.note(f, 1.7, 'triangle', 0.05); KG.note(f * 2, 0.7, 'sine', 0.014); }
-        if (Math.random() < 0.18) KG.note(SCALE[clamp(mIdx - 3, 0, 9)], 1.5, 'triangle', 0.03, 0.02);
-      }
-    }
-    musicT = setTimeout(musicTick, [650, 650, 975, 1300, 650, 1625][Math.floor(Math.random() * 6)]);
+  // ---------------- 聲音（共用引擎 kg-music.js） ----------------
+  const M = KG.music, SN = KG.sfx;
+  let sfxOn = store.get('dc:sfx', true) !== false;
+  const sfxLast = Object.create(null);
+  const panX = x => clamp(x / Math.max(1, W) * 2 - 1, -1, 1) * 0.6;
+  /** 播放音效：同一種 40 ms 內只播一次、音高隨機 ±4%（exact 時不變，配合音樂調性）、依畫面位置左右聲道 */
+  function sfx(name, pitch, vol, pan, exact) {
+    if (!sfxOn || !SN) return;
+    const t = performance.now();
+    if (t - (sfxLast[name] || 0) < 40) return;
+    sfxLast[name] = t;
+    const p = (pitch || 1) * (exact ? 1 : 0.96 + Math.random() * 0.08);
+    if (vol == null && !pan) SN.play(name, { pitch: p }); else SN.play(name, { pitch: p, vol: vol == null ? 1 : vol, pan: pan || 0 });
   }
+  function jingle(def) { if (sfxOn && M) M.jingle(def); }
+  // 自己組合的樂器（用引擎內建的聲音疊出來）
+  if (M && M.INST && !M.INST.dcSuona) {
+    const I = M.INST;
+    // 像嗩吶的吹管：亮的主奏音色＋一點銅管
+    I.dcSuona = (f, t, d, v, out) => { I.lead(f, t, d, v * 0.8, out); I.brass(f, t, d, v * 0.35, out); };
+    // 廟口的鑼
+    I.dcGong = (f, t, d, v, out) => { I.tom(f, t, d, v * 0.7, out); I.bell(f * 2.02, t, d, v * 0.45, out); I.crash(0, t, d, v * 0.25, out); };
+  }
+  let chainN = 0;
+  if (SN) {
+    SN.define('dc_pick', (p, s) => { s.noise(0.025, { vol: 0.15, freq: 2800 * p, q: 3 }); s.tone(1250 * p, 0.035, { type: 'triangle', vol: 0.05 }); s.tone(520 * p, 0.05, { vol: 0.08, slide: 420 * p }); });
+    // 翻棋：棋子翻過來「啪」一聲
+    SN.define('dc_flip', (p, s) => { s.noise(0.06, { vol: 0.14, freq: 1600 * p, sweep: 3600 * p, q: 1.5 }); s.tone(260 * p, 0.06, { type: 'triangle', vol: 0.18, slide: 520 * p }); s.noise(0.02, { vol: 0.2, freq: 2600 * p, q: 4, delay: 0.05 }); s.tone(190 * p, 0.08, { vol: 0.2, slide: 110 * p, delay: 0.05 }); });
+    // 翻開後的提示音：紅子明亮、黑子低沉（B 宮調，跟音樂合拍）
+    SN.define('dc_red', (p, s) => { s.tone(740 * p, 0.24, { vol: 0.08, delay: 0.16 }); s.tone(1109 * p, 0.2, { vol: 0.04, delay: 0.19 }); });
+    SN.define('dc_black', (p, s) => { s.tone(494 * p, 0.26, { vol: 0.09, delay: 0.16 }); s.tone(740 * p, 0.2, { vol: 0.035, delay: 0.19 }); });
+    SN.define('dc_place', (p, s) => { s.noise(0.02, { vol: 0.2, freq: 2400 * p, q: 4 }); s.tone(780 * p, 0.07, { type: 'triangle', vol: 0.2, slide: 270 * p }); s.tone(190 * p, 0.1, { vol: 0.26, slide: 110 * p }); });
+    SN.define('dc_slide', (p, s) => { s.noise(0.15, { vol: 0.08, freq: 900 * p, sweep: 520 * p, q: 0.9 }); });
+    SN.define('dc_capture', (p, s) => {
+      s.noise(0.03, { vol: 0.28, freq: 2000 * p, q: 3 }); s.tone(820 * p, 0.06, { type: 'triangle', vol: 0.2, slide: 300 * p });
+      s.noise(0.03, { vol: 0.2, freq: 1500 * p, q: 3, delay: 0.035 }); s.tone(140 * p, 0.2, { vol: 0.38, slide: 58 * p, delay: 0.02 });
+      s.noise(0.14, { vol: 0.12, freq: 600 * p, type: 'lowpass', delay: 0.02 });
+    });
+    // 炮翻山：往上拋的呼嘯
+    SN.define('dc_cannon', (p, s) => { s.tone(300 * p, 0.28, { vol: 0.14, slide: 700 * p }); s.noise(0.3, { vol: 0.14, freq: 700 * p, sweep: 2800 * p, q: 1.2 }); });
+    // 連吃：一次比一次高
+    SN.define('dc_chain', (p, s) => { [988, 1319, 1568].forEach((f, i) => s.tone(f * p, 0.13, { type: 'triangle', vol: 0.08, delay: i * 0.06 })); });
+    SN.define('dc_bad', (p, s) => { s.tone(240 * p, 0.09, { type: 'triangle', vol: 0.12, slide: 180 * p }); s.tone(170 * p, 0.11, { type: 'triangle', vol: 0.08, delay: 0.07 }); });
+    // 威脅提示：兩聲輕輕的警鈴
+    SN.define('dc_warn', (p, s) => { s.tone(880 * p, 0.1, { vol: 0.06 }); s.tone(660 * p, 0.14, { vol: 0.06, delay: 0.09 }); });
+    SN.define('dc_undo', (p, s) => { s.noise(0.2, { vol: 0.1, freq: 2400 * p, sweep: 600 * p, q: 1.2 }); s.tone(700 * p, 0.08, { type: 'triangle', vol: 0.1, slide: 420 * p }); });
+    SN.define('dc_hint', (p, s) => { [1245, 1480, 1865].forEach((f, i) => s.tone(f * p, 0.16, { vol: 0.07, delay: i * 0.05 })); });
+  }
+  const snd = {
+    tap() { sfx('click'); },
+    tick() { sfx('tick'); },
+    select(i) { sfx('dc_pick', 1, null, i >= 0 ? panX(cx(i)) : 0); },
+    flip(red, i) { const pan = i >= 0 ? panX(cx(i)) : 0; sfx('dc_flip', 1, null, pan); sfx(red ? 'dc_red' : 'dc_black', 1, null, pan, true); },
+    slide(i) { sfx('dc_slide', 1, null, i >= 0 ? panX(cx(i)) : 0); },
+    clack(i) { sfx('dc_place', 1, null, i >= 0 ? panX(cx(i)) : 0); },
+    capture(i) { sfx('dc_capture', 1, 1.1, i >= 0 ? panX(cx(i)) : 0); },
+    cannon(i) { sfx('dc_cannon', 1, null, i >= 0 ? panX(cx(i)) : 0); },
+    chain() { chainN++; sfx('dc_chain', Math.pow(2, Math.min(chainN - 1, 6) * 2 / 12)); },
+    bad() { sfx('dc_bad'); },
+    warn() { sfx('dc_warn'); },
+    undo() { sfx('dc_undo'); },
+    hint() { sfx('dc_hint'); },
+    start() { jingle({ bpm: 220, inst: 'marimba', vol: 0.34, notes: [['D#5', 1], ['F#5', 1], ['B5', 3]], bass: [['B2', 5, 0]], bassVol: 0.22 }); },
+    win() {
+      jingle({ bpm: 140, inst: 'marimba', vol: 0.32, notes: [['B4', 1], ['C#5', 1], ['D#5', 1], ['F#5', 2], ['G#5', 1], ['F#5', 1], ['B5+D#5+F#5', 5]], bass: [['B2', 3, 0], ['F#2', 3, 3], ['B2', 6, 6]], bassVol: 0.3 });
+      jingle({ bpm: 140, inst: 'flute', vol: 0.24, notes: [['F#5', 3], ['G#5', 3], ['F#5', 6]] });
+    },
+    lose() { jingle({ bpm: 96, inst: 'marimba', vol: 0.34, notes: [['F#5', 2], ['D#5', 1], ['C#5', 1], ['B4', 2], ['G#4', 4]], bass: [['C#3', 4, 0], ['G#2', 6, 4]], bassVol: 0.2 }); },
+    draw() { jingle({ bpm: 110, inst: 'kalimba', vol: 0.36, notes: [['C#5', 1], ['D#5', 1], ['F#5', 2], ['D#5', 1], ['C#5', 3]], bass: [['C#3', 8, 0]], bassVol: 0.2 }); }
+  };
+
+  // ---------------- 背景音樂 ----------------
+  // ==== 曲子 ====
+  // 標題：〈廟埕〉E 宮調五聲（E F# G# B C#）104 bpm，廟會北管風：嗩吶般的主旋律、堂鼓、梆子、小鈸、開頭一聲鑼
+  const MEL_T = [
+    'B4 C#5 E5 - F#5 E5 C#5 B4', 'C#5 - - E5 G#4 - B4 .', 'F#4 G#4 C#5 - G#4 F#4 G#4 .', 'B4 - - - E5 - F#5 .',
+    'G#5 - F#5 E5 F#5 - E5 C#5', 'B4 C#5 B4 G#4 E4 - - .', 'F#4 - B4 - C#5 E5 F#5 -', 'E5 - - - - . . .'
+  ];
+  const SONG_TITLE = {
+    bpm: 104, steps: 16, swing: 0,
+    chords: ['E6', 'C#m7', 'F#sus2', 'Bsus4', 'E6', 'C#m7', 'Bsus4', 'E6'],
+    tracks: [
+      { inst: 'dcGong', seq: ['E3 . . . . . . .', '', '', '', '', '', '', ''], vol: 0.6 },
+      { inst: 'sub', chord: 'R...5...R...5...', vol: 0.45 },
+      { inst: 'pluck', arp: 'up', rate: 2, oct: 4, vol: 0.26 },
+      { inst: 'dcSuona', seq: MEL_T, vol: 0.62 },
+      { inst: 'tom', pat: 'X.......x...x...', pitch: 140, vol: 0.4 },
+      { inst: 'rim', pat: 'x.x...x.x.x...x.', vol: 0.3 },
+      { inst: 'ohat', pat: '....x.......x...', vol: 0.22 }
+    ]
+  };
+  // 對局：〈翻翻樂〉B 宮調五聲（B C# D# F# G#）96 bpm，輕鬆搖擺的夜市小調：馬林巴琴旋律、拇指琴、低音、沙鈴；剩下沒幾顆棋時加弦樂和鼓
+  const MEL_P = [
+    'D#5 - F#5 - G#5 F#5 D#5 .', 'B4 - - D#5 C#5 - B4 .', 'C#5 - D#5 - G#5 - F#5 .', 'F#5 - - - C#5 - - .',
+    'B4 - D#5 F#5 G#5 - B5 -', 'G#5 - F#5 - D#5 - - .', 'C#5 - D#5 - F#5 - C#5 .', 'B4 - - - - - . .',
+    'G#4 - B4 - D#5 - F#5 -', 'D#5 - C#5 B4 - - . .', 'C#5 - - G#4 C#5 - D#5 .', 'B4 - - - G#4 - - .',
+    'F#5 - G#5 F#5 D#5 - B4 .', 'C#5 - D#5 - G#5 - - .', 'F#5 - D#5 - C#5 - B4 C#5', 'B4 - - - - - . .'
+  ];
+  const SONG_PLAY = {
+    bpm: 96, steps: 16, swing: 0.1,
+    chords: ['B6', 'G#m7', 'C#sus2', 'F#sus4', 'B6', 'G#m7', 'F#sus4', 'B6', 'G#m7', 'B6', 'C#sus2', 'G#m7', 'B6', 'C#sus2', 'F#sus4', 'B6'],
+    layers: { tension: false },
+    tracks: [
+      { inst: 'sub', chord: 'R...3...5...3...', vol: 0.5 },
+      { inst: 'kalimba', arp: 'updown', rate: 2, oct: 4, vol: 0.26 },
+      { inst: 'marimba', seq: MEL_P, vol: 0.9 },
+      { inst: 'flute', seq: ['', '', '', '', '', '', '', ''].concat(MEL_P.slice(8)), vol: 0.32 },
+      { inst: 'shaker', pat: 'x.x.x.x.x.x.x.x.', vol: 0.28 },
+      { inst: 'rim', pat: '....x.......x...', vol: 0.32 },
+      { inst: 'strings', chord: 'hold', layer: 'tension', vol: 0.4 },
+      { inst: 'tom', pat: 'x.....x...x.....', pitch: 110, layer: 'tension', vol: 0.45 },
+      { inst: 'ohat', pat: '..x...x...x...x.', layer: 'tension', vol: 0.28 }
+    ]
+  };
+  // ==== 曲子結束 ====
+  let mood = -1;
+  function musicTitle() { if (M) { M.play(SONG_TITLE); M.setVolume(0.42); mood = -1; } }
+  function musicPlay() { if (M) { M.play(SONG_PLAY, { restart: true }); M.setVolume(0.52); mood = -1; musicMood(); } }
+  /** 剩下沒幾顆棋（任一方 3 顆以下）加緊張層；雙方都只剩 2 顆以下時加快 */
+  function musicMood() {
+    if (!M || S.screen !== 'play' || S.over) return;
+    const a = E.alive(S.P, 0), b = E.alive(S.P, 1);
+    const m = a <= 2 && b <= 2 ? 2 : (a <= 3 || b <= 3) ? 1 : 0;
+    if (m === mood) return;
+    mood = m;
+    M.setLayer('tension', m > 0);
+    M.setTempo(m > 1 ? 1.06 : 1);
+  }
+  function renderSnd() {
+    for (const id of ['tSnd', 'pSnd']) for (const b of $(id).children) {
+      const mus = b.dataset.k === 'm', on = mus ? (M ? M.isEnabled() : false) : sfxOn;
+      b.classList.toggle('on', on); b.textContent = (mus ? '音樂 ' : '音效 ') + (on ? '開' : '關'); b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+  }
+  for (const id of ['tSnd', 'pSnd']) for (const b of $(id).children) b.addEventListener('click', () => {
+    if (b.dataset.k === 'm') { if (M) M.setEnabled(!M.isEnabled()); }
+    else { sfxOn = !sfxOn; store.set('dc:sfx', sfxOn); }
+    snd.tap(); renderSnd();
+  });
 
   // ---------------- 對局流程 ----------------
   function snap() {
@@ -1140,6 +1247,7 @@ function DCEngine() {
     anims.length = 0; drag = null;
     S.screen = 'play';
     showScreen();
+    chainN = 0; musicPlay(); if (!o.restore && !S.fast) snd.start();
     computeThreats(); updateUI(); dirty = true;
     if (!o.restore) {
       const who = S.mode === 'ai' ? (first === 0 ? '你先翻棋' : '電腦先翻棋') : '玩家一先翻棋';
@@ -1175,7 +1283,7 @@ function DCEngine() {
     const now = performance.now();
     if (k === 2) {
       if (!fast) anims.push({ type: 'flip', cell: f, code: P.b[f], t0: now, dur: 420 });
-      snd.flip(COL(P.b[f]) === 0);
+      snd.flip(COL(P.b[f]) === 0, f);
     } else if (k === 0 || k === 1) {
       const jump = RK(mover) === 5 && k === 1;
       const dist = Math.abs((f & 3) - (t & 3)) + Math.abs((f >> 2) - (t >> 2));
@@ -1183,19 +1291,21 @@ function DCEngine() {
         const a = { type: 'slide', cell: t, from: f, code: mover, victim, jump, t0: now, dur: jump ? 420 + dist * 40 : 200 + dist * 50 };
         if (item) a.fly = { type: 'fly', cell: -1, item, seat, slot: S.caps[seat].length - 1, x: cx(t), y: cy(t), t0: 0, dur: 520 };
         anims.push(a);
-        if (jump) snd.cannon();
-        setTimeout(() => { victim ? snd.capture() : snd.clack(); }, jump ? 340 : 160);
+        if (jump) snd.cannon(t); else snd.slide(t);
+        setTimeout(() => { victim ? snd.capture(t) : snd.clack(t); }, jump ? 340 : 160);
       } else {
         if (item && !fast) { burst(cx(t), cy(t), 18, COL(victim) === 0); shake = { t0: now, amp: L.c * 0.06 }; anims.push({ type: 'fly', cell: -1, item, seat, slot: S.caps[seat].length - 1, x: cx(t), y: cy(t), t0: now, dur: 520 }); }
-        victim ? snd.capture() : snd.clack();
+        victim ? snd.capture(t) : snd.clack(t);
       }
       if (victim) KG.vibrate(18);
     }
+    if (P.chain < 0) chainN = 0;
     if (P.chain >= 0) {
       if (seat !== aiSeat()) { S.sel = P.chain; S.selMoves = E.legal(P).filter(x => (x >> 10) === 1); }
       if (!S.fast) setTimeout(() => { snd.chain(); if (seat !== aiSeat()) KG.toast('可以連吃！'); }, fast ? 0 : 450);
     }
     computeThreats();
+    musicMood();
     dirty = true;
     const st = E.status(P);
     if (st) finish(st);
@@ -1235,6 +1345,7 @@ function DCEngine() {
       saveStats();
     }
     const humanWin = S.mode === 'pvp' ? winSeat >= 0 : winSeat === 0;
+    if (M && !silent) M.stop(0.6);
     setTimeout(() => {
       if (winSeat < 0) snd.draw(); else if (humanWin) { snd.win(); KG.confetti(); } else snd.lose();
     }, S.fast ? 0 : 500);
@@ -1276,7 +1387,7 @@ function DCEngine() {
     anims.length = 0; drag = null;
     S.sel = -1; S.selMoves = []; S.hint = null;
     computeThreats(); save(); updateUI(); dirty = true;
-    KG.sound('whoosh');
+    snd.undo(); chainN = 0; mood = -1; musicMood();
     maybeAI();
     return true;
   }
@@ -1289,7 +1400,7 @@ function DCEngine() {
       $('cHint').disabled = false;
       if (id !== S.searchId || r.mv == null || r.mv < 0) return;
       S.hint = { m: r.mv, t0: performance.now() };
-      KG.sound('sparkle'); dirty = true;
+      snd.hint(); dirty = true;
     });
   }
   function endChain() {
@@ -1360,7 +1471,7 @@ function DCEngine() {
       `<span>目前連勝</span><span>${stats.streak}</span><span>最佳連勝</span><span>${KG.best('dark-chess:streak') || 0}</span>`;
   }
   function setSeg(id, v) { $(id).querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === v)); }
-  function bindSeg(id, fn) { $(id).querySelectorAll('button').forEach(b => b.addEventListener('click', () => { setSeg(id, b.dataset.v); KG.sound('click'); fn(b.dataset.v); })); }
+  function bindSeg(id, fn) { $(id).querySelectorAll('button').forEach(b => b.addEventListener('click', () => { setSeg(id, b.dataset.v); snd.tap(); fn(b.dataset.v); })); }
   function showTitle() {
     S.screen = 'title';
     for (const id of ['info', 'barTop', 'barBot', 'ctrl', 'bPause']) $(id).classList.add('hide');
@@ -1374,6 +1485,7 @@ function DCEngine() {
     $('tRec').innerHTML = prefs.mode === 'ai'
       ? `${LEVELS[prefs.level].name}戰績 <b>${r.w}</b> 勝 <b>${r.l}</b> 負 <b>${r.d}</b> 和・最佳連勝 <b>${KG.best('dark-chess:streak') || 0}</b>`
       : `雙人對局 <b>${stats.pvp}</b> 場・輪流在同一台裝置上下棋`;
+    renderSnd(); musicTitle();
     showOv('title');
     dirty = true;
   }
@@ -1398,8 +1510,9 @@ function DCEngine() {
   function togglePause(v) {
     if (S.screen !== 'play') return;
     S.paused = v == null ? !S.paused : v;
+    if (M) { if (S.paused) M.pause(); else M.resume(); }
     if (S.paused) {
-      setSeg('pMusic', prefs.music ? 'on' : 'off'); setSeg('pWarn', S.warn ? 'on' : 'off');
+      renderSnd(); setSeg('pWarn', S.warn ? 'on' : 'off');
       $('pStats').innerHTML = statsHtml();
       $('pResign').classList.toggle('hide', !!S.over);
       showOv('pauseOv');
@@ -1441,7 +1554,7 @@ function DCEngine() {
   }
   function select(i) {
     S.sel = i; S.selMoves = E.legal(S.P).filter(m => (m & 31) === i && (m >> 10) < 2);
-    snd.select(); dirty = true;
+    snd.select(i); dirty = true;
   }
   function explain(from, to) {
     const P = S.P, a = P.b[from], b = P.b[to];
@@ -1527,42 +1640,41 @@ function DCEngine() {
       // 螢幕方向轉成邏輯座標
       let x = S.cursor & 3, y = S.cursor >> 2;
       if (L.land) { y = clamp(y + dx, 0, 7); x = clamp(x + dy, 0, 3); } else { x = clamp(x + dx, 0, 3); y = clamp(y + dy, 0, 7); }
-      S.cursor = y * 4 + x; KG.sound('tick'); dirty = true;
+      S.cursor = y * 4 + x; snd.tick(); dirty = true;
       return;
     }
     if (k === 'Enter' || k === ' ') { e.preventDefault(); if (S.cursor < 0) { S.cursor = 13; dirty = true; } else tapCell(S.cursor); }
   });
 
   // ---------------- 按鈕 ----------------
-  $('cHint').addEventListener('click', () => { KG.sound('click'); if (S.P.chain >= 0) endChain(); else hint(); });
-  $('cUndo').addEventListener('click', () => { KG.sound('click'); undo(); });
-  $('cRules').addEventListener('click', () => { KG.sound('click'); openRules(); });
+  $('cHint').addEventListener('click', () => { snd.tap(); if (S.P.chain >= 0) endChain(); else hint(); });
+  $('cUndo').addEventListener('click', () => { snd.tap(); undo(); });
+  $('cRules').addEventListener('click', () => { snd.tap(); openRules(); });
   function openRules() { showOv('rulesOv'); $('rulesOv').querySelector('.card').scrollTop = 0; }
-  $('rClose').addEventListener('click', () => { KG.sound('click'); hideOv('rulesOv'); });
-  $('tRules').addEventListener('click', () => { KG.sound('click'); openRules(); });
-  $('cfNo').addEventListener('click', () => { KG.sound('click'); hideOv('cfOv'); cfYes = null; });
-  $('cfYes').addEventListener('click', () => { KG.sound('click'); hideOv('cfOv'); const f = cfYes; cfYes = null; if (f) f(); });
-  $('bPause').addEventListener('click', () => { KG.sound('click'); togglePause(); });
-  $('pResume').addEventListener('click', () => { KG.sound('click'); togglePause(false); });
-  $('pRestart').addEventListener('click', () => { KG.sound('click'); hideOv('pauseOv'); S.paused = false; startGame(curOpts()); });
-  $('pResign').addEventListener('click', () => { KG.sound('click'); resign(); });
-  $('pQuit').addEventListener('click', () => { KG.sound('click'); hideOv('pauseOv'); S.paused = false; cancelSearch(); S.searchId++; clearTimeout(S.aiTimer); S.thinking = false; save(); S.screen = 'title'; S.P = E.deal(E.newPos(), Math.random); showScreen(); });
-  $('oAgain').addEventListener('click', () => { KG.sound('click'); hideOv('overOv'); startGame(curOpts()); });
-  $('oTitle').addEventListener('click', () => { KG.sound('click'); hideOv('overOv'); S.screen = 'title'; S.P = E.deal(E.newPos(), Math.random); showScreen(); });
-  bindSeg('pMusic', v => { prefs.music = v === 'on'; savePrefs(); });
+  $('rClose').addEventListener('click', () => { snd.tap(); hideOv('rulesOv'); });
+  $('tRules').addEventListener('click', () => { snd.tap(); openRules(); });
+  $('cfNo').addEventListener('click', () => { snd.tap(); hideOv('cfOv'); cfYes = null; });
+  $('cfYes').addEventListener('click', () => { snd.tap(); hideOv('cfOv'); const f = cfYes; cfYes = null; if (f) f(); });
+  $('bPause').addEventListener('click', () => { snd.tap(); togglePause(); });
+  $('pResume').addEventListener('click', () => { snd.tap(); togglePause(false); });
+  $('pRestart').addEventListener('click', () => { snd.tap(); hideOv('pauseOv'); S.paused = false; startGame(curOpts()); });
+  $('pResign').addEventListener('click', () => { snd.tap(); resign(); });
+  $('pQuit').addEventListener('click', () => { snd.tap(); hideOv('pauseOv'); S.paused = false; cancelSearch(); S.searchId++; clearTimeout(S.aiTimer); S.thinking = false; save(); S.screen = 'title'; S.P = E.deal(E.newPos(), Math.random); showScreen(); });
+  $('oAgain').addEventListener('click', () => { snd.tap(); hideOv('overOv'); startGame(curOpts()); });
+  $('oTitle').addEventListener('click', () => { snd.tap(); hideOv('overOv'); S.screen = 'title'; S.P = E.deal(E.newPos(), Math.random); showScreen(); });
   bindSeg('pWarn', v => { S.warn = prefs.warn = v === 'on'; savePrefs(); computeThreats(); dirty = true; });
   bindSeg('segMode', v => { prefs.mode = v; savePrefs(); showTitle(); });
   bindSeg('segDiff', v => { prefs.level = v; savePrefs(); showTitle(); });
   bindSeg('segFirst', v => { prefs.first = v; savePrefs(); });
   for (const [id, key] of [['oChain', 'chain'], ['oRook', 'rook'], ['oWarn', 'warn']]) {
-    $(id).addEventListener('click', () => { prefs[key] = !prefs[key]; savePrefs(); $(id).classList.toggle('on', prefs[key]); KG.sound('click'); });
+    $(id).addEventListener('click', () => { prefs[key] = !prefs[key]; savePrefs(); $(id).classList.toggle('on', prefs[key]); snd.tap(); });
   }
   function curOpts() { return { mode: S.mode, level: S.level, first: S.mode === 'ai' ? (S.first === 1 ? 'ai' : 'me') : 'me', chain: S.P.opt.chain, rook: S.P.opt.rook, warn: S.warn }; }
   $('tStart').addEventListener('click', () => {
-    KG.sound('click');
+    snd.tap();
     startGame({ mode: prefs.mode, level: prefs.level, first: prefs.first, chain: prefs.chain, rook: prefs.rook, warn: prefs.warn });
   });
-  $('tResume').addEventListener('click', () => { KG.sound('click'); resumeSaved(); });
+  $('tResume').addEventListener('click', () => { snd.tap(); resumeSaved(); });
   function resumeSaved() {
     const sv = store.get('dc:save', null);
     if (!sv || !sv.snap) return false;
@@ -1642,7 +1754,6 @@ function DCEngine() {
   layout();
   showTitle();
   requestAnimationFrame(loop);
-  setTimeout(musicTick, 1500);
 })();
 </script>
 </body>

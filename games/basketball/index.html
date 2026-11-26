@@ -21,6 +21,7 @@
 <canvas id="gl"></canvas>
 <canvas id="ui" aria-label="3D 街頭投籃遊戲畫面"></canvas>
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
 <script type="module">
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
@@ -84,85 +85,132 @@ function main() {
   let horseWins = KG.store.get('basketball:horseWins', 0) | 0;
 
   /* =========================================================
-   * 音效（自己的 AudioContext，尊重靜音）
+   * 音樂與音效（共用引擎 assets/kg-music.js）
    * ========================================================= */
-  let AC = null, noiseBuf = null, master = null;
-  function ac() {
-    if (KG.isMuted()) return null;
-    if (!AC) {
-      try {
-        AC = new (window.AudioContext || window.webkitAudioContext)();
-        master = AC.createGain(); master.gain.value = 0.85; master.connect(AC.destination);
-        const len = AC.sampleRate * 2;
-        noiseBuf = AC.createBuffer(1, len, AC.sampleRate);
-        const d = noiseBuf.getChannelData(0);
-        for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
-      } catch (e) { AC = null; return null; }
-    }
-    if (AC.state === 'suspended') AC.resume();
-    return AC;
-  }
-  window.addEventListener('pointerdown', () => { ac(); }, { capture: true });
-  window.addEventListener('keydown', () => { ac(); }, { capture: true });
-  function nz(dur, vol, freq, q, delay, fEnd, type) {
-    const a = ac(); if (!a) return;
-    const t = a.currentTime + (delay || 0);
-    const s = a.createBufferSource(); s.buffer = noiseBuf;
-    const f = a.createBiquadFilter(); f.type = type || 'bandpass'; f.Q.value = q || 1;
-    f.frequency.setValueAtTime(freq, t);
-    if (fEnd) f.frequency.exponentialRampToValueAtTime(fEnd, t + dur);
-    const g = a.createGain();
-    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + Math.min(0.02, dur * 0.2)); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    s.connect(f); f.connect(g); g.connect(master);
-    s.start(t, Math.random() * 1.2); s.stop(t + dur + 0.05);
-  }
-  function tone(freq, dur, type, vol, delay, slide) {
-    const a = ac(); if (!a) return;
-    const t = a.currentTime + (delay || 0);
-    const o = a.createOscillator(), g = a.createGain();
-    o.type = type || 'sine'; o.frequency.setValueAtTime(freq, t);
-    if (slide) o.frequency.exponentialRampToValueAtTime(slide, t + dur);
-    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + 0.005); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(g); g.connect(master); o.start(t); o.stop(t + dur + 0.05);
-  }
-  const sfx = {
-    shoot() { nz(0.22, 0.1, 900, 0.7, 0, 2600); },
-    swish() { nz(0.34, 0.32, 5200, 0.9, 0, 2400); nz(0.2, 0.12, 8000, 1.5, 0.04, 5000, 'highpass'); },
-    rim(i) { const v = clamp(i / 5, 0.15, 1); tone(587, 0.32, 'triangle', 0.16 * v); tone(1396, 0.22, 'square', 0.045 * v); tone(2211, 0.16, 'sine', 0.07 * v); nz(0.05, 0.2 * v, 3200, 2); },
-    board(i) { const v = clamp(i / 6, 0.15, 1); nz(0.14, 0.32 * v, 420, 1.2); tone(120, 0.14, 'sine', 0.22 * v, 0, 80); },
-    bounce(i) { const v = clamp(i / 6, 0.08, 1); tone(95, 0.16, 'sine', 0.4 * v, 0, 48); nz(0.05, 0.12 * v, 900, 1.5); },
-    fence(i) { const v = clamp(i / 6, 0.1, 1); nz(0.25, 0.2 * v, 2400, 3); tone(330, 0.2, 'square', 0.03 * v); },
-    cheer(n) {
-      const a = ac(); if (!a) return;
-      const dur = 1.4 + n * 0.4, vol = 0.07 + n * 0.03;
-      [700, 1300, 2300].forEach((f, i) => nz(dur, vol * (1 - i * 0.25), f, 0.6, i * 0.05));
-      for (let i = 0; i < 2 + n; i++) tone(rand(1400, 2400), 0.25, 'sine', 0.035, rand(0.1, dur * 0.6), rand(1800, 2900));
-    },
-    buzzer() { tone(196, 0.9, 'sawtooth', 0.12); tone(199, 0.9, 'square', 0.07); },
-    fire() { [392, 523, 659, 784, 1047].forEach((f, i) => tone(f, 0.16, 'square', 0.05, i * 0.05)); nz(0.6, 0.18, 600, 0.5, 0, 2400); },
-    fizz() { tone(440, 0.4, 'triangle', 0.08, 0, 180); },
-    tick() { tone(1500, 0.05, 'square', 0.05); },
-    bonus() { [784, 988, 1175, 1568].forEach((f, i) => tone(f, 0.14, 'triangle', 0.1, i * 0.07)); },
-    letter() { tone(220, 0.25, 'sawtooth', 0.08); tone(165, 0.35, 'sawtooth', 0.08, 0.18); },
-    click() { tone(880, 0.06, 'triangle', 0.1); }
+  // 標題：慵懶的夜晚嘻哈（C 小調，88 bpm，搖擺律動，低音＋電鋼琴般的風琴）
+  const SONG_TITLE = {
+    bpm: 88, steps: 16, swing: 0.18,
+    chords: ['Cm7', 'Abmaj7', 'Fm7', 'G7', 'Cm7', 'Ebmaj7', 'Fm7', 'Gsus4'],
+    tracks: [
+      { inst: 'kick', pat: ['X......x..X.....', 'X......x..X..x..'], vol: 0.72 },
+      { inst: 'snare', pat: '....X.......X...', vol: 0.45 },
+      { inst: 'hat', pat: 'x.x.x.x.x.x.x.xo', vol: 0.3 },
+      { inst: 'rim', pat: '.......x.......x', vol: 0.25 },
+      { inst: 'sub', chord: 'R.....R...R.5...', vol: 0.55 },
+      { inst: 'organ', chord: 'hold', rate: 8, vol: 0.32 },
+      { inst: 'bell', vol: 0.62, seq: [
+        'Eb5 - - C5 . G4 Bb4 -', 'C5 - - . Eb5 - G4 -', 'Ab4 - C5 - Eb5 - - .', 'D5 - - B4 . G4 - .',
+        'G5 - - Eb5 . C5 D5 -', 'Eb5 - - D5 Bb4 - G4 -', 'F5 - Eb5 - C5 - Ab4 -', 'G4 - - - C5 - - .'] }
+    ]
   };
-
-  /* ---------- 背景音樂：慢速嘻哈律動（KG.note） ---------- */
-  const BASS = [55, 55, 65.41, 49, 55, 55, 73.42, 61.74];
-  const CHORD = [[220, 261.6, 329.6], [220, 261.6, 329.6], [196, 246.9, 293.7], [174.6, 220, 261.6]];
-  let musicTimer = 0, mStep = 0;
-  function startMusic() {
-    if (musicTimer) return;
-    musicTimer = setInterval(() => {
-      if (KG.isMuted() || document.hidden || phase !== 'play') return;
-      const s = mStep % 16, bar = Math.floor(mStep / 16) % 4;
-      if (s === 0 || s === 7 || s === 10) KG.note(120, 0.18, 'sine', 0.22, 0, 42);
-      if (s === 4 || s === 12) nz(0.14, 0.09, 1800, 0.8);
-      if (s % 2 === 0) nz(0.03, 0.035, 8000, 1, 0, 0, 'highpass');
-      if (s % 4 === 0 || s === 14) KG.note(BASS[(bar * 2 + (s >= 8 ? 1 : 0)) % 8], 0.3, 'triangle', 0.09);
-      if (s === 2 || s === 11) CHORD[bar].forEach((f, i) => KG.note(f * 2, 0.22, 'sine', 0.018, i * 0.012));
-      mStep++;
-    }, 160);
+  // 比賽：熱血街頭節奏（G 小調，100 bpm）
+  const SONG_PLAY = {
+    bpm: 100, steps: 16, swing: 0.1,
+    chords: ['Gm', 'Gm', 'Eb', 'F', 'Gm', 'Gm', 'Cm', 'D', 'Eb', 'F', 'Gm', 'Gm', 'Cm', 'Eb', 'D', 'D7'],
+    layers: { fire: false },
+    tracks: [
+      { inst: 'kick', pat: ['X..x..X...X..x..', 'X..x..X...X.x...'], vol: 0.82 },
+      { inst: 'snare', pat: '....X.......X...', vol: 0.5 },
+      { inst: 'clap', pat: '....x.......x...', vol: 0.28 },
+      { inst: 'hat', pat: 'x.xxx.x.x.xxx.x.', vol: 0.28 },
+      { inst: 'sub', chord: 'R..R..R...R.8...', vol: 0.6 },
+      { inst: 'pluck', arp: 'up', rate: 4, oct: 4, vol: 0.24 },
+      { inst: 'organ', chord: 'hold', rate: 16, vol: 0.18 },
+      { inst: 'lead', vol: 0.46, seq: [
+        'G4 - Bb4 - D5 - Bb4 G4', 'F5 - D5 - C5 - Bb4 -', 'G4 - Bb4 - Eb5 - D5 -', 'C5 - - A4 F4 - - .',
+        'D5 - D5 - Bb4 - G4 A4', 'Bb4 - C5 - D5 - F5 -', 'Eb5 - D5 - C5 - G4 -', 'F#4 - A4 - D5 - - .',
+        'Bb4 - - G4 Bb4 - Eb5 -', 'C5 - - A4 C5 - F5 -', 'D5 - - Bb4 D5 - G5 -', 'F5 - D5 - Bb4 - - .',
+        'C5 - Eb5 - G5 - Eb5 -', 'D5 - Bb4 - G4 - Bb4 -', 'A4 - - F#4 A4 - D5 -', 'C5 - - - A4 - F#4 .'] },
+      { inst: 'ohat', pat: '..x...x...x...x.', vol: 0.24, layer: 'fire' },
+      { inst: 'shaker', pat: 'xxxxxxxxxxxxxxxx', vol: 0.3, layer: 'fire' },
+      { inst: 'brass', vol: 0.42, layer: 'fire', seq: [
+        'D5 - - -', 'Bb4 - - -', 'Eb5 - - -', 'C5 - - -', 'D5 - - -', 'G4 - Bb4 -', 'C5 - - -', 'F#4 - A4 -',
+        'Eb5 - - -', 'F5 - - -', 'D5 - - -', 'Bb4 - - -', 'Eb5 - - -', 'G4 - - -', 'F#4 - - -', 'A4 - - -'] }
+    ]
+  };
+  const J_RECORD = { bpm: 150, inst: 'brass', vol: 0.3, notes: [['D5', 1], ['G5', 1], ['Bb5', 1], ['D6', 2], ['C6', 1], ['Bb5+D6', 4]], bass: [['G2', 4, 0], ['D2', 2, 4], ['G2', 4, 6]], bassVol: 0.35 };
+  const J_END = { bpm: 140, inst: 'bell', vol: 0.32, notes: [['G4', 1], ['Bb4', 1], ['D5', 1], ['G5', 3]], bass: [['G2', 6, 0]], bassVol: 0.3 };
+  const J_LOSE = { bpm: 104, inst: 'organ', vol: 0.4, notes: [['D5', 1], ['C5', 1], ['Bb4', 1], ['A4', 1], ['G4', 4]], bass: [['G2', 8, 0]], bassVol: 0.3 };
+  const SF = KG.sfx;
+  SF.define('bb_throw', (p, s) => { s.noise(0.24, { vol: 0.16, freq: 700 * p, sweep: 2600 * p, q: 0.8 }); s.tone(260 * p, 0.08, { type: 'triangle', vol: 0.05, slide: 420 * p }); });
+  SF.define('bb_swish', (p, s) => { s.noise(0.34, { vol: 0.3, freq: 5200 * p, sweep: 2400, q: 0.9 }); s.noise(0.2, { vol: 0.12, freq: 8000, sweep: 5000, type: 'highpass', q: 1.5, delay: 0.04 }); });
+  SF.define('bb_rimin', (p, s) => { s.noise(0.25, { vol: 0.2, freq: 4200 * p, sweep: 2600, q: 0.9, delay: 0.02 }); s.tone(587 * p, 0.12, { type: 'triangle', vol: 0.05 }); });
+  SF.define('bb_rim', (p, s) => { s.tone(587 * p, 0.32, { type: 'triangle', vol: 0.16 }); s.tone(1396 * p, 0.22, { type: 'square', vol: 0.04 }); s.tone(2211 * p, 0.16, { vol: 0.07 }); s.noise(0.05, { vol: 0.2, freq: 3200, q: 2 }); });
+  SF.define('bb_board', (p, s) => { s.noise(0.14, { vol: 0.34, freq: 420 * p, q: 1.2 }); s.tone(120 * p, 0.14, { vol: 0.24, slide: 80 }); s.tone(760 * p, 0.08, { type: 'triangle', vol: 0.04 }); });
+  SF.define('bb_bounce', (p, s) => { s.tone(95 * p, 0.16, { vol: 0.42, slide: 48 }); s.noise(0.05, { vol: 0.12, freq: 900 * p, q: 1.5 }); });
+  SF.define('bb_fence', (p, s) => { s.noise(0.25, { vol: 0.2, freq: 2400 * p, q: 3 }); s.tone(330 * p, 0.2, { type: 'square', vol: 0.03 }); });
+  SF.define('bb_cheer', (p, s) => {
+    const n = Math.round((p - 1) * 10), dur = 1.4 + n * 0.4, vol = 0.07 + n * 0.03;
+    s.noise(dur, { vol, freq: 700, q: 0.6, attack: 0.15 }); s.noise(dur, { vol: vol * 0.75, freq: 1300, q: 0.6, delay: 0.05, attack: 0.15 }); s.noise(dur, { vol: vol * 0.5, freq: 2300, q: 0.6, delay: 0.1, attack: 0.15 });
+    for (let i = 0; i < 2 + n; i++) s.tone(1400 + Math.random() * 1000, 0.25, { vol: 0.03, delay: 0.1 + Math.random() * dur * 0.6, slide: 1800 + Math.random() * 1100 });
+  });
+  SF.define('bb_buzzer', (p, s) => { s.tone(196 * p, 0.9, { type: 'sawtooth', vol: 0.1, attack: 0.01 }); s.tone(199 * p, 0.9, { type: 'square', vol: 0.05, attack: 0.01 }); });
+  SF.define('bb_fire', (p, s) => { [392, 523, 659, 784, 1047].forEach((f, i) => s.tone(f * p, 0.16, { type: 'square', vol: 0.04, delay: i * 0.05 })); s.noise(0.6, { vol: 0.18, freq: 600, sweep: 2400, q: 0.5 }); });
+  SF.define('bb_fizz', (p, s) => { s.tone(440 * p, 0.4, { type: 'triangle', vol: 0.08, slide: 180 }); s.noise(0.4, { vol: 0.08, freq: 3000, sweep: 800, q: 0.7 }); });
+  SF.define('bb_money', (p, s) => { s.tone(1568 * p, 0.08, { type: 'square', vol: 0.05 }); s.tone(2093 * p, 0.25, { type: 'square', vol: 0.05, delay: 0.07 }); s.tone(1047 * p, 0.3, { type: 'triangle', vol: 0.1, delay: 0.07 }); });
+  SF.define('bb_combo', (p, s) => { s.tone(784 * p, 0.1, { type: 'triangle', vol: 0.12 }); s.tone(1175 * p, 0.18, { vol: 0.08, delay: 0.06 }); });
+  SF.define('bb_bonus', (p, s) => { [784, 988, 1175, 1568].forEach((f, i) => s.tone(f * p, 0.14, { type: 'triangle', vol: 0.1, delay: i * 0.07 })); });
+  SF.define('bb_letter', (p, s) => { s.tone(220 * p, 0.25, { type: 'sawtooth', vol: 0.07 }); s.tone(165 * p, 0.35, { type: 'sawtooth', vol: 0.07, delay: 0.18 }); });
+  SF.define('bb_charge', (p, s) => { s.tone(300 * p, 0.12, { type: 'triangle', vol: 0.07, slide: 450 * p }); });
+  const SFX_KEY = 'basketball:sfx';
+  let sfxOn = KG.store.get(SFX_KEY, true) !== false;
+  const lastS = {};
+  function play(name, o) {
+    if (!sfxOn || KG.isMuted()) return;
+    const t = performance.now();
+    if (lastS[name] && t - lastS[name] < 40) return;
+    lastS[name] = t;
+    KG.sfx.play(name, o);
+  }
+  const vary = (v, pan, a) => ({ vol: v == null ? 1 : v, pan: pan || 0, pitch: 1 + (Math.random() - 0.5) * (a || 0.09) });
+  function jingle(def) { if (sfxOn) KG.music.jingle(def); }
+  function panOf(b) { if (!b) return 0; const s = toScreen(b.p.x, b.p.y, b.p.z); return clamp((s[0] / W - 0.5) * 1.3, -0.8, 0.8); }
+  const COMBO = [0, 2, 4, 7, 9, 12, 14, 16, 19];
+  const sfx = {
+    shoot(f) { play('bb_throw', vary(clamp(0.5 + (f || 1) * 0.4, 0.4, 1), 0, 0.06)); },
+    swish(b) { play('bb_swish', vary(1, panOf(b))); },
+    rimIn(b) { play('bb_rimin', vary(1, panOf(b))); },
+    rim(i, b) { play('bb_rim', vary(clamp(i / 5, 0.15, 1), panOf(b), 0.06)); },
+    board(i, b) { play('bb_board', vary(clamp(i / 6, 0.15, 1), panOf(b))); },
+    bounce(i, b) { play('bb_bounce', vary(clamp(i / 6, 0.08, 1), panOf(b))); },
+    fence(i, b) { play('bb_fence', vary(clamp(i / 6, 0.1, 1), panOf(b))); },
+    cheer(n) { play('bb_cheer', { pitch: 1 + n / 10 }); },
+    buzzer() { play('bb_buzzer'); },
+    fire() { play('bb_fire'); },
+    fizz() { play('bb_fizz', vary(1)); },
+    tick() { play('tick'); },
+    bonus() { play('bb_bonus'); },
+    letter() { play('bb_letter', vary(1)); },
+    money() { play('bb_money', vary(1)); },
+    combo(n) { play('bb_combo', { pitch: Math.pow(2, COMBO[Math.min(COMBO.length - 1, Math.max(0, n - 1))] / 12) }); },
+    charge() { play('bb_charge', vary(1)); },
+    click() { if (sfxOn && !KG.isMuted()) KG.sfx.play('click', { pitch: 0.97 + Math.random() * 0.06 }); },
+    ui(n) { if (sfxOn && !KG.isMuted()) KG.sfx.play(n, { pitch: 0.97 + Math.random() * 0.06 }); }
+  };
+  function toggleMusic() { KG.music.setEnabled(!KG.music.isEnabled()); sfx.ui('ui'); }
+  function toggleSfx() { sfxOn = !sfxOn; KG.store.set(SFX_KEY, sfxOn); sfx.ui('ui'); }
+  // 音樂跟著畫面走：標題、比賽、結束
+  let audioT = 0, fireOn = false, fastOn = false;
+  function playSong(s) {
+    KG.music.play(s, { restart: true });
+    KG.music.setVolume(s === SONG_TITLE ? 0.34 : 0.26);
+    fireOn = false; fastOn = false;
+  }
+  function audioTick(dt) {
+    audioT -= dt;
+    if (audioT > 0) return;
+    audioT = 0.15;
+    let want = null;
+    if (phase === 'title') want = SONG_TITLE;
+    else if (phase === 'play') want = SONG_PLAY;
+    else if (phase === 'over' && stateT > 3.4) want = SONG_TITLE;
+    if (want && KG.music.current() !== want) playSong(want);
+    if (phase === 'play' && want === SONG_PLAY) {
+      const f = mult > 1 || (mode !== 'arcade' && streak >= 3);
+      if (f !== fireOn) { fireOn = f; KG.music.setLayer('fire', f); }
+      const fast = mode === 'arcade' && timeLeft > 0 && timeLeft <= 10 && !ending;
+      if (fast !== fastOn) { fastOn = fast; KG.music.setTempo(fast ? 1.08 : 1); }
+    }
   }
 
   /* =========================================================
@@ -775,7 +823,7 @@ function main() {
     mesh.visible = true; mesh.scale.setScalar(1);
     mesh.position.copy(b.p);
     balls.push(b);
-    if (owner !== 'demo') sfx.shoot();
+    if (owner !== 'demo') sfx.shoot(Math.hypot(vx, vy, vz) / 9);
     return b;
   }
   function playerShot(fr, yaw) {
@@ -839,10 +887,10 @@ function main() {
   }
   function hitSound(kind, jn, b) {
     if (b.owner === 'demo') { if (phase === 'title') return; }
-    if (kind === 'rim') { sfx.rim(jn); if (jn > 2.5) { shake = Math.max(shake, 0.12); burst(b.p.x, b.p.y - 0.05, b.p.z, 4, 1, 0.6, 0.2, 1.2, 0.03, 4); } }
-    else if (kind === 'board') sfx.board(jn);
-    else if (kind === 'fence') sfx.fence(jn);
-    else sfx.bounce(jn);
+    if (kind === 'rim') { sfx.rim(jn, b); if (jn > 2.5) { shake = Math.max(shake, 0.12); burst(b.p.x, b.p.y - 0.05, b.p.z, 4, 1, 0.6, 0.2, 1.2, 0.03, 4); } }
+    else if (kind === 'board') sfx.board(jn, b);
+    else if (kind === 'fence') sfx.fence(jn, b);
+    else sfx.bounce(jn, b);
   }
   function boxContact(b, B, ox) {
     const p = b.p;
@@ -1046,9 +1094,9 @@ function main() {
   function makeFx(b, kind) {
     const fire = b.fire;
     burst(hoop.x, RIM_Y - 0.12, 0, fire ? 26 : 14, 1, fire ? 0.55 : 0.8, fire ? 0.15 : 0.35, 2.2, 0.06, 3);
-    if (kind === 'swish') { sfx.swish(); for (let i = 0; i < 10; i++) emit(hoop.x + rand(-0.15, 0.15), RIM_Y - rand(0.1, 0.4), rand(-0.15, 0.15), 0, -rand(0.5, 1.5), 0, 0.5, 0.8, 0.95, 1, 0.05, 0); }
-    else if (kind === 'bank') sfx.swish();
-    else nz(0.25, 0.18, 4200, 0.9, 0.02, 2600);
+    if (kind === 'swish') { sfx.swish(b); for (let i = 0; i < 10; i++) emit(hoop.x + rand(-0.15, 0.15), RIM_Y - rand(0.1, 0.4), rand(-0.15, 0.15), 0, -rand(0.5, 1.5), 0, 0.5, 0.8, 0.95, 1, 0.05, 0); }
+    else if (kind === 'bank') sfx.swish(b);
+    else sfx.rimIn(b);
     nudge = Math.min(1, nudge + 0.8);
     shake = Math.max(shake, fire ? 0.25 : 0.1);
     KG.vibrate(fire ? 40 : 20);
@@ -1058,6 +1106,7 @@ function main() {
     makeFx(b, kind);
     if (b.owner === 'p') {
       makes++; streak++; roundStreak = Math.max(roundStreak, streak);
+      if (streak >= 2) sfx.combo(streak);
       if (streak > bests.streak) { bests.streak = streak; KG.best('basketball:streak', streak); }
     }
     if (mode === 'arcade') {
@@ -1084,7 +1133,7 @@ function main() {
       score += pts;
       addFloat('+' + pts, b.money ? '#ff5a6a' : '#ffffff', 32);
       if (kind === 'swish') addFloat('SWISH!', '#7fe8ff', 18, { dy: -0.3 });
-      if (b.money) sfx.cheer(1);
+      if (b.money) { sfx.money(); sfx.cheer(1); }
     } else if (mode === 'practice') {
       addFloat(KIND_TXT[kind], kind === 'swish' ? '#7fe8ff' : '#ffffff', 22);
       if (streak >= 5 && streak % 5 === 0) { sfx.cheer(1); showBanner('連進 ' + streak + ' 球', '手感發燙！', '#ff7a1a'); }
@@ -1140,7 +1189,7 @@ function main() {
       horseTurn(true);
     }
     snapCamera();
-    startMusic();
+    playSong(SONG_PLAY);
   }
   function finish() {
     phase = 'over'; stateT = 0;
@@ -1149,8 +1198,9 @@ function main() {
     if (mode === 'challenge') { if (score > bests.challenge) { bests.challenge = score; newRecord = score > 0; } KG.best('basketball:challenge', score); }
     if (mode === 'horse' && hs.letters.c >= 5) { horseWins++; KG.store.set('basketball:horseWins', horseWins); }
     const win = mode === 'horse' ? hs.letters.c >= 5 : true;
-    if (newRecord || (mode === 'horse' && win)) { sfx.cheer(3); KG.sound('win'); } else if (mode === 'horse') KG.sound('lose');
-    else sfx.cheer(1);
+    KG.music.stop(0.4);
+    if (newRecord || (mode === 'horse' && win)) { sfx.cheer(3); jingle(J_RECORD); } else if (mode === 'horse') jingle(J_LOSE);
+    else { sfx.cheer(1); jingle(J_END); }
   }
   const HORSE = 'HORSE';
   function horseTurn(newSpot) {
@@ -1229,6 +1279,7 @@ function main() {
   const _demoFrom = new THREE.Vector3();
   function update(dt) {
     clock += dt; stateT += dt;
+    audioTick(dt);
     if (phase === 'pause') return;
     if (banner) { banner.t += dt; if (banner.t > 2.4) banner = null; }
     // 籃框移動
@@ -1249,7 +1300,7 @@ function main() {
         }
       }
       if (mode === 'challenge') {
-        if (ch.moving > 0) { ch.moving -= dt; if (ch.moving <= 0.6 && ch.rack !== ch.nextRack) { ch.rack = ch.nextRack; setSpot(CH_SPOTS[ch.rack]); showBanner('第 ' + (ch.rack + 1) + ' 個位置', CH_SPOTS[ch.rack].name, '#ffb43a'); } }
+        if (ch.moving > 0) { ch.moving -= dt; if (ch.moving <= 0.6 && ch.rack !== ch.nextRack) { ch.rack = ch.nextRack; setSpot(CH_SPOTS[ch.rack]); showBanner('第 ' + (ch.rack + 1) + ' 個位置', CH_SPOTS[ch.rack].name, '#ffb43a'); play('whoosh', vary(0.8)); } }
         if (ch.idx >= 25 && !ending) ending = 0.0001;
       }
       if (ending) {
@@ -1583,6 +1634,9 @@ function main() {
     CPU_LV.forEach((lv, i) => button('cpu' + i, x + 50 + i * (cw + 3), y, cw, 34, lv.name, settings.cpu === i ? 2 : 0, () => { settings.cpu = i; saveSettings(); sfx.click(); }));
     txt('瞄準輔助', x, y + 59, 13, 'rgba(255,220,190,.85)', { weight: 800, align: 'left' });
     button('assist', x + 76, y + 42, w - 76, 34, settings.assist ? '開（顯示拋物線）' : '關（專家）', settings.assist ? 2 : 0, () => { settings.assist = !settings.assist; saveSettings(); sfx.click(); });
+    const tw = (w - 8) / 2, mOn = KG.music.isEnabled();
+    button('music', x, y + 84, tw, 34, '音樂 ' + (mOn ? '開' : '關'), mOn ? 2 : 0, toggleMusic);
+    button('sfx', x + tw + 8, y + 84, tw, 34, '音效 ' + (sfxOn ? '開' : '關'), sfxOn ? 2 : 0, toggleSfx);
   }
   function drawTitle() {
     dim(0.25);
@@ -1604,7 +1658,7 @@ function main() {
     } else {
       const pw = Math.min(420, W - 24);
       const bh = 56, gap = 9;
-      const ph = Math.min(H - 20, 186 + (bh + gap) * 4 + 96 + 44);
+      const ph = Math.min(H - 20, 186 + (bh + gap) * 4 + 138 + 44);
       const px = (W - pw) / 2, py = Math.max(10, (H - ph) / 2);
       panel(px, py, pw, ph);
       const ls = Math.min(62, pw * 0.16);
@@ -1612,20 +1666,23 @@ function main() {
       let y = py + 170;
       modeBtns().forEach((m, i) => { button(m[0], px + 22, y, pw - 44, bh, m[1], i === 0 ? 1 : 0, () => { sfx.click(); m[3](); }, m[2]); y += bh + gap; });
       drawOptions(px + 22, y + 6, pw - 44);
-      y += 96;
+      y += 138;
       txt('最高分 ' + bests.arcade + ' · 挑戰 ' + bests.challenge + '/30 · 最佳連進 ' + bests.streak, W / 2, y + 14, 12, '#ffd23a', { weight: 800 });
       txt(touchUsed ? '從球往上滑動投籃，越快越遠' : '滑鼠拖曳往上甩 · 或按住空白鍵蓄力、←→ 瞄準', W / 2, y + 34, 11, 'rgba(220,210,255,.7)', { weight: 600 });
     }
   }
   function drawPause() {
     dim(0.55);
-    const w = Math.min(340, W - 32), h = 250;
+    const w = Math.min(340, W - 32), h = 300;
     const x = (W - w) / 2, y = (H - h) / 2;
     panel(x, y, w, h);
     txt('暫停', W / 2, y + 48, 32, '#ffffff', { weight: 900, glow: '#ff8a20' });
     button('resume', x + 26, y + 84, w - 52, 46, '繼續', 1, togglePause);
     button('restart', x + 26, y + 138, w - 52, 42, '重新開始', 0, () => { sfx.click(); startGame(mode); });
     button('menu', x + 26, y + 188, w - 52, 42, '回到選單', 0, toMenu);
+    const tw = (w - 60) / 2, mOn = KG.music.isEnabled();
+    button('music', x + 26, y + 242, tw, 38, '音樂 ' + (mOn ? '開' : '關'), mOn ? 2 : 0, toggleMusic);
+    button('sfx', x + 34 + tw, y + 242, tw, 38, '音效 ' + (sfxOn ? '開' : '關'), sfxOn ? 2 : 0, toggleSfx);
   }
   function drawOver() {
     if (stateT < 0.6) return;
@@ -1646,7 +1703,7 @@ function main() {
     button('menu', x + 26, y + 262 * s, w - 52, 44 * Math.min(1, s * 1.1), '回到選單', 0, toMenu);
   }
   function toMenu() {
-    sfx.click();
+    sfx.ui('back');
     phase = 'title'; stateT = 0;
     for (let i = balls.length - 1; i >= 0; i--) { balls[i].resolved = true; removeBall(balls[i]); }
     hoop.amp = 0; floats.length = 0; banner = null; wait = null; charge = null;
@@ -1658,8 +1715,8 @@ function main() {
   }
   function togglePause() {
     sfx.click();
-    if (phase === 'pause') phase = 'play';
-    else if (phase === 'play') { phase = 'pause'; charge = null; swipe = null; }
+    if (phase === 'pause') { phase = 'play'; KG.music.resume(); }
+    else if (phase === 'play') { phase = 'pause'; charge = null; swipe = null; KG.music.pause(); }
   }
 
   /* =========================================================
@@ -1763,7 +1820,7 @@ function main() {
     if (phase !== 'play') return;
     if (k === 'ArrowLeft' || k === 'a' || k === 'A') aim.l = true;
     else if (k === 'ArrowRight' || k === 'd' || k === 'D') aim.r = true;
-    else if (k === ' ' && !e.repeat) { if (canShoot()) charge = { m: 0, dir: 1 }; }
+    else if (k === ' ' && !e.repeat) { if (canShoot()) { charge = { m: 0, dir: 1 }; sfx.charge(); } }
     else if (k === 'p' || k === 'P' || k === 'Escape') { kbSel = -1; togglePause(); }
     else if ((k === 'q' || k === 'Q') && mode === 'practice') practiceSpot(-1);
     else if ((k === 'e' || k === 'E') && mode === 'practice') practiceSpot(1);

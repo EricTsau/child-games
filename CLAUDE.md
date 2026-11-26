@@ -52,7 +52,7 @@
   - 不要抄現成的歌（例如垃圾車的《少女的祈禱》《給愛麗絲》）。
 - **短樂句**：`KG.music.jingle({bpm, inst, vol, notes:[['C5',1],['E5+G5',2]], bass:[['C3',長度,開始拍]], bassVol})`，過關、失敗、升級用，會自動壓低背景音樂。
 - **音效**：`KG.sfx.play(名稱, {vol, pitch, pan})`，內建約 38 種（`KG.sfx.list()`）；`KG.sfx.define(名稱, fn)` 自己疊出新的；
-  `KG.sfx.tone/noise` 做細節；`KG.sfx.loop('engine'|'hum'|'wind'|'water')` 做持續的聲音（`set(0~1, 音量)`、`stop()`）。
+  `KG.sfx.tone/noise` 做細節；`KG.sfx.loop('engine'|'hum'|'wind'|'water')` 做持續的聲音（`set(0~1, 音量)`、`stop()`；第一次點擊前建立也可以，會在可以出聲後的第一次 `set()` 才開始，`ready()` 查是否已經在響）。
   - **每個動作、每個事件都要有聲音**。重複的聲音音高隨機 ±3～6%、連擊音高上升、同一種聲音最多每 40 ms 一次、依畫面左右 pan。
   - 混音：音效在前、音樂在後，不能有刺耳的聲音；短而清脆比長而糊好。
 - **開關與暫停**：暫停選單（和標題／設定）要有「音樂 開/關」（`KG.music.setEnabled`，全站共用）和「音效 開/關」（自己的旗標存在 `KG.store`）。
@@ -61,6 +61,7 @@
 - 有語音（`KG.say`）的遊戲：講話時把音樂調小，講完再恢復。
 - 實作經驗：
   - jingle 走音效那一路、不會跟著音樂音量縮放，`vol` 大約 0.2～0.4、`bassVol` 調小，不然過關音樂會太大聲。
+  - `KG.sfx.noise` 的 `highpass`／`lowpass` 是寬頻雜音，同樣的 `vol` 會比 `bandpass` 大聲很多（短促的一下峰值可到 0.5），短雜音用 bandpass 或把 vol 調小。
   - 安靜的曲風（解謎、選單）RMS 容易低於 0.05，可以用 `KG.music.setVolume(0.3~0.4)` 拉高。
   - 鼓的 `pat` 只能用內建鼓聲；自己做的鼓聲（註冊到 `KG.music.INST`）要用 `seq` 寫。
   - 需要「跟拍子對齊」（節奏判定、煙火落在拍點）時，引擎沒有提供拍點時間：在 `KG.music.INST` 註冊一個不出聲的樂器、放在一條 `seq` 軌，它被排程時就會收到每拍的精確音訊時間（參考 drum-kit、fireworks）。音樂關掉時要有自己的時鐘備援。

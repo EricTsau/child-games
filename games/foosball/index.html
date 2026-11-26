@@ -21,6 +21,7 @@
 <canvas id="gl"></canvas>
 <canvas id="ui" aria-label="3D 桌上足球遊戲畫面"></canvas>
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
 <script type="module">
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
@@ -117,102 +118,142 @@ function main() {
   let shotPop = null, hintT = 0, lastInput = 'touch', toastMsg = null;
 
   /* =========================================================
-   * 音效（自備雜訊音源，KG.note 做音調）
+   * 音樂（原創，用 kg-music.js）
+   *   標題：G 大調 104 bpm 俏皮森巴（馬林巴、長笛）
+   *   比賽：D 大調 120 bpm 熱鬧森巴鼓隊（沙鈴、通鼓、拍手、銅管短奏）；比分接近或賽末點加「hype」層，賽末點加快
    * ========================================================= */
-  let AX = null, NB = null;
-  function ax() {
-    if (KG.isMuted()) return null;
-    if (!AX) {
-      const A = window.AudioContext || window.webkitAudioContext;
-      if (!A) return null;
-      try { AX = new A(); } catch (e) { return null; }
-      const len = AX.sampleRate * 2;
-      NB = AX.createBuffer(1, len, AX.sampleRate);
-      const d = NB.getChannelData(0);
-      for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
-    }
-    if (AX.state === 'suspended') AX.resume();
-    return AX;
-  }
-  window.addEventListener('pointerdown', () => { ax(); }, { capture: true });
-  window.addEventListener('keydown', () => { ax(); }, { capture: true });
-  function noise(dur, vol, freq, q, type, delay, attack) {
-    const a = ax();
-    if (!a) return;
-    const t = a.currentTime + (delay || 0);
-    const s = a.createBufferSource();
-    s.buffer = NB;
-    const f = a.createBiquadFilter();
-    f.type = type || 'bandpass'; f.frequency.value = freq; f.Q.value = q || 1;
-    const g = a.createGain();
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol), t + (attack || 0.003));
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    s.connect(f); f.connect(g); g.connect(a.destination);
-    s.start(t, Math.random() * 1.2);
-    s.stop(t + dur + 0.05);
-  }
-  let sfxKickT = 0, sfxWallT = 0, sfxPostT = 0;
-  function sfxKick(p) {
-    if (realT - sfxKickT < 0.045) return;
-    sfxKickT = realT;
-    noise(0.05, 0.12 + 0.4 * p, 2600 + 900 * p, 1.4);
-    KG.note(820 + 700 * p, 0.045, 'square', 0.03 + 0.06 * p);
-    KG.note(240, 0.06, 'triangle', 0.06 + 0.08 * p, 0, 160);
-  }
-  function sfxSwing(p) {
-    noise(0.12, 0.04 + 0.07 * p, 1300 + 1400 * p, 0.8);
-    KG.note(150, 0.05, 'square', 0.025);
-  }
-  function sfxWall(v) {
-    if (realT - sfxWallT < 0.05) return;
-    sfxWallT = realT;
-    const k = Math.min(1, v / 40);
-    noise(0.09, 0.08 + 0.4 * k, 360, 1.6);
-    KG.note(130, 0.1, 'sine', 0.06 + 0.25 * k, 0, 80);
-  }
-  function sfxPost() {
-    if (realT - sfxPostT < 0.08) return;
-    sfxPostT = realT;
-    KG.note(1850, 0.4, 'sine', 0.07); KG.note(2770, 0.3, 'sine', 0.045); noise(0.04, 0.2, 3200, 2);
-  }
-  function sfxGoal(good) {
-    noise(0.14, 0.45, 240, 1.2); KG.note(90, 0.25, 'sine', 0.3, 0, 50);
-    if (good) {
-      for (let i = 0; i < 3; i++) { KG.note(620, 0.32, 'sawtooth', 0.05, i * 0.62, 900); KG.note(900, 0.3, 'sawtooth', 0.05, i * 0.62 + 0.31, 620); }
-      noise(2.8, 0.32, 950, 0.6, 'bandpass', 0.05, 0.25);
-      noise(2.4, 0.18, 2300, 0.9, 'bandpass', 0.1, 0.3);
-    } else {
-      noise(1.5, 0.22, 520, 0.7, 'lowpass', 0.05, 0.2);
-      KG.note(330, 0.7, 'triangle', 0.05, 0.1, 210);
-    }
-  }
-  function sfxServe() { noise(0.7, 0.14, 260, 1, 'lowpass', 0, 0.05); KG.note(190, 0.18, 'sine', 0.06, 0.05, 150); }
-  function sfxWhistle() { KG.note(2500, 0.12, 'square', 0.025); KG.note(2500, 0.28, 'square', 0.025, 0.16, 2400); }
-  function sfxTick() { KG.note(1300, 0.03, 'square', 0.03); }
-  function sfxThunk() { noise(0.08, 0.3, 420, 1.4); KG.note(170, 0.1, 'triangle', 0.12, 0, 110); KG.note(2100, 0.05, 'triangle', 0.05, 0.12); }
+  const VX = { G: 'G4+B4+D5', Em7: 'G4+B4+E5', Am7: 'G4+C5+E5', D7: 'F#4+A4+C5', Bm7: 'F#4+B4+D5' };
+  const T_CH = ['G', 'Em7', 'Am7', 'D7', 'Bm7', 'Em7', 'Am7', 'D7'];
+  const SONG_TITLE = {
+    bpm: 104, swing: 0.1, chords: T_CH,
+    tracks: [
+      { inst: 'kick', pat: 'o...X...o...X...', vol: 0.55 },
+      { inst: 'shaker', pat: 'xoxxxoxxxoxxxoxx', vol: 0.4 },
+      { inst: 'rim', pat: ['x..x..x...x.x...', 'x..x..x...x..x..'], vol: 0.26 },
+      { inst: 'bass', chord: ['R.....5.R.....5.', 'R.....5.R...8.5.'], vol: 0.66 },
+      { inst: 'marimba', vol: 0.5, seq: T_CH.map(c => `. . . ${VX[c]} . . ${VX[c]} . . . ${VX[c]} . . ${VX[c]} . .`) },
+      { inst: 'flute', vol: 0.95, seq: [
+        'D5 . B4 D5 . G5 - E5', 'D5 - B4 . G4 . A4 B4', 'C5 . E5 . A5 - G5 E5', 'F#5 - - D5 . A4 C5 .',
+        'D5 . F#5 . B4 - A4 B4', 'G5 - E5 . D5 . B4 .', 'C5 . A4 C5 E5 - D5 C5', 'A4 - - F#4 . . D5 .'] },
+      { inst: 'marimba', vol: 0.5, seq: ['', 'G4 . B4 . D5 . . .', '', 'A4 . C5 . F#5 . . .', '', 'G4 . B4 . E5 . . .', '', 'F#4 . A4 . C5 . D5 .'] }
+    ]
+  };
+  const P_CH = ['D', 'Bm7', 'Em7', 'A7', 'D', 'F#m7', 'G', 'A7'];
+  const PV = { D: 'F#4+A4+D5', Bm7: 'F#4+A4+D5', Em7: 'G4+B4+D5', A7: 'G4+C#5+E5', 'F#m7': 'F#4+A4+C#5', G: 'G4+B4+D5' };
+  const SONG_PLAY = {
+    bpm: 120, swing: 0.06, chords: P_CH,
+    layers: { hype: false },
+    tracks: [
+      { inst: 'kick', pat: 'o...X...o...X...', vol: 0.7 },
+      { inst: 'tom', pat: ['......x.....x.x.', '......x.......xx'], vol: 0.42, pitch: 130 },
+      { inst: 'shaker', pat: 'xoxxxoxxxoxxxoxx', vol: 0.48 },
+      { inst: 'clap', pat: '...x..x...x..x..', vol: 0.26 },
+      { inst: 'rim', pat: 'x.xx.x.xx.x.xx.x', vol: 0.18 },
+      { inst: 'bass', chord: ['R.....5.R.....5.', 'R..5..R.8.....5.'], vol: 0.72 },
+      { inst: 'pluck', vol: 0.32, seq: P_CH.map(c => `. . ${PV[c]} . ${PV[c]} . . ${PV[c]} . ${PV[c]} . . ${PV[c]} . ${PV[c]} .`) },
+      { inst: 'brass', vol: 0.34, seq: P_CH.map((c, i) => i % 2 ? `. . . . . . . . . . . . ${PV[c]} . ${PV[c]} -` : '') },
+      { inst: 'lead', vol: 0.6, seq: [
+        'F#5 . A5 . F#5 D5 . E5', 'F#5 - D5 . B4 . A4 B4', 'G5 . B4 . E5 - D5 E5', 'C#5 - E5 . A5 - G5 .',
+        'F#5 . D5 F#5 A5 - F#5 .', 'E5 . C#5 . A4 - C#5 E5', 'D5 - B4 . G4 . B4 D5', 'C#5 - - . E5 . A4 .'] },
+      // 比分接近、賽末點：銅管對位、開鈸、鈸、通鼓滾奏
+      { inst: 'brass', layer: 'hype', vol: 0.36, seq: [
+        'A4 - - - D5 - - -', 'D5 - - - F#5 - - -', 'E5 - - - G5 - - -', 'E5 - - - C#5 - - -',
+        'A4 - - - D5 - - -', 'C#5 - - - E5 - - -', 'B4 - - - D5 - - -', 'C#5 - E5 - A5 - - -'] },
+      { inst: 'ohat', pat: '..x...x...x...x.', vol: 0.3, layer: 'hype' },
+      { inst: 'crash', pat: ['X...............', '................', '................', '................'], vol: 0.3, layer: 'hype' },
+      { inst: 'tom', pat: ['................', '................', '................', 'x.x.xxxx..x.x.xx'], vol: 0.4, pitch: 190, layer: 'hype' }
+    ]
+  };
+  window.__songs = { SONG_TITLE, SONG_PLAY };
+  const J = {
+    goal: { bpm: 220, inst: 'brass', vol: 0.26, notes: [['D5', 1], ['F#5', 1], ['A5', 2]], bass: [['D3', 4, 0]], bassVol: 0.22 },
+    conceded: { bpm: 170, inst: 'marimba', vol: 0.34, notes: [['A4', 1], ['F#4', 1], ['D4', 2]] },
+    mp: { bpm: 200, inst: 'brass', vol: 0.24, notes: [['A4', 1], ['A4', 1], ['D5', 2]] },
+    win: { bpm: 150, inst: 'brass', vol: 0.3, notes: [['A4', 1], ['D5', 1], ['F#5', 1], ['A5', 2], ['F#5', 1], ['A5', 1], ['B5', 1], ['D5+F#5+A5', 4]], bass: [['D3', 3, 0], ['A2', 4, 3], ['D3', 5, 7]], bassVol: 0.3 },
+    lose: { bpm: 120, inst: 'marimba', vol: 0.36, notes: [['F#5', 1], ['E5', 1], ['D5', 1], ['B4', 2], ['A4', 4]], bass: [['G2', 5, 0], ['A2', 4, 5]], bassVol: 0.24 }
+  };
+  window.__jingles = J;
 
-  // 背景音樂：輕鬆的酒吧放克
-  const BASS = [73.4, 73.4, 65.4, 65.4, 58.3, 58.3, 65.4, 69.3];
-  const CHORDS = [[293.7, 349.2, 440, 523.3], [261.6, 329.6, 392, 493.9], [233.1, 293.7, 349.2, 440], [220, 277.2, 329.6, 392]];
-  let mTimer = 0, mStep = 0;
-  function musicOn() {
-    if (screen === 'title') return true;
-    return phase === 'serve' || phase === 'play' || phase === 'goal' || phase === 'replay';
+  /* =========================================================
+   * 音效
+   * ========================================================= */
+  const SF = KG.sfx;
+  SF.define('fb_kick', (p, s) => { s.noise(0.05, { vol: 0.42, freq: 2700 * p, q: 1.4 }); s.tone(1100 * p, 0.045, { type: 'square', vol: 0.05 }); s.tone(240 * p, 0.07, { type: 'triangle', vol: 0.16, slide: 160 }); });
+  SF.define('fb_block', (p, s) => { s.noise(0.04, { vol: 0.3, freq: 1300 * p, q: 2 }); s.tone(310 * p, 0.06, { type: 'triangle', vol: 0.13, slide: 210 * p }); });
+  SF.define('fb_swing', (p, s) => { s.noise(0.12, { vol: 0.12, freq: 1300 * p, sweep: 2800 * p, q: 0.8 }); s.tone(150 * p, 0.05, { type: 'square', vol: 0.025 }); });
+  SF.define('fb_wall', (p, s) => { s.noise(0.09, { vol: 0.42, freq: 360 * p, q: 1.6 }); s.tone(130 * p, 0.1, { vol: 0.28, slide: 80 }); });
+  SF.define('fb_post', (p, s) => { s.tone(1850 * p, 0.4, { vol: 0.08 }); s.tone(2770 * p, 0.3, { vol: 0.05 }); s.noise(0.04, { vol: 0.2, freq: 3200 * p, q: 2 }); });
+  SF.define('fb_net', (p, s) => { s.noise(0.14, { vol: 0.45, freq: 240 * p, q: 1.2 }); s.tone(90 * p, 0.25, { vol: 0.32, slide: 50 }); });
+  SF.define('fb_horn', (p, s) => {
+    for (let i = 0; i < 3; i++) { s.tone(620 * p, 0.32, { type: 'sawtooth', vol: 0.045, delay: i * 0.62, slide: 900 * p }); s.tone(900 * p, 0.3, { type: 'sawtooth', vol: 0.045, delay: i * 0.62 + 0.31, slide: 620 * p }); }
+    s.noise(2.8, { vol: 0.24, freq: 950, q: 0.6, delay: 0.05, attack: 0.25 });
+    s.noise(2.4, { vol: 0.13, freq: 2300, q: 0.9, delay: 0.1, attack: 0.3 });
+    for (let i = 0; i < 10; i++) s.noise(0.04, { vol: 0.07, freq: 1300 + Math.random() * 1200, q: 1.4, delay: 0.2 + Math.random() * 1.8 });
+  });
+  SF.define('fb_groan', (p, s) => { s.noise(1.5, { vol: 0.17, freq: 520, type: 'lowpass', q: 0.7, delay: 0.05, attack: 0.2 }); s.tone(330 * p, 0.7, { type: 'triangle', vol: 0.05, delay: 0.1, slide: 210 * p, attack: 0.08 }); });
+  SF.define('fb_serve', (p, s) => { s.noise(0.7, { vol: 0.14, freq: 260 * p, type: 'lowpass', attack: 0.05 }); s.tone(190 * p, 0.18, { vol: 0.07, delay: 0.05, slide: 150 * p }); });
+  // 裁判哨子：兩個很近的音快速交替（顫音），短－長
+  SF.define('fb_whistle', (p, s) => {
+    const seg = (t0, len) => { for (let t = 0; t < len; t += 0.028) s.tone((((t / 0.028) | 0) % 2 ? 2480 : 2330) * p, 0.034, { vol: 0.045, delay: t0 + t, attack: 0.004 }); };
+    seg(0, 0.12); seg(0.18, 0.32);
+  });
+  SF.define('fb_switch', (p, s) => { s.tone(990 * p, 0.05, { type: 'triangle', vol: 0.1 }); s.noise(0.02, { vol: 0.1, freq: 3000 * p, q: 2 }); });
+  SF.define('fb_tick', (p, s) => { s.tone(1300 * p, 0.03, { type: 'square', vol: 0.04 }); });
+  SF.define('fb_lift', (p, s) => { s.tone(420 * p, 0.07, { type: 'triangle', vol: 0.08, slide: 640 * p }); s.noise(0.08, { vol: 0.06, freq: 1600 * p, sweep: 2600 * p, q: 1 }); });
+  SF.define('fb_thunk', (p, s) => { s.noise(0.08, { vol: 0.3, freq: 420 * p, q: 1.4 }); s.tone(170 * p, 0.1, { type: 'triangle', vol: 0.13, slide: 110 }); s.tone(2100 * p, 0.05, { type: 'triangle', vol: 0.05, delay: 0.12 }); });
+  SF.define('fb_bead', (p, s) => { s.tone(2100 * p, 0.04, { type: 'triangle', vol: 0.07 }); s.noise(0.02, { vol: 0.07, freq: 4000 * p, q: 3 }); });
+  SF.define('fb_dead', (p, s) => { s.tone(440 * p, 0.12, { type: 'triangle', vol: 0.08 }); s.tone(330 * p, 0.2, { type: 'triangle', vol: 0.08, delay: 0.1 }); });
+  SF.define('fb_replay', (p, s) => { s.noise(0.4, { vol: 0.14, freq: 3200 * p, sweep: 500, q: 1.2 }); s.tone(660 * p, 0.3, { type: 'triangle', vol: 0.05, slide: 330 * p }); });
+
+  const SFX_KEY = 'foosball:sfx';
+  let sfxOn = KG.store.get(SFX_KEY, true) !== false;
+  const sLast = {};
+  const _pv = new THREE.Vector3();
+  function panAt(x, z) { _pv.set(x, 0, z).project(camera); return clamp(_pv.x * 0.75, -0.8, 0.8); }
+  // 同一種聲音最多每 gap 毫秒一次；音高隨機 ±4%；標題畫面的示範比賽不出音效
+  function sfx(name, vol, pitch, pan, gap) {
+    if (!sfxOn || KG.isMuted() || screen !== 'game') return false;
+    const t = performance.now();
+    if (t - (sLast[name] || -1e9) < (gap || 40)) return false;
+    sLast[name] = t;
+    KG.sfx.play(name, { vol: vol == null ? 1 : vol, pitch: (pitch || 1) * (0.96 + Math.random() * 0.08), pan: pan || 0 });
+    return true;
   }
-  function startMusic() {
-    if (mTimer) return;
-    mTimer = setInterval(() => {
-      if (KG.isMuted() || document.hidden || !musicOn() || !AX) return;
-      const s = mStep % 16, bar = (mStep >> 3) % 8, ch = CHORDS[(mStep >> 4) % 4];
-      const root = BASS[bar];
-      if (s === 0 || s === 3 || s === 6 || s === 8 || s === 11 || s === 14) KG.note(root * (s === 6 || s === 14 ? 2 : 1), 0.16, 'triangle', 0.075);
-      if (s === 2 || s === 7 || s === 10 || s === 15) ch.forEach((f, i) => KG.note(f, 0.11, 'triangle', 0.011, i * 0.004));
-      if (s === 0 || s === 8) KG.note(105, 0.12, 'sine', 0.11, 0, 45);
-      if (s === 4 || s === 12) noise(0.09, 0.05, 1800, 0.7);
-      if (s % 2 === 1) noise(0.03, 0.018, 8000, 0.7, 'highpass');
-      mStep++;
-    }, 132);
+  function ui(name) { if (sfxOn && !KG.isMuted()) KG.sfx.play(name || 'click', { vol: 0.9, pitch: 0.97 + Math.random() * 0.06 }); }
+  function jingle(def) { return sfxOn ? KG.music.jingle(def) : 0; }
+  // 球員碰到球：踢球（越大力越響、同一隊連續觸球音高往上）或只是擋到
+  let chainTeam = -1, chain = 0;
+  function sfxHit(r, j) {
+    const k = Math.min(1, j / 45);
+    if (chainTeam === r.team) chain = Math.min(6, chain + 1); else { chainTeam = r.team; chain = 0; }
+    const pan = panAt(ball.x, ball.z), up = 1 + chain * 0.035;
+    if (r.mode === 'kick' || r.mode === 'over') sfx('fb_kick', 0.3 + 0.7 * k, (0.9 + 0.25 * k) * up, pan);
+    else sfx('fb_block', 0.25 + 0.75 * k, up, pan);
+  }
+  function sfxWall(v) { const k = Math.min(1, v / 40); sfx('fb_wall', 0.2 + 0.8 * k, 1, panAt(ball.x, ball.z), 50); }
+  // 拉動球桿的摩擦聲（持續）：依玩家這邊目前球桿的速度
+  let slide = null, slideT = 0;
+  function stopSlide() { if (slide) { slide.stop(); slide = null; } }
+  function updateSlide(dt) {
+    slideT -= dt;
+    if (slideT > 0) return;
+    slideT = 0.06;
+    const live = screen === 'game' && (phase === 'play' || phase === 'serve' || phase === 'goal');
+    if (!live || !sfxOn || KG.isMuted()) { if (slide) slide.set(0, 0.0001); return; }
+    let sp = 0;
+    for (let t = 0; t < 2; t++) if (human[t]) sp += Math.abs(rods[active[t]].sv);
+    const x = clamp(sp / 18, 0, 1);
+    if (!slide) { if (x < 0.05 || !KG.music._nodes()) return; slide = KG.sfx.loop('wind'); }
+    slide.set(0.15 + x * 0.5, x < 0.05 ? 0.0001 : 0.012 + x * 0.05);
+  }
+  let goalChainTeam = -1, goalChain = 0, mpShown = false;
+  function updateHype() {
+    if (screen !== 'game' || phase === 'over') { KG.music.setLayer('hype', false); KG.music.setTempo(1); return; }
+    const mp = score[0] === target - 1 || score[1] === target - 1;
+    const close = Math.abs(score[0] - score[1]) <= 1 && score[0] + score[1] >= 2;
+    KG.music.setLayer('hype', mp || close);
+    KG.music.setTempo(mp ? 1.06 : 1);
+    if (mp && !mpShown) { mpShown = true; jingle(J.mp); }
   }
 
   /* =========================================================
@@ -292,7 +333,7 @@ function main() {
         if (o.mode === 'idle' || o.mode === 'ret' || o.mode === 'lift') { o.mode = 'lift'; o.liftT = 0.45; o.liftAge = 0; }
       }
     }
-    if (screen === 'game') sfxSwing(p);
+    sfx('fb_swing', 0.5 + 0.5 * p, 0.9 + 0.3 * p, panAt(r.s, r.z), 60);
     return true;
   }
   function lift(r, t) {
@@ -349,7 +390,7 @@ function main() {
         ball.lastTeam = r.team;
         if (j > 1.2 && r.hitCool <= 0) {
           r.hitCool = 0.06;
-          if (screen === 'game') sfxKick(Math.min(1, j / 45));
+          if (screen === 'game') sfxHit(r, j);
           if (j > 22) burst(ball.x, R, ball.z, Math.min(10, (j / 6) | 0), 0xfff2c0, 3 + j * 0.06);
           if (screen === 'game' && human[r.team] && (r.mode === 'kick') && sp > 16) {
             shotPop = { kmh: sp * KMH, t: 1.3, team: r.team };
@@ -377,7 +418,7 @@ function main() {
         const d = Math.sqrt(d2), nx = dx / d, nz = dz / d;
         ball.x = px + nx * rr; ball.z = pz + nz * rr;
         const vn = ball.vx * nx + ball.vz * nz;
-        if (vn < 0) { ball.vx -= 1.55 * vn * nx; ball.vz -= 1.55 * vn * nz; if (vn < -2 && screen === 'game') sfxPost(); }
+        if (vn < 0) { ball.vx -= 1.55 * vn * nx; ball.vz -= 1.55 * vn * nz; if (vn < -2) sfx('fb_post', Math.min(1, 0.3 - vn / 25), 1, panAt(px, pz), 80); }
       }
     }
     if (Math.abs(ball.z) > HZ) {
@@ -452,14 +493,14 @@ function main() {
       }
       if (b !== active[t]) {
         activeHold[t] += dt;
-        if (activeHold[t] > 0.05) { active[t] = b; activeHold[t] = 0; if (human[t] && screen === 'game') sfxTick(); }
+        if (activeHold[t] > 0.05) { active[t] = b; activeHold[t] = 0; if (human[t]) sfx('fb_tick', 0.8, 1, 0, 60); }
       } else activeHold[t] = 0;
     }
   }
   function selectRod(team, idx) {
     if (!human[team]) return;
     manual[team] = idx; manualBase[team] = bestRod(team); active[team] = idx;
-    KG.note(990, 0.05, 'triangle', 0.06);
+    sfx('fb_switch', 1, 1 + teamRods[team].indexOf(idx) * 0.06, 0, 30);
   }
   function cycleRod(team) {
     const list = teamRods[team];
@@ -574,7 +615,7 @@ function main() {
   function liftTeam(team) {
     if (!canAct() || !human[team]) return;
     lift(rods[active[team]], 0.55);
-    KG.note(420, 0.06, 'triangle', 0.05, 0, 600);
+    sfx('fb_lift', 1, 1, panAt(rods[active[team]].s, rods[active[team]].z));
   }
 
   /* =========================================================
@@ -596,8 +637,10 @@ function main() {
     shotPop = null;
     beginServe(Math.random() < 0.5 ? 0 : 1, 1.3);
     layout();
-    startMusic();
-    sfxWhistle();
+    chainTeam = -1; goalChainTeam = -1; goalChain = 0; mpShown = false;
+    KG.music.setLayer('hype', false); KG.music.setTempo(1);
+    KG.music.setVolume(0.36); KG.music.play(SONG_PLAY, { restart: true });
+    sfx('fb_whistle', 1);
   }
   function beginServe(team, delay) {
     phase = 'serve'; phaseT = 0; serveDelay = delay; serveTeam = team;
@@ -611,7 +654,8 @@ function main() {
     phase = 'play'; phaseT = 0; deadT = 0;
     retBall.visible = false;
     resetTrail();
-    if (screen === 'game') sfxServe();
+    sfx('fb_serve', 1, 1, panAt(ball.x, ball.z));
+    chainTeam = -1;
   }
   function goal(team) {
     const sp = Math.hypot(ball.vx, ball.vz), kmh = sp * KMH;
@@ -629,7 +673,12 @@ function main() {
     shake = 0.6;
     KG.vibrate(human[team] ? [40, 40, 80] : 120);
     const good = human[team] || (human[0] && human[1]) || (!human[0] && !human[1]);
-    sfxGoal(good);
+    // 同一隊連續進球：號角一次比一次高
+    if (goalChainTeam === team) goalChain = Math.min(4, goalChain + 1); else { goalChainTeam = team; goalChain = 0; }
+    sfx('fb_net', 1, 1, panAt(ball.x, ball.z));
+    if (good) { sfx('fb_horn', 1, 1 + goalChain * 0.04); setTimeout(() => jingle(J.goal), 120); }
+    else { sfx('fb_groan', 1); setTimeout(() => jingle(J.conceded), 120); }
+    if (rec) sfx('star', 0.8);
     const gz = ball.inGoal * HZ;
     for (let i = 0; i < 3; i++) burst(rand(-GW, GW), 0.6, gz, 12, TEAM_HEX[team], 6);
     burst(0, 0.8, gz, 10, 0xffe9a8, 7);
@@ -638,7 +687,7 @@ function main() {
     if (!retShown && phaseT > 1.0) {
       retShown = true; retEnd = ball.inGoal || 1; retAnim = 0;
       retBall.visible = true;
-      if (screen === 'game') sfxThunk();
+      sfx('fb_thunk', 1, 1, panAt(-0.4, retEnd * OUT_Z));
     }
     const demo = goalInfo && goalInfo.demo;
     if (phaseT > (demo ? 1.4 : 2.1)) {
@@ -650,16 +699,19 @@ function main() {
     if (screen === 'game') {
       for (let t = 0; t < 2; t++) if (score[t] >= target) { endMatch(t); return; }
     }
+    updateHype();
     const conceded = goalInfo ? 1 - goalInfo.team : 0;
     beginServe(conceded, screen === 'game' ? 0.8 : 0.5);
   }
   function startReplay() {
     phase = 'replay'; phaseT = 0;
+    sfx('fb_replay', 1);
     rpT = Math.max(goalTime - 1.3, oldestRec()); rpEnd = goalTime + 0.45;
     resetTrail();
   }
   function endReplay() {
     if (phase !== 'replay') return;
+    sfx('swoosh', 0.5, 1.2);
     afterGoal();
   }
   function endMatch(w) {
@@ -671,7 +723,14 @@ function main() {
     } else if (mode === '2p') stats.p2++;
     saveStats();
     KG.best('foosball-streak', stats.bestStreak);
-    if (mode === '2p' || w === 0) { KG.sound('win'); KG.confetti(); } else KG.sound('lose');
+    if (mode === '2p' || w === 0) KG.confetti();
+    // 結束：停掉比賽音樂、播勝負短樂句（比賽的哨音），之後換回標題曲
+    const won = mode === '2p' || w === 0;
+    updateHype(); stopSlide();
+    KG.music.stop(0.5);
+    sfx('fb_whistle', 1, 0.94);
+    setTimeout(() => jingle(won ? J.win : J.lose), 650);
+    setTimeout(() => { if (screen === 'game' && phase === 'over') { KG.music.setVolume(0.42); KG.music.play(SONG_TITLE); } }, 4200);
   }
   function toTitle() {
     screen = 'title'; phase = 'serve'; autoAll = false;
@@ -680,12 +739,13 @@ function main() {
     resetRods();
     beginServe(0, 0.6);
     layout();
+    stopSlide(); updateHype();
+    KG.music.resume(); KG.music.setVolume(0.42); KG.music.play(SONG_TITLE);
   }
   function togglePause() {
     if (screen !== 'game') return;
-    KG.sound('click');
-    if (phase === 'pause') phase = prevPhase;
-    else if (phase === 'play' || phase === 'serve' || phase === 'goal' || phase === 'replay') { prevPhase = phase; phase = 'pause'; }
+    if (phase === 'pause') { phase = prevPhase; KG.music.resume(); ui('select'); }
+    else if (phase === 'play' || phase === 'serve' || phase === 'goal' || phase === 'replay') { prevPhase = phase; phase = 'pause'; KG.music.pause(); stopSlide(); ui('back'); }
   }
 
   /* ---------- 進球重播紀錄 ---------- */
@@ -727,6 +787,7 @@ function main() {
     if (shotPop) { shotPop.t -= dt; if (shotPop.t <= 0) shotPop = null; }
     if (toastMsg) { toastMsg.t -= dt; if (toastMsg.t <= 0) toastMsg = null; }
     if (retBall.visible) retAnim = Math.min(1, retAnim + dt * 1.6);
+    updateSlide(dt);
     if (screen === 'game' && (phase === 'pause' || phase === 'over')) { updateParticles(dt); return; }
     if (phase === 'replay') {
       rpT += dt * 0.4;
@@ -756,7 +817,7 @@ function main() {
       if (!isFinite(ball.x) || !isFinite(ball.z)) { ball.x = 0; ball.z = 0; ball.vx = ball.vz = 0; deadT = 99; }
       if (sp < 0.5) deadT += sdt; else deadT = 0;
       if (deadT > 3.5) {
-        if (screen === 'game') { toastMsg = { text: '死球，重新發球', t: 1.4 }; KG.sound('tick'); }
+        if (screen === 'game') { toastMsg = { text: '死球，重新發球', t: 1.4 }; sfx('fb_dead', 1); }
         beginServe(ball.z > 0 ? 0 : 1, 0.7);
       }
     }
@@ -1264,7 +1325,7 @@ function main() {
       const tx = k < score[t] ? HX - 0.35 - (score[t] - 1 - k) * 0.22 : -HX + 0.35 + (k - score[t]) * 0.22;
       const old = beadX[i];
       beadX[i] += (tx - beadX[i]) * Math.min(1, dt * 7);
-      if (Math.abs(old - tx) > 0.3 && Math.abs(beadX[i] - tx) <= 0.3 && screen === 'game') KG.note(2100, 0.04, 'triangle', 0.05);
+      if (Math.abs(old - tx) > 0.3 && Math.abs(beadX[i] - tx) <= 0.3 && screen === 'game') sfx('fb_bead', 1, 1 + (i % 10) * 0.03, 0, 30);
       const xx = t === 0 ? beadX[i] : -beadX[i];
       m4.makeTranslation(xx, WALL_H + 0.16, (t === 0 ? 1 : -1) * (HZ + ET / 2));
       beads.setMatrixAt(i, m4);
@@ -1509,10 +1570,21 @@ function main() {
     txt(LV_NAME.map((n, i) => n + ' ' + stats.w[i] + '/' + stats.l[i]).join('　'), x, y + 22, 14, '#f6ead0', { weight: 700, align: a });
     txt('連勝 ' + stats.streak + '（最佳 ' + stats.bestStreak + '）· 最快進球 ' + (stats.bestKmh ? stats.bestKmh.toFixed(1) + ' km/h' : '—'), x, y + 44, 13, '#f6ead0', { weight: 700, align: a });
   }
+  const TG_RP = () => { opts.replay = !opts.replay; saveOpts(); ui('click'); };
+  const TG_MUS = () => { KG.music.setEnabled(!KG.music.isEnabled()); ui('click'); };
+  const TG_SFX = () => { sfxOn = !sfxOn; KG.store.set(SFX_KEY, sfxOn); if (!sfxOn) stopSlide(); ui('click'); };
+  function soundRow(x, y, w, h, withReplay) {
+    const n = withReplay ? 3 : 2, g = 8, bw = (w - g * (n - 1)) / n;
+    let i = 0;
+    if (withReplay) { btn('rp', x, y, bw, h, opts.replay ? '重播 開' : '重播 關', opts.replay ? 'norm' : 'dim', TG_RP, 15); i++; }
+    const m = KG.music.isEnabled();
+    btn('mus', x + i * (bw + g), y, bw, h, m ? '音樂 開' : '音樂 關', m ? 'norm' : 'dim', TG_MUS, 15); i++;
+    btn('sfx', x + i * (bw + g), y, bw, h, sfxOn ? '音效 開' : '音效 關', sfxOn ? 'norm' : 'dim', TG_SFX, 15);
+  }
   function optionRows(x, y, w) {
     const seg = (id, labels, sel, onPick, dim) => {
       const g = 8, bw = (w - g * (labels.length - 1)) / labels.length;
-      labels.forEach((l, i) => btn(id + i, x + i * (bw + g), y, bw, 42, l, dim ? 'dim' : (sel === i ? 'sel' : 'norm'), () => { KG.sound('click'); onPick(i); }, 16));
+      labels.forEach((l, i) => btn(id + i, x + i * (bw + g), y, bw, 42, l, dim ? 'dim' : (sel === i ? 'sel' : 'norm'), () => { ui('click'); onPick(i); }, 16));
     };
     txt('對戰模式', x, y - 12, 13, 'rgba(244,196,87,.9)', { align: 'left' });
     seg('m', ['單人 vs 電腦', '雙人同機'], opts.mode === '2p' ? 1 : 0, i => { opts.mode = i ? '2p' : 'cpu'; saveOpts(); });
@@ -1523,9 +1595,10 @@ function main() {
     txt('勝利條件', x, y - 12, 13, 'rgba(244,196,87,.9)', { align: 'left' });
     seg('t', ['先得 5 分', '先得 10 分'], opts.target === 10 ? 1 : 0, i => { opts.target = i ? 10 : 5; saveOpts(); });
     y += 58;
-    btn('rp', x, y, w, 38, '進球慢動作重播：' + (opts.replay ? '開' : '關'), opts.replay ? 'norm' : 'dim', () => { KG.sound('click'); opts.replay = !opts.replay; saveOpts(); }, 15);
+    // 重播、音樂、音效三個開關放一排（音樂是全站共用設定）
+    soundRow(x, y, w, 38, true);
     y += 50;
-    btn('go', x, y, w, 54, '開始比賽', 'primary', () => { KG.sound('click'); startMatch(); }, 21);
+    btn('go', x, y, w, 54, '開始比賽', 'primary', () => { ui('select'); startMatch(); }, 21);
     return y + 54;
   }
   function drawTitle() {
@@ -1557,14 +1630,15 @@ function main() {
   }
   function drawPause() {
     dimBack(0.5);
-    const PW = 300, PH = 268, s = Math.min(1.15, (W - 16) / PW, (H - 16) / PH);
+    const PW = 300, PH = 318, s = Math.min(1.15, (W - 16) / PW, (H - 16) / PH);
     setU((W - PW * s) / 2, (H - PH * s) / 2, s);
     panel(0, 0, PW, PH);
     txt('暫停', PW / 2, 46, 30, '#fff3dc', { weight: 900 });
     txt(TEAM_NAME[0] + ' ' + score[0] + ' : ' + score[1] + ' ' + TEAM_NAME[1], PW / 2, 80, 15, 'rgba(244,196,87,.9)', { weight: 800 });
-    btn('resume', 26, 104, PW - 52, 48, '繼續比賽', 'primary', togglePause, 19);
-    btn('restart', 26, 162, PW - 52, 40, '重新開始', 'norm', () => { KG.sound('click'); startMatch(); }, 16);
-    btn('menu', 26, 212, PW - 52, 40, '回到選單', 'norm', () => { KG.sound('click'); toTitle(); }, 16);
+    soundRow(26, 102, PW - 52, 38, false);
+    btn('resume', 26, 152, PW - 52, 48, '繼續比賽', 'primary', togglePause, 19);
+    btn('restart', 26, 210, PW - 52, 40, '重新開始', 'norm', () => { ui('select'); KG.music.resume(); startMatch(); }, 16);
+    btn('menu', 26, 260, PW - 52, 40, '回到選單', 'norm', () => { ui('back'); toTitle(); }, 16);
     resetU();
   }
   function drawOver() {
@@ -1587,8 +1661,8 @@ function main() {
       txt('目前連勝 ' + stats.streak + ' · 最佳連勝 ' + stats.bestStreak, PW / 2, y, 14, '#f6ead0', { weight: 700 }); y += 22;
     } else { txt('雙人對戰已進行 ' + stats.p2 + ' 場', PW / 2, y, 14, '#f6ead0', { weight: 700 }); y += 22; }
     txt('本場最快進球 ' + (matchKmh ? matchKmh.toFixed(1) + ' km/h' : '—') + (newRecord ? '　★ 新紀錄' : ''), PW / 2, y, 14, newRecord ? '#ffd877' : 'rgba(244,196,87,.85)', { weight: 800 });
-    btn('again', 26, 214, PW - 52, 48, '再來一場', 'primary', () => { KG.sound('click'); startMatch(); }, 19);
-    btn('menu2', 26, 272, PW - 52, 40, '回到選單', 'norm', () => { KG.sound('click'); toTitle(); }, 16);
+    btn('again', 26, 214, PW - 52, 48, '再來一場', 'primary', () => { ui('select'); startMatch(); }, 19);
+    btn('menu2', 26, 272, PW - 52, 40, '回到選單', 'norm', () => { ui('back'); toTitle(); }, 16);
     resetU();
   }
   function drawScore() {
@@ -1815,10 +1889,10 @@ function main() {
     if (KEYV[k] && screen === 'game') lastInput = 'key';
     if (e.repeat) return;
     if (KEYV[k] && canAct()) { const t = keyTeam(k); if (human[t]) cursor[t] = clamp(cursor[t] + dirOfKey(k, t) * 0.18, -HX, HX); }
-    if (screen === 'title') { if (k === 'Enter' || k === ' ') { KG.sound('click'); startMatch(); } return; }
+    if (screen === 'title') { if (k === 'Enter' || k === ' ') { ui('select'); startMatch(); } return; }
     if (k === 'p' || k === 'P' || k === 'Escape') { togglePause(); return; }
     if (phase === 'pause') { if (k === 'Enter' || k === ' ') togglePause(); return; }
-    if (phase === 'over') { if ((k === 'Enter' || k === ' ') && phaseT > 0.9) { KG.sound('click'); startMatch(); } return; }
+    if (phase === 'over') { if ((k === 'Enter' || k === ' ') && phaseT > 0.9) { ui('select'); startMatch(); } return; }
     if (phase === 'replay') { if (k === 'Enter' || k === ' ') endReplay(); return; }
     const two = mode === '2p';
     if (k === ' ') { lastInput = 'key'; kickTeam(0, 0.9); }
@@ -1937,7 +2011,6 @@ function main() {
   toTitle();
   precompile();
   booted = true;
-  startMusic();
   requestAnimationFrame(frame);
 
   /* ---------- 測試掛勾 ---------- */

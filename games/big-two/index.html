@@ -116,6 +116,8 @@
   .rules ul { margin: 0 0 4px; padding-left: 20px; }
   .rules b { color: var(--ink); }
   #rulesOv .card { width: min(560px, 100%); }
+  /* 窄螢幕：卡片會橫跨整個寬度，往下讓開左上 🏠、右上 🔊 */
+  @media (max-width: 720px) { .ov:not(#title) { padding-top: 66px; } }
 </style>
 </head>
 <body>
@@ -142,6 +144,7 @@
     <div class="frow"><label>炸彈壓 2</label><div class="seg" id="segBomb2"><button data-v="on">可以</button><button data-v="off">不行</button></div></div>
     <div class="frow"><label>老二加倍</label><div class="seg" id="segLaoer"><button data-v="on">開</button><button data-v="off">關</button></div></div>
     <div class="frow"><label>五張比較</label><div class="seg" id="segCross"><button data-v="off">同類相比</button><button data-v="on">大壓小</button></div></div>
+    <div class="frow"><label>聲音</label><div class="seg" id="tSnd"><button data-k="m">音樂 開</button><button data-k="s">音效 開</button></div></div>
     <div class="tbtns"><button class="gbtn" id="tRules">規則</button><button class="gbtn" id="tCont">繼續牌局</button><button class="gbtn pri" id="tStart">開始</button></div>
     <div class="rec" id="tRec"></div>
     <div class="tips">遊戲點數僅供計分。對手：阿明（穩健）・小美（積極）・陳伯（老練）<br>鍵盤：←→ 移動・空白鍵 選牌・Enter 出牌・X 過・H 提示・S 排序・P 暫停</div>
@@ -151,7 +154,7 @@
   <div class="card glass pcard">
     <h2>暫停</h2>
     <div class="frow"><label>速度</label><div class="seg" id="pSpeed"><button data-v="normal">標準</button><button data-v="fast">快速</button></div></div>
-    <div class="frow"><label>背景音樂</label><div class="seg" id="pMusic"><button data-v="on">開</button><button data-v="off">關</button></div></div>
+    <div class="frow"><label>聲音</label><div class="seg" id="pSnd"><button data-k="m">音樂 開</button><button data-k="s">音效 開</button></div></div>
     <div class="stat" id="pStats"></div>
     <div class="acts">
       <button class="gbtn pri" id="pResume">繼續</button>
@@ -214,6 +217,7 @@
   </div>
 </div>
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
 <script>
 /* =========================================================
  * 大老二核心規則與電腦對手（不依賴畫面，可單獨測試）
@@ -694,96 +698,155 @@ const Core = (function () {
   /* =========================================================
    * 設定與紀錄
    * ========================================================= */
-  const settings = Object.assign({ rounds: '8', speed: 'normal', bomb2: 'on', laoer: 'on', cross: 'off', music: 'on', sort: 'rank' }, KG.store.get('big-two:settings', {}));
+  const settings = Object.assign({ rounds: '8', speed: 'normal', bomb2: 'on', laoer: 'on', cross: 'off', sort: 'rank' }, KG.store.get('big-two:settings', {}));
   const saveSettings = () => KG.store.set('big-two:settings', settings);
   const stats = Object.assign({ rounds: 0, wins: 0, matches: 0, matchWins: 0, bestRound: 0, bombs: 0, total: 0 }, KG.store.get('big-two:stats', {}));
   const saveStats = () => KG.store.set('big-two:stats', stats);
 
   /* =========================================================
-   * 音效（WebAudio，遵守靜音）
+   * 音樂與音效（共用引擎 kg-music.js）
    * ========================================================= */
-  const AU = { c: null, m: null, nb: null };
-  function A() {
-    if (!AU.c) {
-      const AC = window.AudioContext || window.webkitAudioContext;
-      if (!AC) return null;
-      const c = AU.c = new AC();
-      AU.m = c.createGain(); AU.m.gain.value = 0.9; AU.m.connect(c.destination);
-      const len = c.sampleRate, b = c.createBuffer(1, len, c.sampleRate), d = b.getChannelData(0);
-      for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
-      AU.nb = b;
-    }
-    if (AU.c.state === 'suspended') AU.c.resume();
-    return AU.c;
+  const M = KG.music, SN = KG.sfx;
+  let sfxOn = KG.store.get('big-two:sfx', true) !== false;
+  const sfxLast = Object.create(null);
+  const SEAT_PAN = [0, 0.5, 0, -0.5];
+  /** 播放音效：同一種 40 ms 內只播一次、音高隨機 ±4%（exact 時不變）、依座位左右聲道 */
+  function sfx(name, pitch, vol, pan, exact) {
+    if (!sfxOn || !SN) return;
+    const t = performance.now();
+    if (t - (sfxLast[name] || 0) < 40) return;
+    sfxLast[name] = t;
+    const p = (pitch || 1) * (exact ? 1 : 0.96 + Math.random() * 0.08);
+    if (vol == null && !pan) SN.play(name, { pitch: p }); else SN.play(name, { pitch: p, vol: vol == null ? 1 : vol, pan: pan || 0 });
   }
-  window.addEventListener('pointerdown', () => { A(); }, { capture: true });
-  function tone(f, dur, type, vol, delay, slide) {
-    if (KG.isMuted()) return;
-    const c = A(); if (!c) return;
-    const t = c.currentTime + (delay || 0);
-    const os = c.createOscillator(), g = c.createGain();
-    os.type = type || 'sine';
-    os.frequency.setValueAtTime(f, t);
-    if (slide) os.frequency.exponentialRampToValueAtTime(slide, t + dur);
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(vol, t + 0.006);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    os.connect(g); g.connect(AU.m);
-    os.start(t); os.stop(t + dur + 0.05);
+  function jingle(def) { if (sfxOn && M) M.jingle(def); }
+  if (M && M.INST && !M.INST.b2Gong) {
+    const I = M.INST;
+    // 舞獅的大鑼：低沉的鼓聲＋不和諧的鐘聲泛音
+    I.b2Gong = (f, t, d, v, out) => { I.tom(f * 0.5, t, d, v * 0.55, out); I.bell(f * 1.41, t, d, v * 0.3, out); I.bell(f * 2.13, t, d, v * 0.18, out); };
+    // 小鈸：短促的金屬聲
+    I.b2Cym = (f, t, d, v, out) => { I.shaker(0, t, d, v * 1.6, out); I.ohat(0, t, d, v * 0.55, out); };
+    // 月琴：撥弦＋拇指琴的亮音頭
+    I.b2Yue = (f, t, d, v, out) => { I.pluck(f, t, d, v * 0.75, out); I.kalimba(f * 2, t, d, v * 0.3, out); };
   }
-  function nz(dur, vol, delay, type, freq, q) {
-    if (KG.isMuted()) return;
-    const c = A(); if (!c) return;
-    const t = c.currentTime + (delay || 0);
-    const src = c.createBufferSource(); src.buffer = AU.nb;
-    const f = c.createBiquadFilter(); f.type = type || 'bandpass'; f.frequency.value = freq || 1500; f.Q.value = q || 0.8;
-    const g = c.createGain();
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(vol, t + 0.004);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    src.connect(f); f.connect(g); g.connect(AU.m);
-    src.start(t, Math.random() * 0.5, dur + 0.05);
+  if (SN) {
+    // 發牌：一張牌滑出去「刷」
+    SN.define('b2_deal', (p, s) => { s.noise(0.05, { vol: 0.13, freq: 3200 * p, sweep: 1800 * p, q: 1.2 }); });
+    // 洗牌／理牌：一串快速的刷刷聲
+    SN.define('b2_riffle', (p, s) => { for (let i = 0; i < 7; i++) s.noise(0.04, { vol: 0.1 + (i % 2) * 0.03, freq: (2600 + i * 120) * p, q: 1.4, delay: i * 0.035 }); });
+    SN.define('b2_pick', (p, s) => { s.noise(0.02, { vol: 0.12, freq: 3800 * p, q: 3 }); s.tone(1250 * p, 0.04, { type: 'triangle', vol: 0.07 }); });
+    SN.define('b2_unpick', (p, s) => { s.noise(0.02, { vol: 0.1, freq: 3000 * p, q: 3 }); s.tone(900 * p, 0.04, { type: 'triangle', vol: 0.06 }); });
+    // 出牌：牌甩在桌上「啪」
+    SN.define('b2_slap', (p, s) => { s.noise(0.05, { vol: 0.24, freq: 2200 * p, q: 1.1 }); s.noise(0.08, { vol: 0.16, freq: 420 * p, type: 'lowpass' }); s.tone(150 * p, 0.08, { vol: 0.16, slide: 85 }); });
+    SN.define('b2_slap5', (p, s) => {
+      for (let i = 0; i < 4; i++) s.noise(0.045, { vol: 0.17, freq: (2500 - i * 180) * p, q: 1.1, delay: i * 0.03 });
+      s.noise(0.1, { vol: 0.2, freq: 460 * p, type: 'lowpass', delay: 0.1 }); s.tone(140 * p, 0.1, { vol: 0.2, slide: 75, delay: 0.1 });
+    });
+    // 過：手指敲兩下桌面
+    SN.define('b2_knock', (p, s) => { for (const d of [0, 0.1]) { s.noise(0.05, { vol: 0.2, freq: 360 * p, type: 'lowpass', delay: d }); s.tone(160 * p, 0.07, { vol: 0.17, slide: 95, delay: d }); } });
+    // 輪到你：輕輕的木魚＋鈴（D 調五聲）
+    SN.define('b2_turn', (p, s) => { s.tone(880 * p, 0.25, { vol: 0.06 }); s.tone(1175 * p, 0.32, { vol: 0.05, delay: 0.08 }); s.noise(0.02, { vol: 0.08, freq: 1700, q: 6 }); });
+    SN.define('b2_bad', (p, s) => { s.tone(230 * p, 0.12, { type: 'triangle', vol: 0.13, slide: 170 * p }); s.tone(170 * p, 0.12, { type: 'triangle', vol: 0.09, delay: 0.08 }); });
+    SN.define('b2_hint', (p, s) => { s.tone(1047 * p, 0.09, { type: 'triangle', vol: 0.06 }); s.tone(1397 * p, 0.14, { type: 'triangle', vol: 0.05, delay: 0.06 }); });
+    // 一輪結束、桌上的牌收走
+    SN.define('b2_sweep', (p, s) => { s.noise(0.26, { vol: 0.12, freq: 2200 * p, sweep: 700 * p, q: 0.9 }); s.tone(587 * p, 0.2, { vol: 0.035, delay: 0.06, slide: 880 * p }); });
+    // 五張牌型：D-F-A 往上
+    SN.define('b2_five', (p, s) => { [587, 698, 880].forEach((f, i) => s.tone(f * p, 0.22, { type: 'triangle', vol: 0.07, delay: i * 0.055 })); });
+    // 出 2：清亮的一聲
+    SN.define('b2_two', (p, s) => { s.tone(1175 * p, 0.22, { vol: 0.08 }); s.tone(1760 * p, 0.32, { vol: 0.05, delay: 0.07 }); });
+    // 炸彈（鐵支／同花順）：大鑼＋鈸＋低音爆
+    SN.define('b2_bomb', (p, s) => {
+      s.tone(72 * p, 0.9, { vol: 0.34, slide: 40 }); s.noise(0.5, { vol: 0.24, freq: 320 * p, type: 'lowpass' });
+      s.noise(0.7, { vol: 0.1, freq: 4200 * p, sweep: 2500, q: 0.8, delay: 0.02 });
+      [196, 277, 415].forEach((f, i) => s.tone(f * p, 1.3, { vol: 0.07 - i * 0.015, delay: 0.03 }));
+      [294, 349, 440, 587].forEach((f, i) => s.tone(f * p, 0.45, { type: 'sawtooth', vol: 0.022, delay: 0.14 + i * 0.07 }));
+    });
+    // 報牌：兩聲木魚警示
+    SN.define('b2_warn', (p, s) => { [0, 0.15].forEach(d => { s.noise(0.03, { vol: 0.14, freq: 1500, q: 6, delay: d }); s.tone(1047 * p, 0.1, { type: 'triangle', vol: 0.07, delay: d }); }); });
   }
   const SFX = {
-    deal(d) { nz(0.06, 0.22, d, 'bandpass', 3600, 0.7); },
-    pick(on) { tone(on ? 1500 : 1100, 0.05, 'triangle', 0.06); nz(0.03, 0.08, 0, 'highpass', 5000); },
-    play(n) { for (let i = 0; i < Math.min(n, 5); i++) nz(0.07, 0.4, i * 0.035, 'bandpass', 2600 - i * 200, 0.7); nz(0.09, 0.45, 0, 'lowpass', 500, 1); tone(140, 0.08, 'sine', 0.18, 0, 80); },
-    pass() { for (const t of [0, 0.1]) { nz(0.06, 0.45, t, 'lowpass', 380, 1); tone(150, 0.07, 'sine', 0.18, t, 90); } },
-    turn() { tone(880, 0.3, 'sine', 0.07); tone(1320, 0.4, 'sine', 0.05, 0.09); },
-    bad() { tone(220, 0.16, 'square', 0.05, 0, 160); },
-    hint() { tone(988, 0.08, 'triangle', 0.06); tone(1319, 0.12, 'triangle', 0.05, 0.06); },
-    trick() { nz(0.25, 0.14, 0, 'bandpass', 1800, 0.5); tone(660, 0.2, 'sine', 0.04, 0.05, 990); },
-    sort() { for (let i = 0; i < 5; i++) nz(0.04, 0.15, i * 0.03, 'bandpass', 3000, 0.8); },
-    five() { [523, 659, 784].forEach((f, i) => tone(f, 0.25, 'triangle', 0.06, i * 0.06)); },
-    two() { tone(1175, 0.2, 'sine', 0.07); tone(1760, 0.35, 'sine', 0.05, 0.08); },
-    bomb() {
-      tone(70, 1.1, 'sine', 0.4, 0, 38); nz(0.7, 0.35, 0, 'lowpass', 300, 0.7); nz(0.3, 0.2, 0.02, 'bandpass', 1200, 0.5);
-      [392, 494, 587, 784].forEach((f, i) => tone(f, 0.5, 'sawtooth', 0.025, 0.12 + i * 0.07));
+    deal(seat) { sfx('b2_deal', 1, null, SEAT_PAN[seat || 0]); },
+    shuffle() { sfx('b2_riffle'); },
+    pick(on) { sfx(on ? 'b2_pick' : 'b2_unpick'); },
+    play(n, seat) { sfx(n >= 4 ? 'b2_slap5' : 'b2_slap', 1, 1, SEAT_PAN[seat || 0]); },
+    pass(seat) { sfx('b2_knock', 1, 1, SEAT_PAN[seat || 0]); },
+    turn() { sfx('b2_turn', 1, null, 0, true); },
+    bad() { sfx('b2_bad'); },
+    hint() { sfx('b2_hint'); },
+    trick() { sfx('b2_sweep'); },
+    sort() { sfx('b2_riffle', 1.1); },
+    five(seat) { sfx('b2_five', 1, null, SEAT_PAN[seat || 0], true); },
+    two(seat) { sfx('b2_two', 1, null, SEAT_PAN[seat || 0], true); },
+    bomb(seat) { sfx('b2_bomb', 1, 1, SEAT_PAN[seat || 0] * 0.5); },
+    warn(seat) { sfx('b2_warn', 1, null, SEAT_PAN[seat || 0]); },
+    click() { sfx('click'); },
+    start() { jingle({ bpm: 200, inst: 'marimba', vol: 0.3, notes: [['D5', 1], ['F5', 1], ['A5', 1], ['D6', 3]], bass: [['D3', 6, 0]], bassVol: 0.2 }); },
+    winRound() { jingle({ bpm: 170, inst: 'bell', vol: 0.3, notes: [['A4', 1], ['C5', 1], ['D5', 1], ['F5', 1], ['A5+D5', 4]], bass: [['D3', 8, 0]], bassVol: 0.22 }); },
+    loseRound() { jingle({ bpm: 120, inst: 'marimba', vol: 0.32, notes: [['A4', 1], ['G4', 1], ['F4', 1], ['D4', 3]], bass: [['D3', 6, 0]], bassVol: 0.18 }); },
+    win() {
+      jingle({ bpm: 150, inst: 'bell', vol: 0.3, notes: [['D5', 1], ['F5', 1], ['G5', 1], ['A5', 2], ['C6', 1], ['A5', 1], ['D6+A5+F5', 5]], bass: [['D3', 3, 0], ['A2', 3, 3], ['D3', 6, 6]], bassVol: 0.26 });
+      jingle({ bpm: 150, inst: 'brass', vol: 0.22, notes: [['A4', 3], ['C5', 3], ['D5', 6]] });
     },
-    warn() { tone(1046, 0.12, 'square', 0.04); tone(1046, 0.12, 'square', 0.04, 0.16); },
-    win() { [523, 659, 784, 988, 1175, 1568].forEach((f, i) => { tone(f, 0.45, 'sine', 0.11, i * 0.085); tone(f * 2, 0.18, 'sine', 0.025, i * 0.085); }); tone(1047, 0.9, 'triangle', 0.05, 0.55); },
-    lose() { [392, 349, 311].forEach((f, i) => tone(f, 0.35, 'triangle', 0.06, i * 0.14)); },
-    click() { tone(1100, 0.04, 'triangle', 0.05); }
+    lose() { jingle({ bpm: 96, inst: 'flute', vol: 0.3, notes: [['A4', 2], ['G4', 1], ['F4', 1], ['D4', 2], ['C4', 1], ['D4', 3]], bass: [['A2', 4, 0], ['D3', 6, 4]], bassVol: 0.18 }); }
   };
-  // 背景音樂：五聲音階的輕快小調（KG.note，靜音時不出聲）
-  const MEL = [76, 79, 81, 79, 76, 74, 72, 74, 76, 79, 84, 81, 79, 76, 74, -1, 72, 74, 76, 79, 81, 84, 81, 79, 76, 74, 72, 69, 72, 74, 72, -1];
-  const BASS = [48, 55, 45, 52, 41, 48, 43, 50];
-  const mf = m => 440 * Math.pow(2, (m - 69) / 12);
-  let musNext = 0, musStep = 0;
-  function musicTick() {
-    const now = performance.now();
-    const on = settings.music === 'on' && !KG.isMuted() && !document.hidden && !paused && phase !== 'title';
-    if (!on || !AU.c) { musNext = now + 200; return; }
-    const step = 60000 / 92 / 2;
-    if (musNext < now) musNext = now + 60;
-    while (musNext < now + 400) {
-      const d = (musNext - now) / 1000, i = musStep % 32, m = MEL[i];
-      if (m > 0 && (musStep % 64 < 32 || i % 2 === 0)) KG.note(mf(m), step / 1000 * 1.6, 'triangle', 0.028, d);
-      if (i % 4 === 0) { const b = BASS[(i / 4) | 0]; KG.note(mf(b), step / 1000 * 3.6, 'sine', 0.05, d); KG.note(mf(b + 12), step / 1000 * 1.2, 'sine', 0.012, d); }
-      musNext += step; musStep++;
-    }
+
+  /* ---------- 背景音樂 ---------- */
+  // 標題：〈新春團圓〉G 大調 122 bpm，賀歲歌風：笛子＋鐘琴旋律、弦樂鋪底、輕輕的四拍大鼓、拍手、梆子
+  const MEL_T = [
+    'D5 - B4 D5 E5 - D5 B4', 'G5 - E5 - D5 E5 B4 -', 'C5 - E5 G5 E5 - D5 C5', 'D5 - - A4 B4 - A4 .',
+    'G4 A4 B4 D5 E5 - G5 -', 'E5 - D5 B4 D5 - E5 .', 'A4 - C5 E5 D5 - C5 A4', 'B4 - A4 - D5 - - .'
+  ];
+  const SONG_TITLE = {
+    bpm: 122, steps: 16,
+    chords: ['G', 'Em', 'C', 'D', 'G', 'Em', 'Am7', 'D'],
+    tracks: [
+      { inst: 'kick', pat: 'x...x...x...x...', vol: 0.5 },
+      { inst: 'clap', pat: '....x.......x...', vol: 0.32 },
+      { inst: 'rim', pat: 'x..x..x...x..x..', vol: 0.26 },
+      { inst: 'hat', pat: '..x...x...x...x.', vol: 0.4 },
+      { inst: 'bass', chord: 'R..R..5.R..R..8.', vol: 0.5 },
+      { inst: 'strings', chord: 'hold', vol: 0.32 },
+      { inst: 'pluck', arp: 'up', rate: 2, oct: 4, vol: 0.18 },
+      { inst: 'flute', seq: MEL_T, vol: 0.7 },
+      { inst: 'bell', seq: ['', '', '', '', 'G5 . . . B5 . . .', 'G5 . . . . . . .', 'E5 . . . C5 . . .', 'D5 . . . F#5 . . .'], vol: 0.4 }
+    ]
+  };
+  // 對局：〈舞獅〉D 羽調五聲（D F G A C）100 bpm，舞獅鑼鼓：堂鼓、小鈸、大鑼、月琴旋律、低音；剩沒幾張牌時加弦樂、銅管和開鈸
+  const MEL_P = [
+    'D5 - F5 D5 A4 - C5 D5', 'F5 - G5 F5 C5 - A4 -', 'G4 - C5 - D5 C5 G4 -', 'A4 - D5 - F5 - D5 .',
+    'G5 - F5 D5 G4 - A4 C5', 'C5 - A4 - G4 A4 C5 -', 'D5 - C5 - G5 - F5 -', 'D5 - - - A4 - D5 .'
+  ];
+  const SONG_PLAY = {
+    bpm: 100, steps: 16,
+    chords: ['Dm', 'F', 'C', 'Dm', 'Gm', 'Am7', 'C', 'Dm'],
+    layers: { tension: false },
+    tracks: [
+      { inst: 'b2Gong', seq: ['D3 . . . . . . .', '', '', '', 'D3 . . . . . . .', '', '', ''], vol: 0.5 },
+      { inst: 'tom', pat: ['X.x.x.x.X.x.xx..', 'X.x.x.x.X.x.x.x.'], pitch: 125, vol: 0.38 },
+      { inst: 'b2Cym', seq: '. . x . . . x .'.replace(/x/g, 'C5'), vol: 0.35 },
+      { inst: 'rim', pat: 'x.xx..x.x.xx..x.', vol: 0.22 },
+      { inst: 'sub', chord: 'R...R.5.R...5...', vol: 0.5 },
+      { inst: 'b2Yue', seq: MEL_P, vol: 0.85 },
+      { inst: 'marimba', arp: 'updown', rate: 4, oct: 4, vol: 0.3 },
+      { inst: 'strings', chord: 'hold', layer: 'tension', vol: 0.32 },
+      { inst: 'brass', seq: ['D4+F4+A4 . . . . . D4+F4+A4 .', '', 'C4+E4+G4 . . . . . C4+E4+G4 .', '', 'D4+G4 . . . . . D4+G4 .', '', 'C4+G4 . . . . . C4+E4+G4 .', ''], layer: 'tension', vol: 0.4 },
+      { inst: 'ohat', pat: '..x...x...x...x.', layer: 'tension', vol: 0.26 }
+    ]
+  };
+  let mood = -1;
+  function musicTitle() { if (M) { M.play(SONG_TITLE); M.setVolume(0.36); mood = -1; } }
+  function musicPlay() { if (M) { if (M.current() !== SONG_PLAY) { M.play(SONG_PLAY, { restart: true }); M.setVolume(0.46); } mood = -1; musicMood(); } }
+  /** 有人剩 3 張以下加緊張層；有人只剩 1 張再加快一點 */
+  function musicMood() {
+    if (!M || !G || G.phase !== 'play' || M.current() !== SONG_PLAY) return;
+    let mn = 13; for (const p of G.players) mn = Math.min(mn, p.hand.length);
+    const m = mn <= 1 ? 2 : mn <= 3 ? 1 : 0;
+    if (m === mood) return;
+    mood = m;
+    M.setLayer('tension', m > 0);
+    M.setTempo(m > 1 ? 1.06 : 1);
   }
-  setInterval(musicTick, 120);
+  function musicCalm() { if (M) { M.setLayer('tension', false); M.setTempo(1); mood = 0; } }
 
   /* =========================================================
    * 畫布與版面
@@ -1228,6 +1291,7 @@ const Core = (function () {
       V.flights.push({ card, seat, t: -k * 0.03 * sp, dur: 0.26 * sp, last: k === 51 });
     }
     waitT = 0.3;
+    musicPlay(); musicCalm(); SFX.shuffle();
     statusDirty = true; updateDock(); saveGame();
     if (instant) finishDeal();
   }
@@ -1315,33 +1379,34 @@ const Core = (function () {
     const fr = cards.map((c, i) => from && from[c] ? from[c] : Object.assign({ rot: (i - 2) * 0.1 }, seatAnchor(seat)));
     V.table = { cards, combo, by: seat, t0: now, from: fr, leaving: false, lt: 0 };
     V.passAt[seat] = -9;
-    SFX.play(cards.length);
+    SFX.play(cards.length, seat);
     KG.vibrate(12);
     const nm = seat === 0 ? '你' : SEATN[seat];
     if (Core.isBomb(combo)) {
       const big = combo.type === 'sf' ? '同花順！' : '鐵支！';
       callout(big, nm + ' 出了' + Core.describe(combo), true);
-      V.shake = 0.5; SFX.bomb(); KG.vibrate([30, 40, 60]);
+      V.shake = 0.5; SFX.bomb(seat); KG.vibrate([30, 40, 60]);
       burst(L.cx, L.cy, 70, ['#ffd86b', '#ff9a52', '#fff3c4', '#ff6b6b']);
       if (seat === 0) stats.bombs++;
     } else if (combo.n === 5) {
       callout(Core.TN[combo.type], null, false);
-      SFX.five(); burst(L.cx, L.cy, 18, ['#fff3c4', '#ffd86b']);
+      SFX.five(seat); burst(L.cx, L.cy, 18, ['#fff3c4', '#ffd86b']);
     } else if ((combo.key >> 2) === 12) {
-      SFX.two(); burst(L.cx, L.cy, 12, ['#fff3c4', '#ffd86b']);
+      SFX.two(seat); burst(L.cx, L.cy, 12, ['#fff3c4', '#ffd86b']);
     }
     const left = G.players[seat].hand.length;
     if (left === 1 && !V.warned[seat] && G.phase === 'play') {
       V.warned[seat] = true;
-      setTimeout(() => { SFX.warn(); }, 250);
+      setTimeout(() => { SFX.warn(seat); }, 250);
       floatText(seat, '報牌！剩 1 張', '#ff8a7a');
     }
+    musicMood();
     resetHint();
     statusDirty = true;
   }
   function onPassed(seat, res) {
     V.passAt[seat] = now;
-    SFX.pass();
+    SFX.pass(seat);
     if (res.newTrick) {
       if (V.table) { V.table.leaving = true; V.table.lt = now + 0.35 * SPD(); }
       V.old = null;
@@ -1450,8 +1515,8 @@ const Core = (function () {
     if (w === 0) { stats.wins++; stats.bestRound = Math.max(stats.bestRound, r.gain); }
     stats.total = (stats.total || 0) + (w === 0 ? r.gain : -(r.rows.find(x => x.seat === 0) || { pay: 0 }).pay);
     saveStats();
-    if (w === 0) { callout('你贏了！', '+' + r.gain + ' 點', true); SFX.win(); setTimeout(() => KG.confetti && KG.confetti(W / 2, H * 0.4, 90), 150); }
-    else { callout(SEATN[w] + ' 出完了', null, false); SFX.lose(); }
+    if (w === 0) { callout('你贏了！', '+' + r.gain + ' 點', true); musicCalm(); if (!G.matchOver) SFX.winRound(); setTimeout(() => KG.confetti && KG.confetti(W / 2, H * 0.4, 90), 150); }
+    else { callout(SEATN[w] + ' 出完了', null, false); musicCalm(); if (!G.matchOver) SFX.loseRound(); }
     floatText(w, '+' + r.gain, '#9df0b4');
     for (const row of r.rows) if (row.pay) floatText(row.seat, '−' + row.pay, '#ff9d8f');
     burst(L.seat[w].x, L.seat[w].y, 30, ['#ffd86b', '#fff3c4', '#9df0b4']);
@@ -1495,6 +1560,7 @@ const Core = (function () {
     $('overOv').classList.remove('hide');
     $('dock').classList.add('hide');
     clearSave();
+    if (M) M.stop(0.3);
     if (place === 1) { SFX.win(); KG.confetti && KG.confetti(); } else SFX.lose();
   }
 
@@ -1567,10 +1633,8 @@ const Core = (function () {
     if (V.flights.length) {
       for (let i = V.flights.length - 1; i >= 0; i--) {
         const f = V.flights[i];
-        const was = f.t;
         f.t += dt;
-        if (was < 0 && f.t >= 0) SFX.deal();
-        if (f.t >= f.dur) { V.flights.splice(i, 1); landFlight(f); }
+        if (f.t >= f.dur) { V.flights.splice(i, 1); SFX.deal(f.seat); landFlight(f); }
       }
     }
     if (V.table && V.table.leaving && now > V.table.lt + 0.01) V.table = null;
@@ -1950,8 +2014,20 @@ const Core = (function () {
     sync();
     return sync;
   }
-  const syncs = [seg('segRounds', 'rounds'), seg('segSpeed', 'speed'), seg('segBomb2', 'bomb2'), seg('segLaoer', 'laoer'), seg('segCross', 'cross'), seg('pSpeed', 'speed'), seg('pMusic', 'music')];
-  function syncAll() { syncs.forEach(f => f()); }
+  const syncs = [seg('segRounds', 'rounds'), seg('segSpeed', 'speed'), seg('segBomb2', 'bomb2'), seg('segLaoer', 'laoer'), seg('segCross', 'cross'), seg('pSpeed', 'speed')];
+  function renderSnd() {
+    for (const id of ['tSnd', 'pSnd']) for (const b of $(id).children) {
+      const mus = b.dataset.k === 'm', on = mus ? (M ? M.isEnabled() : false) : sfxOn;
+      b.classList.toggle('on', on); b.textContent = (mus ? '音樂 ' : '音效 ') + (on ? '開' : '關'); b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+  }
+  for (const id of ['tSnd', 'pSnd']) for (const b of $(id).children) b.addEventListener('click', () => {
+    if (b.dataset.k === 'm') { if (M) M.setEnabled(!M.isEnabled()); }
+    else { sfxOn = !sfxOn; KG.store.set('big-two:sfx', sfxOn); }
+    SFX.click(); renderSnd();
+  });
+  renderSnd();
+  function syncAll() { syncs.forEach(f => f()); renderSnd(); }
   function loadSave() {
     const s = KG.store.get('big-two:save', null);
     if (!s || !s.G || !s.G.players || s.G.matchOver) return null;
@@ -1982,6 +2058,7 @@ const Core = (function () {
     V.table = G.table ? { cards: G.table.cards.slice(), combo: G.table, by: G.tableBy, t0: now - 5, from: G.table.cards.map((c, i) => tablePos(G.table.cards.length, i)), leaving: false } : null;
     $('iRound').textContent = G.maxRounds ? G.round + ' / ' + G.maxRounds : G.round;
     roundShown = false; roundT = G.phase === 'roundOver' ? 5 : 0;
+    musicPlay();
     statusDirty = true; updateDock();
     toast('已載入存檔');
   }
@@ -1989,6 +2066,8 @@ const Core = (function () {
     if (phase !== 'play') return;
     paused = v == null ? !paused : v;
     $('pauseOv').classList.toggle('hide', !paused);
+    if (M) { if (paused) M.pause(); else M.resume(); }
+    if (!paused) SFX.click();
     if (paused) {
       SFX.click();
       const st = [['已玩局數', stats.rounds], ['勝局', stats.wins], ['勝率', stats.rounds ? Math.round(100 * stats.wins / stats.rounds) + '%' : '--'], ['最佳點數', KG.best('big-two') == null ? '--' : KG.best('big-two')], ['單局最多', stats.bestRound ? '+' + stats.bestRound : '--'], ['炸彈', stats.bombs]];
@@ -2004,9 +2083,10 @@ const Core = (function () {
     ['pauseOv', 'overOv', 'roundOv', 'rulesOv', 'hud', 'dock'].forEach(id => $(id).classList.add('hide'));
     $('title').classList.remove('hide');
     updateTitle(); syncAll(); fanC = null; dirty = 3;
+    musicTitle();
   }
-  $('tStart').addEventListener('click', () => { SFX.click(); A(); clearSave(); startMatch(); });
-  $('tCont').addEventListener('click', () => { SFX.click(); A(); const s = loadSave(); if (s) resume(s); });
+  $('tStart').addEventListener('click', () => { SFX.start(); clearSave(); startMatch(); });
+  $('tCont').addEventListener('click', () => { SFX.start(); const s = loadSave(); if (s) resume(s); });
   $('tRules').addEventListener('click', () => { SFX.click(); $('rulesOv').classList.remove('hide'); });
   $('pRules').addEventListener('click', () => { SFX.click(); $('rulesOv').classList.remove('hide'); });
   $('rClose').addEventListener('click', () => { SFX.click(); $('rulesOv').classList.add('hide'); });

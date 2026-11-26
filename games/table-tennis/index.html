@@ -123,6 +123,7 @@
 </div>
 <div id="ov" class="tt"></div>
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
 <script type="module">
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
@@ -338,7 +339,7 @@ function main() {
    * ========================================================= */
   const SKEY = 'table-tennis:stats', OKEY = 'table-tennis:opts';
   const stats = Object.assign({ w: [0, 0, 0], l: [0, 0, 0], rally: 0, streak: 0 }, KG.store.get(SKEY, {}));
-  const opts = Object.assign({ level: 1, bestOf: 3, spin: 'top', assist: true, music: true }, KG.store.get(OKEY, {}));
+  const opts = Object.assign({ level: 1, bestOf: 3, spin: 'top', assist: true }, KG.store.get(OKEY, {}));
   const saveStats = () => KG.store.set(SKEY, stats);
   const saveOpts = () => KG.store.set(OKEY, opts);
 
@@ -405,7 +406,9 @@ function main() {
     calls.length = 0;
     if (mode === 'practice') { banner('發球機練習', SPINS[practice.spin] + '球'); later(1.0, machineFeed); phase = 'idle'; ballMode = 'gone'; }
     else beginServe(true);
-    startMusic();
+    setRallyLayer(false); setMpLayer(false);
+    if (mode === 'demo') { KG.music.resume(); KG.music.setVolume(0.5); KG.music.play(SONG_TITLE); }
+    else { KG.music.setVolume(0.4); KG.music.play(SONG_PLAY, { restart: true }); }
   }
   function later(sec, fn) { nextAt = sec; nextFn = fn; }
 
@@ -428,6 +431,9 @@ function main() {
       let sub = '';
       if (matchPointFor(0) || matchPointFor(1)) sub = '賽末點';
       else if (gamePointFor(0) || gamePointFor(1)) sub = '局點';
+      setMpLayer(mode === 'ai' && sub === '賽末點');
+      if (sub && sub !== lastSub) jingle(sub === '賽末點' ? J.mp : J.gp);
+      lastSub = sub;
       if (first) banner('第 ' + gameNo + ' 局', server === 0 ? '你發球' : '電腦發球');
       else if (sub) banner(sub, server === 0 ? '你發球' : '電腦發球');
     }
@@ -444,7 +450,7 @@ function main() {
   function onBallEvent(ev) {
     const v = B.iv;
     if (ev === EV_TABLE) { sTable(v); markBounce(B.ix, B.iz, v); }
-    else if (ev === EV_NET || ev === EV_CORD) sNet(v);
+    else if (ev === EV_NET || ev === EV_CORD) sNet(ev);
     else if (ev === EV_FLOOR) sFloor(v);
     if (phase !== 'rally') return;
     if (ev === EV_NET || ev === EV_CORD) {
@@ -490,6 +496,8 @@ function main() {
   };
   function letCall() {
     phase = 'dead'; phaseT = 0;
+    setRallyLayer(false);
+    if (mode !== 'demo') sfx('tt_let', 1);
     showCall('擦網重發', 'LET', '#ffd18a');
     calls.push('let');
     later(1.5, () => beginServe(false));
@@ -497,6 +505,7 @@ function main() {
   function pointTo(w, why) {
     if (phase !== 'rally') return;
     phase = 'dead'; phaseT = 0;
+    setRallyLayer(false);
     const hits = rally.hits;
     if (mode === 'practice') return practiceResult(false, why);
     if (hits > longest) longest = hits;
@@ -510,7 +519,7 @@ function main() {
     } else if (why === 'double') { title = '二跳'; sub = w === 0 ? '得分' : '失分'; col = w === 0 ? '#ffb26b' : '#9fc0ff'; }
     else { title = CALLS[why][0]; sub = CALLS[why][1] + (w === 0 ? ' · 得分' : ' · 失分'); col = w === 0 ? '#ffb26b' : '#ff8f8f'; }
     showCall(title, sub, col);
-    sPoint(w === 0);
+    sfx(w === 0 ? 'tt_chime' : 'tt_lost', 1, w === 0 ? 1 + Math.min(score[0], 10) * 0.02 : 1);
     if (hits >= 7) sApplause(Math.min(1, 0.45 + hits * 0.04));
     else if (w === 0 && why === 'winner') sApplause(0.3);
     bumpScore(w);
@@ -521,8 +530,10 @@ function main() {
       const matchOver = games[w] === (bestOf + 1) / 2;
       if (matchOver) {
         slowT = Math.max(slowT, 1.4);
+        setMpLayer(false);
         later(2.2, () => endMatch(w));
       } else {
+        setTimeout(() => jingle(w === 0 ? J.setWin : J.setLose), 500);
         later(2.0, () => {
           sApplause(0.35);
           gameNo++; score[0] = score[1] = 0; firstServer = 1 - firstServer;
@@ -536,17 +547,22 @@ function main() {
   }
   function onMiss(side) {
     rally.missed[side] = true;
+    if (side === 0) sfx('tt_whiff', 1, 1, panAt(paddle.x, paddle.y, ZP));
     if (mode === 'ai' && matchPointFor(1 - side)) slowT = 1.6;
   }
   function endMatch(w) {
     phase = 'over';
-    stopMusic();
+    // 結束：停掉比賽音樂、播勝負短樂句，之後換回標題曲
+    setRallyLayer(false); setMpLayer(false);
+    KG.music.stop(0.5);
+    setTimeout(() => jingle(w === 0 ? J.win : J.lose), 250);
+    setTimeout(() => { if (phase === 'over') { KG.music.setVolume(0.5); KG.music.play(SONG_TITLE); } }, 4200);
     const li = level - 1;
     if (w === 0) stats.w[li]++; else stats.l[li]++;
     stats.rally = Math.max(stats.rally, longest);
     saveStats();
     KG.best('table-tennis-rally', longest);
-    if (w === 0) { KG.sound('win'); KG.confetti(); sApplause(1); } else KG.sound('lose');
+    if (w === 0) { KG.confetti(); sApplause(1); }
     showOver(w);
   }
 
@@ -569,7 +585,7 @@ function main() {
     phase = 'rally'; phaseT = 0;
     rally.last = 1; rally.canHit = -1; rally.hits = 0;
     machine.kick = 1;
-    sMachine();
+    sfx('tt_machine', 1, 1, panAt(B.x, B.y, B.z));
     $('sub').textContent = '發球機 · ' + SPINS[sp];
   }
   function practiceResult(good, why) {
@@ -580,10 +596,14 @@ function main() {
       if (practice.streak > practice.best) practice.best = practice.streak;
       if (practice.streak > stats.streak) { stats.streak = practice.streak; saveStats(); }
       showCall(practice.streak >= 5 ? '連續 ' + practice.streak + ' 球！' : '好球', 'GOOD', '#7ff0a8');
-      sPoint(true);
-      if (practice.streak > 0 && practice.streak % 10 === 0) sApplause(0.7);
+      // 連續成功：提示音一次比一次高；6 球以上加入節奏層
+      sfx('tt_chime', 1, 1 + Math.min(practice.streak - 1, 12) * 0.03);
+      setRallyLayer(practice.streak >= 6);
+      if (practice.streak > 0 && practice.streak % 10 === 0) { sApplause(0.7); jingle(J.streak); }
     } else {
       practice.streak = 0;
+      setRallyLayer(false);
+      sfx('tt_lost', 0.9);
       const c = why === 'winner' || why === 'double' ? ['沒接到', 'MISS'] : CALLS[why] || ['失誤', 'MISS'];
       showCall(c[0], c[1], '#ff8f8f');
     }
@@ -671,6 +691,7 @@ function main() {
     rally.last = side; rally.canHit = -1; rally.bounces[0] = rally.bounces[1] = 0; rally.crossed = false; rally.netTouched = false;
     rally.missed[0] = rally.missed[1] = false;
     rally.hits++;
+    if (mode === 'ai' && rally.hits >= 6) setRallyLayer(true);
     if (rally.hits > 1 && mode !== 'practice') { const el = $('rally'); el.textContent = '回合 ' + rally.hits; el.classList.toggle('on', rally.hits >= 3 && mode !== 'demo'); }
     sPaddle(sp, side);
     if (side === 0) {
@@ -683,6 +704,7 @@ function main() {
         KG.vibrate(12);
       }
       if (kind === '扣殺' || kind === '強力拉球') shake = Math.max(shake, kind === '扣殺' ? 0.5 : 0.25);
+      if (kind === '扣殺') sfx('tt_smash', 1, 1, panAt(B.x, B.y, B.z));
       if (mode === 'ai') planAI();
     } else {
       ai.hitX = B.x; ai.hitY = B.y; ai.hitZ = B.z; ai.hitT = 1; ai.swing = 1;
@@ -883,7 +905,7 @@ function main() {
     B.vx = 0; B.vz = 0; B.vy = side === 0 ? 2.5 : rand(2.2, 2.8); B.wx = B.wy = B.wz = 0;
     ai.toss = rand(-0.05, 0.08);
     $('hint').classList.remove('on');
-    KG.note(420, 0.06, 'sine', 0.05, 0, 520);
+    sfx('tt_toss', 1, 1, panAt(B.x, B.y, B.z));
   }
   function autoTrack() {
     // 自動駕駛（標題畫面示範與測試）：預測球的落點並移動
@@ -1445,113 +1467,121 @@ function main() {
   }
 
   /* =========================================================
-   * 音效（自己的 AudioContext，預先產生雜訊與掌聲緩衝，避免每次配置）
+   * 音樂（原創，用 kg-music.js）
+   *   標題：D 小調 104 bpm 酷酷的電子放克（次低音貝斯、撥弦主旋律）
+   *   比賽：F 小調 118 bpm 快板電子放克；回合打到 6 拍以上加「rally」層（十六分鈸、分解和弦），賽末點加快
    * ========================================================= */
-  let AC = null, master = null, noiseBuf = null, clapBuf = null, applauseNode = null;
-  function ac() {
-    if (!AC) {
-      const C = window.AudioContext || window.webkitAudioContext;
-      if (!C) return null;
-      AC = new C();
-      master = AC.createGain(); master.gain.value = 0.9; master.connect(AC.destination);
-      const sr = AC.sampleRate;
-      noiseBuf = AC.createBuffer(1, Math.floor(sr * 0.5), sr);
-      const d = noiseBuf.getChannelData(0);
-      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
-      // 掌聲：許多短促的拍手聲
-      const len = Math.floor(sr * 3.2);
-      clapBuf = AC.createBuffer(2, len, sr);
-      for (let ch = 0; ch < 2; ch++) {
-        const cd = clapBuf.getChannelData(ch);
-        const n = 520;
-        for (let k = 0; k < n; k++) {
-          const st = Math.floor(Math.random() * (len - sr * 0.03));
-          const amp = 0.08 + Math.random() * 0.16;
-          const dec = sr * (0.003 + Math.random() * 0.004);
-          for (let i = 0; i < sr * 0.025; i++) cd[st + i] += (Math.random() * 2 - 1) * amp * Math.exp(-i / dec);
-        }
-        let lp = 0;
-        for (let i = 0; i < len; i++) { lp += (cd[i] - lp) * 0.55; cd[i] = lp; }
-      }
-    }
-    if (AC.state === 'suspended') AC.resume();
-    return AC;
+  const T_CH = ['Dm7', 'Dm7', 'Gm7', 'A7', 'Dm7', 'Bbmaj7', 'Gm7', 'A7'];
+  const SONG_TITLE = {
+    bpm: 104, swing: 0.14, chords: T_CH,
+    tracks: [
+      { inst: 'kick', pat: ['X.....x...x.....', 'X.....x...x..x..'], vol: 0.62 },
+      { inst: 'clap', pat: '....x.......x...', vol: 0.3 },
+      { inst: 'hat', pat: 'x.xox.xox.xox.xo', vol: 0.36 },
+      { inst: 'sub', chord: ['R..R..8..R..5.R.', 'R..R..8...R.7.5.'], vol: 0.6 },
+      { inst: 'pad', chord: 'hold', oct: 4, vol: 0.24 },
+      { inst: 'pluck', vol: 0.72, seq: [
+        'A4 . C5 D5 . F5 - D5', 'C5 . A4 . G4 A4 - .', 'Bb4 . D5 . F5 - D5 C5', 'C#5 - E5 . A4 - G4 .',
+        'D5 . F5 . A5 - G5 F5', 'F5 - D5 . Bb4 . A4 .', 'G4 . Bb4 D5 . F5 E5 D5', 'E5 - C#5 . A4 . . .'] },
+      { inst: 'kalimba', vol: 0.4, seq: ['', 'F4 . A4 . C5 . . .', '', 'E4 . G4 . A4 . . .', '', 'D4 . F4 . A4 . . .', '', 'C#4 . E4 . G4 . . .'] }
+    ]
+  };
+  const P_CH = ['Fm7', 'Fm7', 'Bbm7', 'C7', 'Fm7', 'Dbmaj7', 'Bbm7', 'C7'];
+  const PV = { Fm7: 'Ab4+C5+Eb5', Bbm7: 'Ab4+Db5+F5', C7: 'G4+Bb4+E5', Dbmaj7: 'Ab4+C5+F5' };
+  const SONG_PLAY = {
+    bpm: 118, swing: 0.1, chords: P_CH,
+    layers: { rally: false, mp: false },
+    tracks: [
+      { inst: 'kick', pat: ['X.....x.X..x....', 'X.....x.X.....x.'], vol: 0.7 },
+      { inst: 'clap', pat: '....x.......x...', vol: 0.36 },
+      { inst: 'snare', pat: '.......o.o....o.', vol: 0.22 },
+      { inst: 'hat', pat: 'x.x.x.x.x.x.x.x.', vol: 0.34 },
+      { inst: 'bass', chord: ['R..R.R8.R..5..7.', 'R..R.R8...R.7.5.'], vol: 0.64 },
+      { inst: 'sub', chord: 'R.......R.......', vol: 0.35 },
+      { inst: 'organ', vol: 0.34, seq: P_CH.map(c => `. . . . . . ${PV[c]} . . . . . . ${PV[c]} . .`) },
+      { inst: 'lead', vol: 0.62, seq: [
+        'C5 . Eb5 F5 . Ab5 - F5', 'Eb5 . C5 . Bb4 C5 - .', 'Db5 . F5 . Ab5 - F5 Eb5', 'E5 - G5 . Bb4 - C5 .',
+        'F5 . Ab5 . C5 - Eb5 F5', 'Ab5 - F5 . Db5 . C5 .', 'Bb4 . Db5 F5 . Eb5 Db5 C5', 'Bb4 - G4 . E4 . C5 .'] },
+      // 長回合：十六分鈸、開鈸、分解和弦
+      { inst: 'hat', pat: '.x.x.x.x.x.x.x.x', vol: 0.26, layer: 'rally' },
+      { inst: 'ohat', pat: '..x...x...x...x.', vol: 0.26, layer: 'rally' },
+      { inst: 'pluck', arp: 'updown', rate: 2, oct: 4, vol: 0.24, layer: 'rally' },
+      // 賽末點：弦樂長音、鈸
+      { inst: 'strings', chord: 'hold', oct: 5, vol: 0.3, layer: 'mp' },
+      { inst: 'crash', pat: ['X...............', '................'], vol: 0.26, layer: 'mp' }
+    ]
+  };
+  window.__songs = { SONG_TITLE, SONG_PLAY };
+  const J = {
+    gp: { bpm: 200, inst: 'brass', vol: 0.24, notes: [['C5', 1], ['F5', 2]] },
+    mp: { bpm: 190, inst: 'brass', vol: 0.26, notes: [['C5', 1], ['C5', 1], ['F5', 1], ['Ab5', 2]] },
+    setWin: { bpm: 170, inst: 'pluck', vol: 0.36, notes: [['F4', 1], ['Ab4', 1], ['C5', 1], ['F5', 2], ['Eb5', 1], ['F5+C5+Ab4', 3]], bass: [['F2', 4, 0], ['F2', 4, 4]], bassVol: 0.26 },
+    setLose: { bpm: 130, inst: 'pluck', vol: 0.32, notes: [['C5', 1], ['Bb4', 1], ['Ab4', 1], ['G4', 3]], bass: [['C3', 6, 0]], bassVol: 0.22 },
+    win: { bpm: 140, inst: 'brass', vol: 0.3, notes: [['C5', 1], ['F5', 1], ['Ab5', 1], ['C6', 2], ['Bb5', 1], ['C6', 1], ['Db6', 1], ['F5+Ab5+C6', 5]], bass: [['F2', 3, 0], ['Db3', 4, 3], ['F2', 6, 7]], bassVol: 0.3 },
+    lose: { bpm: 104, inst: 'pluck', vol: 0.34, notes: [['Ab4', 1], ['G4', 1], ['F4', 1], ['E4', 2], ['F4', 4]], bass: [['Db3', 3, 0], ['C3', 6, 3]], bassVol: 0.24 },
+    streak: { bpm: 220, inst: 'bell', vol: 0.3, notes: [['C5', 1], ['F5', 1], ['Ab5', 1], ['C6', 2]] }
+  };
+  window.__jingles = J;
+
+  /* =========================================================
+   * 音效（KG.sfx）
+   * ========================================================= */
+  const SF = KG.sfx;
+  SF.define('tt_hit', (p, s) => { s.noise(0.035, { vol: 0.5, freq: 2300 * p, q: 1.4 }); s.tone(880 * p, 0.05, { vol: 0.2, slide: 520 * p }); });
+  SF.define('tt_smash', (p, s) => { s.noise(0.12, { vol: 0.16, freq: 900 * p, q: 0.7, delay: 0.005 }); s.noise(0.03, { vol: 0.22, freq: 5200 * p, type: 'highpass' }); });
+  SF.define('tt_table', (p, s) => { s.tone(1290 * p, 0.07, { vol: 0.2, slide: 1000 * p }); s.tone(240 * p, 0.06, { type: 'triangle', vol: 0.08 }); s.noise(0.02, { vol: 0.14, freq: 3800 * p, q: 2 }); });
+  SF.define('tt_edge', (p, s) => { s.tone(3000 * p, 0.025, { vol: 0.06 }); s.noise(0.02, { vol: 0.12, freq: 6000 * p, type: 'highpass' }); });
+  SF.define('tt_net', (p, s) => { s.noise(0.05, { vol: 0.25, freq: 4800 * p, q: 3 }); s.tone(2400 * p, 0.03, { type: 'square', vol: 0.04 }); s.noise(0.12, { vol: 0.07, freq: 1200 * p, q: 0.8, delay: 0.01 }); });
+  SF.define('tt_floor', (p, s) => { s.tone(780 * p, 0.05, { vol: 0.08, slide: 600 * p }); s.noise(0.02, { vol: 0.07, freq: 2200 * p, q: 2 }); });
+  SF.define('tt_machine', (p, s) => { s.noise(0.08, { vol: 0.25, freq: 600 * p, q: 1 }); s.tone(180 * p, 0.08, { vol: 0.12, slide: 90 }); s.tone(320 * p, 0.06, { type: 'triangle', vol: 0.06, slide: 900 * p, delay: 0.02 }); });
+  SF.define('tt_toss', (p, s) => { s.tone(420 * p, 0.08, { vol: 0.06, slide: 560 * p }); s.noise(0.12, { vol: 0.04, freq: 1200 * p, sweep: 2600 * p, q: 1 }); });
+  SF.define('tt_chime', (p, s) => { s.tone(1047 * p, 0.14, { type: 'triangle', vol: 0.1 }); s.tone(1568 * p, 0.24, { type: 'triangle', vol: 0.09, delay: 0.08 }); });
+  SF.define('tt_lost', (p, s) => { s.tone(330 * p, 0.16, { type: 'triangle', vol: 0.09 }); s.tone(247 * p, 0.24, { type: 'triangle', vol: 0.08, delay: 0.12 }); });
+  SF.define('tt_whiff', (p, s) => { s.noise(0.16, { vol: 0.09, freq: 1400 * p, sweep: 500, q: 1.2 }); });
+  SF.define('tt_let', (p, s) => { s.tone(880 * p, 0.07, { type: 'triangle', vol: 0.08 }); s.tone(880 * p, 0.09, { type: 'triangle', vol: 0.08, delay: 0.12 }); });
+  // 掌聲：兩層雜音加上一些隨機的拍手聲；p = 熱烈程度
+  SF.define('tt_applause', (p, s) => {
+    const L = 1.2 + p * 1.4;
+    s.noise(L, { vol: 0.08 + p * 0.06, freq: 1800, q: 0.5, attack: 0.2 });
+    s.noise(L * 0.9, { vol: 0.05 + p * 0.04, freq: 3200, q: 0.8, attack: 0.25, delay: 0.05 });
+    const n = 6 + Math.round(p * 10);
+    for (let i = 0; i < n; i++) s.noise(0.03, { vol: 0.07 + Math.random() * 0.05, freq: 1400 + Math.random() * 1600, q: 1.6, delay: 0.05 + Math.random() * L * 0.75 });
+  });
+
+  const SFX_KEY = 'table-tennis:sfx';
+  let sfxOn = KG.store.get(SFX_KEY, true) !== false;
+  const sLast = {};
+  const _pv = new THREE.Vector3();
+  function panAt(x, y, z) { _pv.set(x, y, z).project(camera); return clamp(_pv.x * 0.75, -0.8, 0.8); }
+  // 同一種聲音最多每 gap 毫秒一次；音高隨機 ±4%；標題的示範比賽小聲一點
+  function sfx(name, vol, pitch, pan, gap) {
+    if (!sfxOn || KG.isMuted()) return false;
+    const t = performance.now();
+    if (t - (sLast[name] || -1e9) < (gap || 40)) return false;
+    sLast[name] = t;
+    KG.sfx.play(name, { vol: (vol == null ? 1 : vol) * (mode === 'demo' ? 0.35 : 1), pitch: (pitch || 1) * (0.96 + Math.random() * 0.08), pan: pan || 0 });
+    return true;
   }
-  window.addEventListener('pointerdown', e => { ac(); if (e.pointerType !== 'mouse') touchUsed = true; }, { capture: true });
-  window.addEventListener('keydown', () => ac(), { capture: true });
-  const vol = () => (mode === 'demo' ? 0.35 : 1);
-  function tone(f, dur, v, type, delay, slide) {
-    if (KG.isMuted() || !AC) return;
-    const t = AC.currentTime + (delay || 0);
-    const o = AC.createOscillator(), g = AC.createGain();
-    o.type = type || 'sine';
-    o.frequency.setValueAtTime(f, t);
-    if (slide) o.frequency.exponentialRampToValueAtTime(slide, t + dur);
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, v * vol()), t + 0.003);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(g); g.connect(master);
-    o.start(t); o.stop(t + dur + 0.02);
-  }
-  function burst(dur, v, f, q, delay) {
-    if (KG.isMuted() || !AC) return;
-    const t = AC.currentTime + (delay || 0);
-    const s = AC.createBufferSource(); s.buffer = noiseBuf;
-    const bp = AC.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = f; bp.Q.value = q || 1;
-    const g = AC.createGain();
-    g.gain.setValueAtTime(v * vol(), t);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    s.connect(bp); bp.connect(g); g.connect(master);
-    s.start(t, Math.random() * 0.4, dur + 0.02);
-  }
+  function ui(name) { if (sfxOn && !KG.isMuted()) KG.sfx.play(name || 'click', { vol: 0.9, pitch: 0.97 + Math.random() * 0.06 }); }
+  function jingle(def) { return sfxOn && mode !== 'demo' ? KG.music.jingle(def) : 0; }
   function sPaddle(sp, side) {
-    const k = clamp(sp / 22, 0.1, 1);
-    const far = side === 1 ? 0.6 : 1;
-    burst(0.035, (0.35 + 0.55 * k) * far, 1500 + 1600 * k, 1.4);
-    tone(620 + 520 * k, 0.05, (0.16 + 0.18 * k) * far, 'sine', 0, 380);
-    if (k > 0.6) burst(0.12, 0.08 * k, 900, 0.7, 0.005);
+    const k = clamp(sp / 22, 0.1, 1), up = 1 + Math.min(rally.hits, 20) * 0.006;
+    sfx('tt_hit', (0.45 + 0.55 * k) * (side === 1 ? 0.65 : 1), (0.78 + 0.45 * k) * up, panAt(B.x, B.y, B.z), 30);
   }
   function sTable(v) {
-    const k = clamp(v / 5, 0.15, 1);
-    tone(1150 + 280 * k, 0.07, 0.13 + 0.15 * k, 'sine', 0, 1000);
-    tone(240, 0.06, 0.05 + 0.06 * k, 'triangle');
-    burst(0.02, 0.18 * k, 3800, 2);
+    const k = clamp(v / 5, 0.15, 1), edge = Math.abs(B.ix) > HW - 0.03 || Math.abs(B.iz) > HL - 0.03;
+    sfx('tt_table', 0.45 + 0.55 * k, 0.92 + 0.16 * k, panAt(B.ix, TY, B.iz), 30);
+    if (edge) sfx('tt_edge', 1, 1, panAt(B.ix, TY, B.iz));
   }
-  function sNet(v) { burst(0.05, 0.25, 4800, 3); tone(2400, 0.03, 0.05, 'square'); burst(0.12, 0.06, 1200, 0.8, 0.01); }
-  function sFloor(v) { const k = clamp(v / 4, 0.1, 1); tone(780, 0.05, 0.08 * k, 'sine', 0, 600); burst(0.02, 0.07 * k, 2200, 2); }
-  function sMachine() { burst(0.08, 0.25, 600, 1); tone(180, 0.08, 0.1, 'sine', 0, 90); }
-  function sPoint(win) {
-    if (win) { tone(880, 0.12, 0.09, 'triangle'); tone(1320, 0.18, 0.08, 'triangle', 0.09); }
-    else { tone(330, 0.16, 0.08, 'triangle'); tone(247, 0.22, 0.07, 'triangle', 0.12); }
-  }
-  function sApplause(intensity) {
-    if (KG.isMuted() || !AC) return;
-    const t = AC.currentTime;
-    const s = AC.createBufferSource(); s.buffer = clapBuf;
-    const g = AC.createGain();
-    const v = 0.55 * intensity * vol();
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(v, t + 0.25);
-    g.gain.setValueAtTime(v, t + 0.9 + intensity);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 3.1);
-    const hp = AC.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 500;
-    s.connect(hp); hp.connect(g); g.connect(master);
-    s.start(t);
-  }
-  // 低音量背景音樂
-  const CH = [[220, 277, 330], [196, 247, 294], [175, 220, 262], [196, 247, 294]];
-  let musicTimer = 0, mStep = 0;
-  function startMusic() {
-    if (musicTimer) return;
-    musicTimer = setInterval(() => {
-      if (!AC || !opts.music || KG.isMuted() || document.hidden || paused) return;
-      const bar = Math.floor(mStep / 16) % 4, s = mStep % 16, c = CH[bar];
-      if (s === 0) { KG.note(c[0] / 2, 1.9, 'sine', 0.035); KG.note(c[1], 1.8, 'triangle', 0.012); KG.note(c[2], 1.8, 'triangle', 0.01); }
-      if (s % 4 === 2) KG.note(c[(s >> 2) % 3] * 2, 0.22, 'sine', 0.012);
-      mStep++;
-    }, 125);
-  }
-  function stopMusic() { clearInterval(musicTimer); musicTimer = 0; }
+  function sNet(ev) { sfx('tt_net', 1, 1, panAt(B.ix, TY, 0)); if (ev === EV_CORD) sfx('tt_edge', 0.8, 1.2, panAt(B.ix, TY, 0)); }
+  function sFloor(v) { sfx('tt_floor', clamp(v / 4, 0.15, 1), 1, panAt(B.x, 0, B.z), 60); }
+  function sApplause(intensity) { if (mode !== 'demo') sfx('tt_applause', 1, intensity, 0, 300); }
+  // 回合 6 拍以上加入「rally」層
+  let rallyLayer = false;
+  function setRallyLayer(on) { if (on !== rallyLayer) { rallyLayer = on; KG.music.setLayer('rally', on); } }
+  let mpLayer = false, lastSub = '';
+  window.addEventListener('pointerdown', e => { if (e.pointerType !== 'mouse') touchUsed = true; }, { capture: true });
+  function setMpLayer(on) { if (on !== mpLayer) { mpLayer = on; KG.music.setLayer('mp', on); KG.music.setTempo(on ? 1.06 : 1); } }
 
   /* =========================================================
    * 介面
@@ -1588,14 +1618,16 @@ function main() {
   const ov = $('ov');
   function hideOverlay() { ov.classList.remove('on'); ov.innerHTML = ''; }
   function card(html) { ov.innerHTML = '<div class="card">' + html + '</div>'; ov.classList.add('on'); return ov.firstChild; }
-  function bind(root, map) { root.querySelectorAll('[data-a]').forEach(b => { b.addEventListener('click', e => { KG.sound('click'); map[b.dataset.a](b, e); }); }); }
+  function bind(root, map) { root.querySelectorAll('[data-a]').forEach(b => { b.addEventListener('click', e => { ui(b.classList.contains('tg') ? 'click' : b.classList.contains('sec') ? 'back' : 'select'); map[b.dataset.a](b, e); }); }); }
   function toggles() {
     return '<div class="tg' + (opts.assist ? ' on' : '') + '" data-a="assist">輔助瞄準<small style="color:#8fa6cf;font-size:11px;margin-left:6px;flex:1">初級與練習</small><i></i></div>' +
-      '<div class="tg' + (opts.music ? ' on' : '') + '" data-a="music">背景音樂<i></i></div>';
+      '<div class="two"><div class="tg' + (KG.music.isEnabled() ? ' on' : '') + '" data-a="music">音樂<i></i></div>' +
+      '<div class="tg' + (sfxOn ? ' on' : '') + '" data-a="sfx">音效<i></i></div></div>';
   }
   const togMap = {
     assist: b => { opts.assist = !opts.assist; b.classList.toggle('on', opts.assist); saveOpts(); },
-    music: b => { opts.music = !opts.music; b.classList.toggle('on', opts.music); saveOpts(); }
+    music: b => { KG.music.setEnabled(!KG.music.isEnabled()); b.classList.toggle('on', KG.music.isEnabled()); },
+    sfx: b => { sfxOn = !sfxOn; KG.store.set(SFX_KEY, sfxOn); b.classList.toggle('on', sfxOn); }
   };
   function showTitle() {
     startMatch({ mode: 'demo', level: 2 });
@@ -1610,7 +1642,7 @@ function main() {
   }
   function bindSeg(c) {
     c.querySelectorAll('.seg').forEach(s => s.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
-      KG.sound('tick');
+      ui('click');
       s.querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.add('on');
       const n = s.dataset.seg, v = b.dataset.v;
       if (n === 'level') opts.level = +v; else if (n === 'bestOf') opts.bestOf = +v; else if (n === 'spin') opts.spin = v;
@@ -1643,7 +1675,9 @@ function main() {
   }
   function togglePause(force) {
     if (mode === 'demo' || phase === 'over') return;
+    const was = paused;
     paused = force != null ? force : !paused;
+    if (paused !== was) { if (paused) { KG.music.pause(); ui('back'); } else { KG.music.resume(); if (force == null) ui('select'); } }
     if (paused) {
       const c = card('<h2>暫停</h2>' + toggles() + '<button class="btn" data-a="resume">繼續</button><div class="two"><button class="btn sec" data-a="restart">重新開始</button><button class="btn sec" data-a="menu">回選單</button></div>');
       bind(c, Object.assign({ resume: () => togglePause(false), restart: () => startMatch({ mode, level, bestOf, spin: practice.spin }), menu: showTitle }, togMap));
@@ -1660,7 +1694,7 @@ function main() {
       '<div class="two" style="margin-top:8px"><button class="btn sec" data-a="menu">回選單</button><button class="btn" data-a="again">再來一場</button></div>');
     bind(c, { again: () => startMatch({ mode: 'ai', level, bestOf }), menu: showTitle });
   }
-  $('pauseBtn').addEventListener('click', () => { KG.sound('click'); togglePause(); });
+  $('pauseBtn').addEventListener('click', () => togglePause());
   // 選單：沒點準按鈕時，吸附到附近的按鈕
   ov.addEventListener('pointerup', e => {
     if (e.target.closest('button, .tg')) return;

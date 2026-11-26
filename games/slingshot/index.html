@@ -13,6 +13,7 @@
 <body>
 <canvas id="game" aria-label="彈弓大作戰"></canvas>
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
 <script id="ss-core">
 /* =====================================================================
  * 彈弓大作戰：物理核心（無 DOM，瀏覽器與 Node 測試機器人共用）
@@ -394,7 +395,7 @@ const SSCore = (function () {
         if (J > 1.2 && w.step - Math.min(A.lastHitStep, B.lastHitStep) > 4) {
           A.lastHitStep = B.lastHitStep = w.step;
           const mat = A.isStatic ? B.mat : (B.isStatic ? A.mat : (A.m > B.m ? A.mat : B.mat));
-          w.events.push({ t: 'hit', mat, j: J, x: arb.c[0].px, y: arb.c[0].py, hero: A.kind === 'hero' || B.kind === 'hero' });
+          w.events.push({ t: 'hit', mat, j: J, m: Math.max(A.m || 0, B.m || 0), x: arb.c[0].px, y: arb.c[0].py, hero: A.kind === 'hero' || B.kind === 'hero' });
         }
       }
     } else {
@@ -1033,120 +1034,255 @@ const Save = {
   unlocked(i) { return i === 0 || Save.stars()[i - 1] > 0; }
 };
 
-/* ---------- 聲音（噪音類效果用自己的 AudioContext，音符用 KG.note） ---------- */
-let AC = null, noiseBuf = null, userActed = false;
-function ac() {
-  if (!AC) {
-    const A = window.AudioContext || window.webkitAudioContext;
-    if (!A) return null;
-    AC = new A();
-    noiseBuf = AC.createBuffer(1, AC.sampleRate * 1, AC.sampleRate);
-    const d = noiseBuf.getChannelData(0);
-    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
-  }
-  if (AC.state === 'suspended') AC.resume();
-  return AC;
-}
-window.addEventListener('pointerdown', () => { userActed = true; ac(); }, { capture: true });
-window.addEventListener('keydown', () => { userActed = true; ac(); }, { capture: true });
-function nz(dur, vol, freq, q, delay, type, slide) {
-  if (KG.isMuted() || !userActed) return;
-  const a = ac(); if (!a) return;
-  const t = a.currentTime + (delay || 0);
-  const src = a.createBufferSource(); src.buffer = noiseBuf;
-  const f = a.createBiquadFilter(); f.type = type || 'bandpass'; f.frequency.setValueAtTime(freq, t); f.Q.value = q || 1;
-  if (slide) f.frequency.exponentialRampToValueAtTime(slide, t + dur);
-  const g = a.createGain();
-  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + 0.008); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  src.connect(f); f.connect(g); g.connect(a.destination);
-  src.start(t, Math.random() * 0.5); src.stop(t + dur + 0.05);
-}
-function tn(f, d, type, v, delay, slide) { if (userActed) KG.note(f, d, type, v, delay, slide); }
+/* ---------- 聲音：KG.sfx 音效＋KG.music 原創配樂 ---------- */
+const S = KG.sfx, M = KG.music;
+let sfxOn = Save.get('sfx', true) !== false;
 const lastSfx = {};
 function limit(key, ms) { const n = performance.now(); if (lastSfx[key] && n - lastSfx[key] < ms) return false; lastSfx[key] = n; return true; }
-const SFX = {
-  hit(mat, j) {
-    if (!limit('h' + mat, 45)) return;
-    const v = clamp(j / 14, 0.15, 1);
-    if (mat === 'wood') { nz(0.09, 0.35 * v, 520, 2); tn(140 + Math.random() * 40, 0.08, 'triangle', 0.18 * v); }
-    else if (mat === 'ice') { nz(0.08, 0.28 * v, 2600, 3); tn(1400 + Math.random() * 400, 0.06, 'sine', 0.06 * v); }
-    else if (mat === 'glass') { nz(0.05, 0.22 * v, 4200, 4); tn(2400 + Math.random() * 600, 0.08, 'sine', 0.06 * v); }
-    else if (mat === 'stone' || mat === 'rock') { nz(0.12, 0.4 * v, 240, 1.5); tn(80, 0.12, 'sine', 0.25 * v, 0, 50); }
-    else if (mat === 'robot') { tn(300, 0.08, 'square', 0.07 * v, 0, 180); nz(0.05, 0.2 * v, 1800, 3); }
-    else nz(0.08, 0.25 * v, 900, 1.5);
-  },
-  crack(mat) {
-    if (!limit('c' + mat, 60)) return;
-    if (mat === 'wood') { nz(0.05, 0.4, 900, 5); nz(0.07, 0.3, 600, 5, 0.04); tn(220, 0.05, 'square', 0.05, 0.02, 120); }
-    else if (mat === 'glass' || mat === 'ice') { nz(0.05, 0.3, 3500, 6); tn(2800, 0.05, 'sine', 0.06); }
-    else { nz(0.08, 0.4, 350, 3); }
-  },
-  break(mat) {
-    if (!limit('b' + mat, 50)) return;
-    if (mat === 'wood') { nz(0.22, 0.5, 700, 1.2, 0, 'bandpass', 300); nz(0.08, 0.4, 1500, 4, 0.03); tn(110, 0.18, 'triangle', 0.2, 0, 60); }
-    else if (mat === 'glass') { nz(0.35, 0.35, 5000, 1, 0, 'highpass'); for (let i = 0; i < 4; i++) tn(2000 + Math.random() * 2500, 0.12, 'sine', 0.07, i * 0.035); }
-    else if (mat === 'ice') { nz(0.3, 0.38, 3000, 1.2, 0, 'bandpass', 1500); for (let i = 0; i < 3; i++) tn(1500 + Math.random() * 1200, 0.1, 'triangle', 0.06, i * 0.05); }
-    else if (mat === 'stone') { nz(0.4, 0.6, 300, 1, 0, 'lowpass', 120); tn(70, 0.3, 'sine', 0.3, 0, 40); }
-    else if (mat === 'tnt') { SFX.boom(); }
-    else nz(0.2, 0.4, 800, 1);
-  },
-  stretch(p) { if (limit('st', 70)) tn(180 + p * 260, 0.06, 'triangle', 0.08); },
-  launch(p) { nz(0.35, 0.3 * p + 0.1, 1200, 0.8, 0, 'bandpass', 3000); tn(260, 0.25, 'sine', 0.22, 0, 620); tn(520, 0.12, 'triangle', 0.08, 0.02, 900); },
-  ouch() { if (!limit('ouch', 120)) return; tn(700, 0.07, 'square', 0.08, 0, 1100); tn(500, 0.1, 'square', 0.07, 0.07, 300); },
-  robot() {
-    if (!limit('rob', 80)) return;
-    nz(0.35, 0.5, 900, 0.8, 0, 'bandpass', 200);
-    [880, 660, 440, 220].forEach((f, i) => tn(f, 0.08, 'square', 0.07, 0.05 + i * 0.06));
-    tn(988, 0.08, 'square', 0.08, 0.32); tn(1319, 0.2, 'square', 0.08, 0.4);
-  },
-  boom() { if (!limit('boom', 80)) return; nz(0.7, 0.8, 500, 0.7, 0, 'lowpass', 80); tn(90, 0.5, 'sine', 0.4, 0, 35); nz(0.2, 0.4, 2500, 1, 0, 'highpass'); },
-  ability(ab) {
-    if (ab === 'split') { tn(700, 0.1, 'sine', 0.2, 0, 1300); tn(900, 0.1, 'sine', 0.15, 0.05, 1600); }
-    else if (ab === 'boost') { nz(0.5, 0.4, 600, 0.8, 0, 'bandpass', 3000); tn(200, 0.4, 'sawtooth', 0.08, 0, 800); }
-    else if (ab === 'heavy') { tn(500, 0.4, 'triangle', 0.2, 0, 90); nz(0.4, 0.3, 400, 1, 0, 'bandpass', 150); }
-    else if (ab === 'boomerang') { for (let i = 0; i < 4; i++) nz(0.08, 0.25, 1500 + i * 300, 3, i * 0.07); tn(600, 0.3, 'sine', 0.12, 0, 300); }
-  },
-  poof() { if (limit('poof', 100)) { nz(0.2, 0.2, 1500, 1, 0, 'bandpass', 600); tn(800, 0.1, 'sine', 0.08, 0, 1200); } },
-  land() { if (limit('land', 120)) { tn(160, 0.12, 'sine', 0.25, 0, 90); } },
-  hop() { tn(420, 0.12, 'sine', 0.18, 0, 820); },
-  star(i) { tn(660 * Math.pow(1.26, i), 0.25, 'triangle', 0.22); tn(1320 * Math.pow(1.26, i), 0.3, 'sine', 0.08); },
-  bonus() { tn(988, 0.08, 'square', 0.1); tn(1319, 0.18, 'square', 0.1, 0.08); }
-};
-
-/* ---------- 背景音樂 ---------- */
-const NOTE_IDX = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
-function nf(name) {
-  const m = /^([A-G])(#|b)?(\d)$/.exec(name); if (!m) return 0;
-  const n = NOTE_IDX[m[1]] + (m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0) + (parseInt(m[3], 10) + 1) * 12;
-  return 440 * Math.pow(2, (n - 69) / 12);
+/** 音效：同名 40ms 內只播一次、音高隨機 ±4% */
+function sfx(name, o) {
+  if (!sfxOn || !S) return;
+  if (!limit('s:' + name, (o && o.gap) || 40)) return;
+  const pitch = ((o && o.pitch) || 1) * (0.96 + Math.random() * 0.08);
+  S.play(name, { vol: o && o.vol != null ? o.vol : undefined, pitch, pan: o && o.pan ? o.pan : undefined });
 }
-const SONGS = [
-  { bpm: 118, mel: 'C5 E5 G5 E5 F5 A5 G5 - E5 G5 C6 G5 A5 F5 G5 - C5 E5 G5 E5 F5 D5 E5 C5 D5 E5 F5 D5 C5 - - .', bass: 'C3 . G2 . F2 . G2 . C3 . A2 . F2 . G2 . C3 . G2 . F2 . G2 . F2 . G2 . C3 . . .' },
-  { bpm: 104, mel: 'E5 G5 B5 G5 A5 - G5 E5 D5 E5 G5 E5 D5 - B4 . E5 G5 B5 D6 C6 - B5 A5 G5 A5 B5 G5 E5 - - .', bass: 'E3 . B2 . C3 . D3 . E3 . B2 . G2 . B2 . E3 . B2 . A2 . D3 . E3 . B2 . E3 . . .' },
-  { bpm: 128, mel: 'A4 C5 E5 A5 G5 E5 C5 D5 E5 - D5 C5 B4 C5 D5 - A4 C5 E5 A5 B5 G5 E5 G5 A5 - G5 E5 D5 B4 A4 -', bass: 'A2 . A2 E3 F2 . F2 C3 G2 . G2 D3 E2 . E2 B2 A2 . A2 E3 F2 . F2 C3 G2 . G2 D3 A2 . E2 .' }
-];
-const Music = {
-  song: null, step: 0, next: 0,
-  play(i) { const s = SONGS[i]; if (this.song === s) return; this.song = s; this.mel = s.mel.split(/\s+/); this.bass = s.bass.split(/\s+/); this.step = 0; this.next = 0.2; },
-  update(dt) {
-    if (!this.song || !userActed) return;
-    this.next -= dt;
-    if (this.next < -0.3) this.next = 0;
-    const beat = 60 / this.song.bpm / 2;
-    while (this.next <= 0) {
-      if (!KG.isMuted() && !document.hidden && !paused) {
-        const i = this.step % this.mel.length, tok = this.mel[i];
-        if (tok !== '-' && tok !== '.') {
-          let len = 1; while (this.mel[(i + len) % this.mel.length] === '-' && len < 6) len++;
-          KG.note(nf(tok), beat * len * 0.9, 'triangle', 0.035);
-        }
-        const bt = this.bass[this.step % this.bass.length];
-        if (bt !== '-' && bt !== '.') KG.note(nf(bt), beat * 1.6, 'sine', 0.06);
-      }
-      this.step++; this.next += beat;
-    }
-  }
+/** 世界 x 座標 → 左右聲道 */
+function panW(x) { return clamp((wx2s(x) / Math.max(1, W)) * 2 - 1, -1, 1) * 0.7; }
+function panS(x) { return clamp((x / Math.max(1, W)) * 2 - 1, -1, 1) * 0.6; }
+const rp = () => 0.95 + Math.random() * 0.1;
+
+if (S) {
+  // 橡皮筋拉長：越拉音越高（短促的吱）
+  S.define('ss_stretch', (p, s) => {
+    s.tone(170 * p, 0.07, { type: 'triangle', vol: 0.1, slide: 200 * p });
+    s.noise(0.05, { vol: 0.05, freq: 1400 * p, q: 6 });
+  });
+  // 放開：橡皮筋「啵嗡」回彈＋風聲
+  S.define('ss_twang', (p, s) => {
+    s.tone(150 * p, 0.28, { type: 'triangle', vol: 0.26, slide: 95 * p });
+    s.tone(300 * p, 0.16, { type: 'sine', vol: 0.12, slide: 180 * p });
+    s.tone(90 * p, 0.12, { vol: 0.2, slide: 60 });
+    s.noise(0.3, { vol: 0.16, freq: 900 * p, sweep: 2800 * p, q: 1.1, delay: 0.02 });
+  });
+  // 木頭：空心的叩
+  S.define('ss_wood', (p, s) => {
+    s.tone(190 * p, 0.09, { type: 'triangle', vol: 0.26 });
+    s.tone(410 * p, 0.05, { type: 'sine', vol: 0.08 });
+    s.noise(0.06, { vol: 0.2, freq: 700 * p, q: 2.2 });
+  });
+  // 石頭：低沉的咚
+  S.define('ss_stone', (p, s) => {
+    s.tone(95 * p, 0.16, { vol: 0.34, slide: 55 });
+    s.noise(0.12, { vol: 0.24, freq: 320 * p, q: 1.2, type: 'lowpass' });
+    s.noise(0.04, { vol: 0.1, freq: 1600 * p, q: 3 });
+  });
+  // 玻璃／冰：清脆的叮
+  S.define('ss_glass', (p, s) => {
+    s.tone(2350 * p, 0.12, { vol: 0.07 });
+    s.tone(3420 * p, 0.08, { vol: 0.04, delay: 0.01 });
+    s.noise(0.04, { vol: 0.12, freq: 4600 * p, q: 4 });
+  });
+  S.define('ss_ice', (p, s) => {
+    s.tone(1500 * p, 0.1, { type: 'triangle', vol: 0.07 });
+    s.noise(0.06, { vol: 0.15, freq: 2800 * p, q: 3 });
+  });
+  // 機器人：金屬匡
+  S.define('ss_metal', (p, s) => {
+    s.tone(520 * p, 0.2, { type: 'triangle', vol: 0.12 });
+    s.tone(1330 * p, 0.13, { vol: 0.06 });
+    s.tone(2170 * p, 0.08, { vol: 0.035 });
+    s.noise(0.04, { vol: 0.14, freq: 3200 * p, q: 2 });
+  });
+  // 水果主角撞到：軟軟的啪
+  S.define('ss_splat', (p, s) => {
+    s.noise(0.12, { vol: 0.22, freq: 600 * p, sweep: 220, q: 1.4 });
+    s.tone(260 * p, 0.1, { vol: 0.16, slide: 120 * p });
+  });
+  // 裂開
+  S.define('ss_crack_wood', (p, s) => { s.noise(0.04, { vol: 0.26, freq: 1100 * p, q: 6 }); s.noise(0.05, { vol: 0.2, freq: 700 * p, q: 6, delay: 0.035 }); });
+  S.define('ss_crack_glass', (p, s) => { s.noise(0.04, { vol: 0.18, freq: 3800 * p, q: 7 }); s.tone(2900 * p, 0.05, { vol: 0.05 }); });
+  S.define('ss_crack_stone', (p, s) => { s.noise(0.07, { vol: 0.26, freq: 420 * p, q: 3 }); });
+  // 碎掉
+  S.define('ss_break_wood', (p, s) => {
+    s.noise(0.22, { vol: 0.32, freq: 760 * p, sweep: 300, q: 1.2 });
+    s.noise(0.07, { vol: 0.22, freq: 1500 * p, q: 4, delay: 0.03 });
+    s.tone(115 * p, 0.16, { type: 'triangle', vol: 0.2, slide: 60 });
+  });
+  S.define('ss_break_glass', (p, s) => {
+    s.noise(0.3, { vol: 0.2, freq: 5200 * p, q: 1.2 });
+    for (let i = 0; i < 4; i++) s.tone((2100 + i * 530) * p, 0.12, { vol: 0.05, delay: i * 0.035 });
+  });
+  S.define('ss_break_ice', (p, s) => {
+    s.noise(0.26, { vol: 0.24, freq: 3000 * p, sweep: 1500, q: 1.2 });
+    for (let i = 0; i < 3; i++) s.tone((1500 + i * 420) * p, 0.1, { type: 'triangle', vol: 0.05, delay: i * 0.05 });
+  });
+  S.define('ss_break_stone', (p, s) => {
+    s.noise(0.38, { vol: 0.36, freq: 320 * p, sweep: 120, q: 1, type: 'lowpass' });
+    s.tone(72 * p, 0.28, { vol: 0.3, slide: 40 });
+    s.noise(0.1, { vol: 0.12, freq: 1200 * p, q: 2, delay: 0.05 });
+  });
+  // 機器人被打中「哎唷」＆被打倒
+  S.define('ss_ouch', (p, s) => {
+    s.tone(700 * p, 0.07, { type: 'square', vol: 0.06, slide: 1100 * p });
+    s.tone(500 * p, 0.1, { type: 'square', vol: 0.05, delay: 0.07, slide: 300 * p });
+  });
+  S.define('ss_robot', (p, s) => {
+    s.noise(0.32, { vol: 0.3, freq: 900 * p, sweep: 200, q: 0.8 });
+    [880, 660, 440, 220].forEach((f, i) => s.tone(f * p, 0.08, { type: 'square', vol: 0.05, delay: 0.05 + i * 0.06 }));
+    s.tone(988 * p, 0.08, { type: 'triangle', vol: 0.14, delay: 0.32 });
+    s.tone(1319 * p, 0.2, { type: 'triangle', vol: 0.14, delay: 0.4 });
+  });
+  S.define('ss_boom', (p, s) => {
+    s.noise(0.7, { vol: 0.48, freq: 520 * p, sweep: 80, type: 'lowpass', q: 0.7 });
+    s.tone(88 * p, 0.5, { vol: 0.38, slide: 35 });
+    s.noise(0.18, { vol: 0.16, freq: 2400 * p, q: 1 });
+  });
+  S.define('ss_split', (p, s) => { s.tone(700 * p, 0.1, { vol: 0.18, slide: 1300 * p }); s.tone(900 * p, 0.1, { vol: 0.13, delay: 0.05, slide: 1600 * p }); s.tone(1100 * p, 0.1, { vol: 0.1, delay: 0.1, slide: 1900 * p }); });
+  S.define('ss_boost', (p, s) => { s.noise(0.45, { vol: 0.26, freq: 600 * p, sweep: 3000 * p, q: 0.9 }); s.tone(200 * p, 0.38, { type: 'sawtooth', vol: 0.05, slide: 800 * p }); });
+  S.define('ss_heavy', (p, s) => { s.tone(500 * p, 0.4, { type: 'triangle', vol: 0.18, slide: 90 }); s.noise(0.4, { vol: 0.2, freq: 400 * p, sweep: 150, q: 1 }); });
+  S.define('ss_boomerang', (p, s) => { for (let i = 0; i < 4; i++) s.noise(0.08, { vol: 0.16, freq: (1500 + i * 300) * p, q: 3, delay: i * 0.07 }); s.tone(600 * p, 0.3, { vol: 0.1, slide: 300 * p }); });
+  S.define('ss_poof', (p, s) => { s.noise(0.2, { vol: 0.16, freq: 1500 * p, sweep: 600, q: 1 }); s.tone(800 * p, 0.1, { vol: 0.07, slide: 1200 * p }); });
+  S.define('ss_hop', (p, s) => { s.tone(420 * p, 0.12, { vol: 0.16, slide: 820 * p }); s.noise(0.04, { vol: 0.06, freq: 900 * p, q: 2, delay: 0.1 }); });
+  S.define('ss_land', (p, s) => { s.tone(160 * p, 0.12, { vol: 0.22, slide: 90 }); s.noise(0.06, { vol: 0.1, freq: 500 * p, q: 1.5 }); });
+  S.define('ss_star', (p, s) => { s.tone(660 * p, 0.25, { type: 'triangle', vol: 0.2 }); s.tone(1320 * p, 0.3, { vol: 0.07 }); });
+  S.define('ss_bonus', (p, s) => { s.tone(988 * p, 0.08, { type: 'triangle', vol: 0.16 }); s.tone(1319 * p, 0.18, { type: 'triangle', vol: 0.16, delay: 0.08 }); });
+  S.define('ss_grab', (p, s) => { s.tone(330 * p, 0.06, { type: 'triangle', vol: 0.12, slide: 400 * p }); s.noise(0.03, { vol: 0.06, freq: 1800 * p, q: 3 }); });
+  S.define('ss_cancel', (p, s) => { s.tone(260 * p, 0.09, { vol: 0.12, slide: 180 * p }); });
+}
+const HIT_SFX = { wood: 'ss_wood', stone: 'ss_stone', rock: 'ss_stone', glass: 'ss_glass', ice: 'ss_ice', robot: 'ss_metal', tnt: 'ss_wood' };
+let hitWin = 0, hitWinT = 0;
+const SFX = {
+  /** 撞擊：音量看衝量（質量×速度）、音高看質量（越重越低），依畫面左右 pan；倒塌時一秒最多 14 下 */
+  hit(e) {
+    if (!sfxOn) return;
+    const now = performance.now();
+    if (now - hitWinT > 1000) { hitWinT = now; hitWin = 0; }
+    if (hitWin >= 14 || !limit('h' + e.mat, 45)) return;
+    hitWin++;
+    const v = clamp(e.j / 14, 0.12, 1);
+    const p = clamp(1.25 - 0.12 * Math.log2(1 + (e.m || 1)), 0.7, 1.3) * rp();
+    S.play(e.hero ? 'ss_splat' : (HIT_SFX[e.mat] || 'ss_wood'), { vol: v, pitch: p, pan: panW(e.x) });
+    if (e.hero && HIT_SFX[e.mat] && v > 0.3) S.play(HIT_SFX[e.mat], { vol: v * 0.6, pitch: p, pan: panW(e.x) });
+  },
+  crack(e) {
+    if (!sfxOn || !limit('c' + e.mat, 60)) return;
+    const n = e.mat === 'wood' ? 'ss_crack_wood' : (e.mat === 'glass' || e.mat === 'ice') ? 'ss_crack_glass' : 'ss_crack_stone';
+    S.play(n, { pitch: rp(), pan: panW(e.x) });
+  },
+  break(e) {
+    if (!sfxOn || !limit('b' + e.mat, 50)) return;
+    if (e.mat === 'tnt') return;
+    const n = e.mat === 'wood' ? 'ss_break_wood' : e.mat === 'glass' ? 'ss_break_glass' : e.mat === 'ice' ? 'ss_break_ice' : e.mat === 'stone' ? 'ss_break_stone' : 'ss_break_wood';
+    S.play(n, { vol: clamp(0.6 + (e.area || 0.3) * 0.6, 0.6, 1), pitch: clamp(1.15 - (e.area || 0.3) * 0.2, 0.8, 1.15) * rp(), pan: panW(e.x) });
+  },
+  stretch(p) { if (sfxOn && limit('st', 70)) S.play('ss_stretch', { pitch: 0.8 + p * 1.6, vol: 0.6 + p * 0.5, pan: -0.5 }); },
+  launch(e) { sfx('ss_twang', { vol: 0.6 + e.power * 0.5, pitch: 1.15 - e.power * 0.25, pan: panW(e.x) }); },
+  ouch(e) { if (limit('ouch', 120)) sfx('ss_ouch', { pan: panW(e.x) }); },
+  robot(e) {
+    if (!limit('rob', 80)) return;
+    // 連續打倒：音高往上爬
+    robotChain = performance.now() - robotChainT < 1600 ? robotChain + 1 : 0; robotChainT = performance.now();
+    sfx('ss_robot', { pitch: Math.pow(1.06, Math.min(robotChain, 6)), pan: panW(e.x) });
+  },
+  boom(e) { if (limit('boom', 80)) sfx('ss_boom', { pan: e ? panW(e.x) : 0 }); },
+  ability(e) { sfx({ split: 'ss_split', boost: 'ss_boost', heavy: 'ss_heavy', boomerang: 'ss_boomerang' }[e.ab] || 'ss_split', { pan: panW(e.x) }); },
+  poof(e) { if (limit('poof', 100)) sfx('ss_poof', { pan: panW(e.x) }); },
+  land(e) { if (limit('land', 120)) sfx('ss_land', { pan: e ? panW(e.x) : 0 }); },
+  hop() { sfx('ss_hop', { pan: -0.5 }); },
+  star(i) { if (sfxOn) S.play('ss_star', { pitch: Math.pow(1.26, i) }); },
+  bonus(n) { sfx('ss_bonus', { pitch: Math.pow(1.06, n || 0), pan: -0.5 }); }
 };
+let robotChain = 0, robotChainT = 0, bonusN = 0;
+
+/* ---------- 原創配樂 ---------- */
+/* SONGS-BEGIN */
+// 標題／地圖：義大利麵西部片風的草原對決（B 小調 96，口哨長笛＋撥弦吉他＋馬蹄 tom，沒有鼓組）
+const SS_TITLE_MEL = [
+  'B4 - - - F#5 - B5 -', 'A5 - F#5 - - - . .', 'G5 - F#5 E5 D5 - B4 -', 'A4 - - - D5 - F#5 -',
+  'E5 - - - G5 - B5 -', 'A5 - F#5 - D5 - B4 -', 'C#5 - D5 - E5 - G5 -', 'F#5 - - - A#4 - C#5 -',
+  'B4 - D5 - F#5 - - -', 'E5 - C#5 - A4 - - -', 'B4 - D5 - G5 - F#5 E5', 'C#5 - - - E5 - A5 -',
+  'B5 - - - A5 F#5 D5 -', 'E5 - G5 - B4 - E5 -', 'F#5 - E5 - C#5 - A#4 -', 'B4 - - - - - . .'
+];
+const E16 = '................';
+const SS_TITLE = {
+  key: 'Bm', bpm: 96, steps: 16, swing: 0.08, vol: 0.36,
+  chords: ['Bm', 'Bm', 'G', 'D', 'Em', 'Bm', 'G', 'F#7', 'Bm', 'A', 'G', 'A', 'Bm', 'Em', 'F#', 'Bm'],
+  tracks: [
+    { inst: 'tom', pat: 'x..xx...x..xx...', vol: 0.3, pitch: 120 },
+    { inst: 'rim', pat: '..x...x...x...x.', vol: 0.32 },
+    { inst: 'sub', chord: 'R.......5.......', vol: 0.7 },
+    { inst: 'pluck', arp: 'up', rate: 4, oct: 3, vol: 0.3 },
+    { inst: 'strings', chord: 'hold', oct: 3, vol: 0.3 },
+    { inst: 'flute', seq: SS_TITLE_MEL, vol: 0.95 },
+    { inst: 'bell', seq: ['B5 - - - - - - -', '', '', '', 'E5 - - - - - - -', '', '', 'F#5 - - - - - - -'], vol: 0.3 },
+    { inst: 'crash', pat: ['x...............', E16, E16, E16, E16, E16, E16, E16], vol: 0.25 }
+  ]
+};
+// 關卡中：番茄塔朗泰拉 6/8（E 小調，附點四分＝116；12 格＝一小節 6/8）
+const SS_PLAY_MEL = [
+  'E5 F#5 G5 B5 G5 E5', 'B4 E5 G5 F#5 E5 D5', 'D#5 F#5 A5 F#5 D#5 B4', 'E5 - - B4 - -',
+  'A4 C5 E5 A5 G5 F#5', 'G5 F#5 E5 B4 E5 G5', 'F#5 E5 D#5 E5 F#5 A5', 'G5 - - E5 - .',
+  'D5 G5 B5 A5 G5 F#5', 'F#5 A5 D5 F#5 A5 -', 'G5 B5 E5 F#5 G5 E5', 'F#5 - D#5 B4 - .',
+  'C5 E5 A5 G5 F#5 E5', 'G5 E5 B4 E5 G5 B5', 'A5 F#5 D#5 F#5 B4 D#5', 'E5 - - - . .'
+];
+const SS_PLAY = {
+  key: 'Em', bpm: 232, steps: 12, swing: 0, vol: 0.3,
+  chords: ['Em', 'Em', 'B7', 'Em', 'Am', 'Em', 'B7', 'Em', 'G', 'D', 'Em', 'B7', 'Am', 'Em', 'B7', 'Em'],
+  layers: { tension: false },
+  tracks: [
+    { inst: 'kick', pat: 'x.....x.....', vol: 0.5 },
+    { inst: 'shaker', pat: 'x.o.o.x.o.o.', vol: 0.55 },
+    { inst: 'rim', pat: '......x.....', vol: 0.3 },
+    { inst: 'sub', chord: 'R..5..', vol: 0.7 },
+    { inst: 'organ', chord: '.33.33', oct: 4, vol: 0.2 },
+    { inst: 'organ', chord: '.55.55', oct: 4, vol: 0.16 },
+    { inst: 'pluck', arp: 'updown', rate: 2, oct: 4, vol: 0.14 },
+    { inst: 'marimba', seq: SS_PLAY_MEL, vol: 0.95 },
+    { inst: 'flute', seq: SS_PLAY_MEL, vol: 0.28, legato: 0.7 },
+    // 最後一發／只剩一隻機器人：緊張起來
+    { inst: 'strings', chord: 'hold', oct: 3, layer: 'tension', vol: 0.32 },
+    { inst: 'tom', pat: 'x.....x..x.x', layer: 'tension', vol: 0.32, pitch: 140 },
+    { inst: 'ohat', pat: '...x.....x..', layer: 'tension', vol: 0.3 }
+  ]
+};
+const MUSIC = { title: SS_TITLE, play: SS_PLAY };
+/* SONGS-END */
+function playSong(s) { if (!M) return; if (M.current() !== s) M.setVolume(s.vol || 0.24); M.play(s); }
+function jingleWin() {
+  if (!M || !sfxOn) return;
+  M.jingle({ bpm: 200, inst: 'marimba', vol: 0.32, notes: [['B4', 1], ['E5', 1], ['G5', 1], ['B5', 2], ['A5', 1], ['G5', 1], ['F#5', 1], ['E5+G5+B5', 4]], bass: [['E3', 4, 0], ['B2', 2, 4], ['E3', 4, 8]], bassVol: 0.3 });
+  M.jingle({ bpm: 200, inst: 'flute', vol: 0.18, notes: [['.', 3], ['B5', 2], ['A5', 1], ['G5', 1], ['F#5', 1], ['G5', 4]] });
+}
+function jingleLose() {
+  if (!M || !sfxOn) return;
+  M.jingle({ bpm: 120, inst: 'pluck', vol: 0.35, notes: [['B4', 1], ['A#4', 1], ['A4', 1], ['G4', 1], ['F#4', 4]], bass: [['B2', 4, 0], ['E2', 4, 4]], bassVol: 0.25 });
+}
+/** 背景音樂跟著局勢：最後一發／最後一隻機器人 → 緊張層＋加速；飛行中的風聲 */
+let flyLoop = null, musicT = 0, tensionOn = false;
+function audioUpdate(rdt) {
+  musicT += rdt;
+  if (musicT < 0.1) return;
+  musicT = 0;
+  const inPlay = screen === 'play' && world && !paused && !overlay;
+  // 緊張：剩最後一發，或只剩一隻機器人
+  const tense = inPlay && (phase === 'aim' || phase === 'fly') && world.robotsAlive > 0 && (C.shotsLeft(world) <= (phase === 'aim' ? 1 : 0) || world.robotsAlive === 1);
+  if (tense !== tensionOn) { tensionOn = tense; if (M) M.setLayer('tension', tense); }
+  if (M && M.current() === SS_PLAY) M.setTempo(inPlay && phase !== 'won' && C.shotsLeft(world) === (phase === 'aim' ? 1 : 0) && world.robotsAlive > 0 ? 1.06 : 1);
+  // 飛行風聲：速度越快越響
+  const p = inPlay && phase === 'fly' ? proj() : null;
+  if (p && sfxOn && !p.hit) {
+    if (!flyLoop) flyLoop = S.loop('wind');
+    const sp = clamp(Math.hypot(p.vx, p.vy) / C.VMAX, 0, 1.4);
+    flyLoop.set(clamp(sp * 0.7, 0, 1), 0.05 + sp * 0.09);
+  } else if (flyLoop) { flyLoop.set(0, 0); }
+}
+function stopLoops() { if (flyLoop) { flyLoop.stop(); flyLoop = null; } }
+function setPaused(on) {
+  if (paused === on && overlay === (on ? 'pause' : null)) return;
+  paused = on; overlay = on ? 'pause' : null;
+  if (!M) return;
+  if (on) { M.pause(); stopLoops(); sfx('back'); } else { M.resume(); sfx('select'); }
+}
 
 /* ---------- 粒子池 ---------- */
 const PMAX = KG.lowEnd ? 220 : 360;
@@ -1627,7 +1763,9 @@ function startLevel(i, skipIntro) {
   cam.z = zb; cam.y = camYFor(zb);
   cam.x = skipIntro ? -3 + W / zb / 2 : Math.max(-3 + W / zb / 2, (lvlBox.x0 + lvlBox.x1) / 2);
   tutorial = i === 0 && !Save.get('tut', false) ? 1 : 0;
-  Music.play(LV[i].theme);
+  stopLoops(); tensionOn = false; if (M) { M.setLayer('tension', false); M.setTempo(1); }
+  playSong(SS_PLAY);
+  sfx('go', { vol: 0.7 });
   if (W < H && !skipIntro && !portraitHinted) { portraitHinted = true; KG.toast('橫放手機，看得更清楚喔！'); }
 }
 let portraitHinted = false;
@@ -1662,7 +1800,7 @@ function gameStep() {
     if (C.settled(world)) {
       C.endShot(world); handleEvents();
       if (world.robotsAlive === 0) { phase = 'won'; phaseT = 0; prepareWin(); }
-      else if (C.shotsLeft(world) > 0) { phase = 'aim'; phaseT = 0; hopT = 0; cam.mode = 'aim'; SFX.hop(); }
+      else if (C.shotsLeft(world) > 0) { phase = 'aim'; phaseT = 0; hopT = 0; cam.mode = 'aim'; SFX.hop(); bonusN = 0; }
       else { phase = 'lost'; phaseT = 0; }
     }
   } else if (phase === 'aim' || phase === 'intro' || phase === 'won' || phase === 'lost') {
@@ -1685,7 +1823,8 @@ function finishLevel(won) {
   const best = Save.best()[levelIdx] || 0;
   result = { won, score, stars, best, newBest, t: 0, shown: 0 };
   overlay = 'result';
-  if (won) { KG.sound('win'); KG.confetti(W / 2, H * 0.3, 90); } else KG.sound('lose');
+  stopLoops(); if (M) M.stop(0.3);
+  if (won) { jingleWin(); KG.confetti(W / 2, H * 0.3, 90); } else jingleLose();
 }
 function handleEvents() {
   const ev = world.events;
@@ -1693,23 +1832,23 @@ function handleEvents() {
     const e = ev[i];
     switch (e.t) {
       case 'hit':
-        SFX.hit(e.mat, e.j);
+        SFX.hit(e);
         if (e.j > 3) dust(e.x, e.y, Math.min(4, 1 + (e.j / 6) | 0));
         if (e.j > 10) shake(Math.min(0.5, e.j / 60));
         break;
       case 'heroHit':
         if (cam.mode === 'follow') cam.mode = 'castle';
-        SFX.land(); KG.vibrate(15);
+        SFX.land(e); KG.vibrate(15);
         break;
-      case 'crack': SFX.crack(e.mat); dust(e.x, e.y, 2); break;
+      case 'crack': SFX.crack(e); dust(e.x, e.y, 2); break;
       case 'break':
-        SFX.break(e.mat); debris(e);
+        SFX.break(e); debris(e);
         popup(e.x, e.y + 0.4, '+' + C.MATS[e.mat].score, '#fff6c8');
         breakWin.push(time);
         break;
-      case 'ouch': SFX.ouch(); robotFlash[e.b] = time; break;
+      case 'ouch': SFX.ouch(e); robotFlash[e.b] = time; break;
       case 'robot':
-        SFX.robot(); sparks(e.x, e.y, 14); ring(e.x, e.y, 1.4, 'rgba(255,240,180,0.9)');
+        SFX.robot(e); sparks(e.x, e.y, 14); ring(e.x, e.y, 1.4, 'rgba(255,240,180,0.9)');
         for (let k = 0; k < 6; k++) { const p = spawn(1, e.x, e.y, (Math.random() - 0.5) * 7, Math.random() * 7 + 2, 1.6, 0.1 + Math.random() * 0.1, k % 2 ? '#6cbfa6' : '#4a4f5c', -14); p.bounce = true; }
         dust(e.x, e.y, 6, 'rgba(255,255,255,0.8)', 2.5);
         popup(e.x, e.y + 0.8, '+5000', '#ffe066', true);
@@ -1717,19 +1856,19 @@ function handleEvents() {
         if (world.killsThisShot >= 2 || world.robotsAlive === 0) slowmo = Math.max(slowmo, 0.9);
         break;
       case 'boom':
-        SFX.boom(); ring(e.x, e.y, e.R, 'rgba(255,220,120,0.95)'); ring(e.x, e.y, e.R * 0.6, 'rgba(255,140,60,0.9)');
+        SFX.boom(e); ring(e.x, e.y, e.R, 'rgba(255,220,120,0.95)'); ring(e.x, e.y, e.R * 0.6, 'rgba(255,140,60,0.9)');
         sparks(e.x, e.y, 22, '#ffb52e'); dust(e.x, e.y, 10, 'rgba(120,110,110,0.6)', 3);
         shake(0.9); KG.vibrate(60); slowmo = Math.max(slowmo, 0.7);
         break;
-      case 'launch': SFX.launch(e.power); dust(e.x, e.y, 3); break;
+      case 'launch': SFX.launch(e); dust(e.x, e.y, 3); break;
       case 'ability':
-        SFX.ability(e.ab);
+        SFX.ability(e);
         if (e.ab === 'split') { ring(e.x, e.y, 0.8, 'rgba(160,160,255,0.9)'); sparks(e.x, e.y, 8, '#b8b8ff'); }
         else if (e.ab === 'boost') { ring(e.x, e.y, 0.9, 'rgba(255,140,40,0.9)'); }
         else if (e.ab === 'heavy') { ring(e.x, e.y, 1, 'rgba(120,220,120,0.9)'); }
         else if (e.ab === 'boomerang') { ring(e.x, e.y, 0.8, 'rgba(255,230,90,0.9)'); }
         break;
-      case 'poof': SFX.poof(); dust(e.x, e.y, 6, 'rgba(255,255,255,0.85)'); break;
+      case 'poof': SFX.poof(e); dust(e.x, e.y, 6, 'rgba(255,255,255,0.85)'); break;
     }
   }
   ev.length = 0;
@@ -1998,7 +2137,7 @@ function drawHUD() {
   ctx.globalAlpha = 1;
   // 暫停與重來（右上，音效按鈕下方）
   const bs = 46;
-  button('pause', W - 10 - bs, 70, bs, bs, { color: 'white', icon: 'pause', cb: () => { paused = true; overlay = 'pause'; } });
+  button('pause', W - 10 - bs, 70, bs, bs, { color: 'white', icon: 'pause', cb: () => setPaused(true) });
   button('restart', W - 10 - bs, 70 + bs + 14, bs, bs, { color: 'white', icon: 'replay', cb: () => startLevel(levelIdx, true) });
   // 技能提示
   if (phase === 'fly' && C.canAbility(world)) {
@@ -2050,14 +2189,21 @@ function bonusShown() { return phase === 'won' ? bonusAdded * C.SHOT_BONUS : 0; 
 let bonusAdded = 0, bonusT = 0;
 function drawPause() {
   ctx.fillStyle = 'rgba(40,20,60,0.5)'; ctx.fillRect(0, 0, W, H);
-  const pw = Math.min(W - 40, 340 * U), ph = Math.min(H - 40, 300 * U), px = (W - pw) / 2, py = (H - ph) / 2;
+  const pw = Math.min(W - 40, 340 * U), ph = Math.min(H - 40, 370 * U), px = (W - pw) / 2, py = (H - ph) / 2;
   panel(px, py, pw, ph, '#b49cff');
-  txt('暫停中', W / 2, py + ph * 0.18, Math.round(32 * U), '#fff', { stroke: '#7b55d6', sw: 8 * U });
-  const bw = pw * 0.7, bh = Math.min(54 * U, ph * 0.18), gap = (ph * 0.7 - bh * 3) / 3;
-  let y = py + ph * 0.32;
-  button('resume', W / 2 - bw / 2, y, bw, bh, { color: 'green', icon: 'play', label: '繼續', cb: () => { paused = false; overlay = null; } }); y += bh + gap;
+  txt('暫停中', W / 2, py + ph * 0.14, Math.round(32 * U), '#fff', { stroke: '#7b55d6', sw: 8 * U });
+  const bw = pw * 0.76, bh = Math.min(54 * U, ph * 0.15), gap = (ph * 0.74 - bh * 4) / 4;
+  let y = py + ph * 0.26;
+  button('resume', W / 2 - bw / 2, y, bw, bh, { color: 'green', icon: 'play', label: '繼續', cb: () => setPaused(false) }); y += bh + gap;
   button('pre', W / 2 - bw / 2, y, bw, bh, { color: 'yellow', icon: 'replay', label: '重新開始', cb: () => startLevel(levelIdx, true) }); y += bh + gap;
-  button('pmap', W / 2 - bw / 2, y, bw, bh, { color: 'blue', icon: 'map', label: '關卡地圖', cb: () => goMap() });
+  button('pmap', W / 2 - bw / 2, y, bw, bh, { color: 'blue', icon: 'map', label: '關卡地圖', cb: () => goMap() }); y += bh + gap;
+  soundToggles(W / 2, y, bw, bh);
+}
+/** 「音樂 開/關」「音效 開/關」兩顆按鈕 */
+function soundToggles(cx, y, w, h) {
+  const g = Math.max(8, w * 0.04), gw = (w - g) / 2, mOn = !!(M && M.isEnabled());
+  button('tgM', cx - w / 2, y, gw, h, { color: mOn ? 'green' : 'white', label: '音樂 ' + (mOn ? '開' : '關'), size: Math.min(h * 0.42, gw / 4.6), cb: () => { if (M) M.setEnabled(!M.isEnabled()); } });
+  button('tgS', cx - w / 2 + gw + g, y, gw, h, { color: sfxOn ? 'green' : 'white', label: '音效 ' + (sfxOn ? '開' : '關'), size: Math.min(h * 0.42, gw / 4.6), cb: () => { sfxOn = !sfxOn; Save.set('sfx', sfxOn); if (sfxOn) sfx('ui'); else stopLoops(); } });
 }
 function drawResult(rdt) {
   const R = result; R.t += rdt;
@@ -2092,7 +2238,7 @@ function drawResult(rdt) {
 }
 
 /* ---------- 標題與地圖 ---------- */
-function goMap() { screen = 'map'; overlay = null; paused = false; world = null; mapEnter = time; Music.play(mapWorld); }
+function goMap() { if (paused && M) M.resume(); screen = 'map'; overlay = null; paused = false; world = null; mapEnter = time; stopLoops(); playSong(SS_TITLE); }
 function drawTitle() {
   const gy = H * 0.78;
   cam.z = clamp(Math.min(W, H) / 14, 20, 60); cam.x = 4; cam.y = (H / 2 - (H - gy)) / cam.z;
@@ -2131,6 +2277,9 @@ function drawTitle() {
   const bw = Math.min(260 * U, W * 0.7), bh = 64 * U;
   button('start', W / 2 - bw / 2, Math.min(H * 0.55, gy - bh - 20 * U), bw, bh, { color: 'green', icon: 'play', label: '開始遊戲', pulse: true, cb: () => { goMap(); } });
   txt('★ ' + Save.total() + ' / ' + LV.length * 3, W / 2, Math.min(H * 0.55, gy - bh - 20 * U) + bh + 30 * U, Math.round(18 * U), '#fff', { stroke: '#5a2d5c', sw: 5 * U });
+  const tw = Math.min(300 * U, W - 40), th2 = Math.max(36, 44 * U);
+  // 放在草地下方的泥土上，不擋住小場景
+  soundToggles(W / 2, gy + 16 + th2 < H - 8 ? gy + 16 : Math.min(H - th2 - 12, Math.min(H * 0.55, gy - bh - 20 * U) + bh + 52 * U), tw, th2);
 }
 function mapNodes(th) {
   const ns = clamp(Math.min(W / 5.6, (H - 180 * U) / 5.5), 44, 84);
@@ -2159,8 +2308,8 @@ function drawMap() {
   let wstars = 0; for (let i = 0; i < 10; i++) wstars += stars[th * 10 + i] || 0;
   txt('★ ' + wstars + ' / 30', W / 2, tabY + 58 * U, Math.round(17 * U), '#fff', { stroke: '#5a2d5c', sw: 5 * U });
   const ab = 50 * U;
-  if (th > 0) button('wl', 14, tabY + 6 * U, ab, ab, { color: 'white', icon: 'left', cb: () => { mapWorld--; mapEnter = time; Music.play(mapWorld); } });
-  if (th < 2) button('wr', W - 14 - ab, tabY + 6 * U, ab, ab, { color: 'white', icon: 'right', cb: () => { mapWorld++; mapEnter = time; Music.play(mapWorld); } });
+  if (th > 0) button('wl', 14, tabY + 6 * U, ab, ab, { color: 'white', icon: 'left', cb: () => { mapWorld--; mapEnter = time; sfx('swoosh', { pan: -0.6 }); } });
+  if (th < 2) button('wr', W - 14 - ab, tabY + 6 * U, ab, ab, { color: 'white', icon: 'right', cb: () => { mapWorld++; mapEnter = time; sfx('swoosh', { pan: 0.6 }); } });
   // 路徑
   const pts = mapNodes(th);
   ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth = 10 * U; ctx.setLineDash([4 * U, 14 * U]); ctx.lineCap = 'round';
@@ -2173,7 +2322,7 @@ function drawMap() {
     const sc = easeOutBack(appear);
     ctx.save(); ctx.translate(p[0], p[1]); ctx.scale(sc, sc); ctx.translate(-p[0], -p[1]);
     const isNext = open && !(stars[li] > 0);
-    button('lv' + li, p[0] - ns / 2, p[1] - ns / 2, ns, ns, { color: open ? (i === 9 ? 'pink' : T.btn) : 'gray', radius: ns * 0.3, pulse: isNext, cb: () => { if (!open) { KG.sound('wrong'); KG.toast('先過前一關喔！'); return; } startLevel(li); } });
+    button('lv' + li, p[0] - ns / 2, p[1] - ns / 2, ns, ns, { color: open ? (i === 9 ? 'pink' : T.btn) : 'gray', radius: ns * 0.3, pulse: isNext, cb: () => { if (!open) { sfx('error'); KG.toast('先過前一關喔！'); return; } startLevel(li); } });
     if (open) {
       txt(String(i + 1), p[0], p[1] - ns * 0.08, ns * 0.42, '#fff', { stroke: 'rgba(60,30,70,0.6)', sw: ns * 0.1 });
       for (let k = 0; k < 3; k++) starShape(p[0] + (k - 1) * ns * 0.3, p[1] + ns * 0.66 - (k === 1 ? 3 : 0), ns * 0.13, k < (stars[li] || 0));
@@ -2189,7 +2338,7 @@ cv.addEventListener('pointerdown', (e) => {
   e.preventDefault();
   const [x, y] = ptr(e);
   const b = hitBtn(x, y);
-  if (b) { pressed = { id: b.id, pid: e.pointerId }; KG.note(880, 0.05, 'sine', 0.12); return; }
+  if (b) { pressed = { id: b.id, pid: e.pointerId }; sfx('click', { pan: panS(x) }); return; }
   if (screen !== 'play' || overlay) return;
   if (phase === 'intro') { phase = 'aim'; cam.mode = 'aim'; return; }
   if (phase === 'fly') { doAbility(); return; }
@@ -2200,7 +2349,7 @@ cv.addEventListener('pointerdown', (e) => {
       aim = { id: e.pointerId, x0: x, y0: y, a: 0, p: 0 };
       kAim.on = false;
       try { cv.setPointerCapture(e.pointerId); } catch (_) { }
-      KG.note(330, 0.06, 'triangle', 0.1);
+      sfx('ss_grab', { pan: panS(x) });
       return;
     }
     pan = { id: e.pointerId, x0: x, m0: cam.manual };
@@ -2221,13 +2370,13 @@ function endPtr(e, cancel) {
   const [x, y] = ptr(e);
   if (pressed && pressed.pid === e.pointerId) {
     const b = hitBtn(x, y), id = pressed.id; pressed = null;
-    if (!cancel && b && b.id === id && b.cb) { KG.sound('pop'); b.cb(); }
+    if (!cancel && b && b.id === id && b.cb) { if (id !== 'resume' && id !== 'pause') sfx('ui', { pan: panS(x) }); b.cb(); }
     return;
   }
   if (aim && aim.id === e.pointerId) {
     const a = aim; aim = null;
     if (!cancel && a.p >= 0.12) fireShot(a.a, a.p);
-    else KG.note(260, 0.08, 'sine', 0.1, 0, 180);
+    else sfx('ss_cancel', { pan: panS(x) });
     return;
   }
   if (pan && pan.id === e.pointerId) pan = null;
@@ -2240,8 +2389,8 @@ window.addEventListener('keydown', (e) => {
   const k = e.key;
   if (screen === 'title' && (k === 'Enter' || k === ' ')) { goMap(); e.preventDefault(); return; }
   if (screen === 'map') {
-    if (k === 'ArrowLeft' && mapWorld > 0) { mapWorld--; mapEnter = time; }
-    else if (k === 'ArrowRight' && mapWorld < 2) { mapWorld++; mapEnter = time; }
+    if (k === 'ArrowLeft' && mapWorld > 0) { mapWorld--; mapEnter = time; sfx('swoosh', { pan: -0.6 }); }
+    else if (k === 'ArrowRight' && mapWorld < 2) { mapWorld++; mapEnter = time; sfx('swoosh', { pan: 0.6 }); }
     else if (k === 'Enter' || k === ' ') { let li = 0; for (let i = 0; i < LV.length; i++) if (Save.unlocked(i)) li = i; startLevel(li); }
     return;
   }
@@ -2251,7 +2400,7 @@ window.addEventListener('keydown', (e) => {
     else if (k === 'Escape') goMap();
     return;
   }
-  if (k === 'Escape' || k === 'p' || k === 'P') { paused = !paused; overlay = paused ? 'pause' : null; e.preventDefault(); return; }
+  if (k === 'Escape' || k === 'p' || k === 'P') { setPaused(!paused); e.preventDefault(); return; }
   if (paused) return;
   if (k === 'r' || k === 'R') { startLevel(levelIdx, true); return; }
   if (phase === 'intro') { phase = 'aim'; cam.mode = 'aim'; }
@@ -2264,7 +2413,7 @@ window.addEventListener('keydown', (e) => {
     else if (k === ' ' || k === 'Enter') { if (kAim.on) fireShot(kAim.a, kAim.p); else kAim.on = true; e.preventDefault(); }
   } else if (phase === 'fly' && (k === ' ' || k === 'Enter')) { doAbility(); e.preventDefault(); }
 });
-document.addEventListener('visibilitychange', () => { if (document.hidden && screen === 'play' && !overlay) { paused = true; overlay = 'pause'; } });
+document.addEventListener('visibilitychange', () => { if (document.hidden) { if (screen === 'play' && !overlay) setPaused(true); else stopLoops(); } });
 
 /* ---------- 版面 ---------- */
 function resize() {
@@ -2286,7 +2435,7 @@ function frame(now) {
   const rdt = Math.min(0.05, Math.max(0, (now - lastT) / 1000)); lastT = now;
   time += rdt;
   fpsAvg = lerp(fpsAvg, rdt > 0 ? 1 / rdt : 60, 0.05);
-  Music.update(rdt);
+  audioUpdate(rdt);
   btnReg = [];
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   if (screen === 'title') drawTitle();
@@ -2309,7 +2458,7 @@ function frame(now) {
         if (bonusQ.length && bonusT > 0.45) {
           bonusT = 0; const k = bonusQ.shift(); bonusAdded++;
           const n2 = k - world.shotIdx;
-          SFX.bonus(); popup(-1.3 - n2 * 0.85, 1.2, '+10000', '#ffe066', true); sparks(-1.3 - n2 * 0.85, 0.5, 10);
+          SFX.bonus(bonusN++); popup(-1.3 - n2 * 0.85, 1.2, '+10000', '#ffe066', true); sparks(-1.3 - n2 * 0.85, 0.5, 10);
         }
         if (!bonusQ.length && phaseT > 1.0 + bonusAdded * 0.45) finishLevel(true);
       }
@@ -2338,7 +2487,7 @@ window.__ss = {
     };
   },
   start(i) { startLevel(i || 0, true); return this.state(); },
-  title() { screen = 'title'; world = null; overlay = null; },
+  title() { screen = 'title'; world = null; overlay = null; paused = false; stopLoops(); playSong(SS_TITLE); },
   map(wi) { mapWorld = wi || 0; goMap(); },
   launch(angleDeg, power, abilityStep) { return fireShot(angleDeg * Math.PI / 180, power, abilityStep == null ? undefined : abilityStep); },
   ability() { return doAbility(); },
@@ -2386,6 +2535,7 @@ window.__ss = {
 };
 
 resize();
+playSong(SS_TITLE);
 requestAnimationFrame((t) => { lastT = t; frame(t); });
 </script>
 </body>

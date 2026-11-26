@@ -713,7 +713,8 @@ const Core = (() => {
 
 let renderer = null;
 try {
-  renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gl'), antialias: true, powerPreference: 'high-performance' });
+  // 不開 MSAA：畫面走後製（render target 本來就沒有 MSAA），省填充率
+  renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gl'), antialias: false, powerPreference: 'high-performance' });
 } catch (e) {
   renderer = null;
 }
@@ -819,7 +820,6 @@ function main() {
    * ========================================================= */
   let VW = innerWidth, VH = innerHeight;
   const small = Math.min(VW, VH) < 600;
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, small ? 1.75 : 2));
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 0.92;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -854,7 +854,7 @@ function main() {
   scene.add(key, key.target);
   const spot = new THREE.SpotLight(0xfff6ea, 9, 9, 0.62, 0.6, 1.1);
   spot.position.copy(V(0, HEAD_Y - 1.0, 2.5)); spot.target.position.copy(V(0, HEAD_Y + 0.5, 0));
-  spot.castShadow = true; spot.shadow.mapSize.set(1024, 1024); spot.shadow.camera.near = 0.5; spot.shadow.camera.far = 6; spot.shadow.bias = -0.0005; spot.shadow.radius = 3;
+  spot.castShadow = true; spot.shadow.mapSize.set(small ? 512 : 1024, small ? 512 : 1024); spot.shadow.camera.near = 0.5; spot.shadow.camera.far = 6; spot.shadow.bias = -0.0005; spot.shadow.radius = 3;
   scene.add(spot, spot.target);
 
   function makeTex(w, h, draw, srgb = true) {
@@ -1129,7 +1129,16 @@ function main() {
   const pinsM = new THREE.InstancedMesh(pinGeo, pinMat, 10);
   pinsM.instanceMatrix.setUsage(THREE.DynamicDrawUsage); pinsM.frustumCulled = false;
   mirror.add(pinsM);
-  const nPins = new THREE.InstancedMesh(pinGeo, pinMat, NB.length * 10);
+  // 隔壁球道的瓶子很遠：用低面數版本（貼圖座標照原本的高度對應）
+  const NPT_LO = 22, loPts = [new THREE.Vector2(0.0005, 0)];
+  for (let j = 0; j < NPT_LO - 1; j++) { const hh = j / (NPT_LO - 2) * PIN_H; loPts.push(new THREE.Vector2(Math.max(0.0005, pinR(hh)), hh)); }
+  const pinGeoLo = new THREE.LatheGeometry(loPts, 12);
+  {
+    const pa = pinGeoLo.attributes.position, uv = pinGeoLo.attributes.uv;
+    for (let i = 0; i < pa.count; i++) { if (uv.getY(i) > 0) uv.setY(i, (1 + pa.getY(i) / PIN_H * (NPT - 2)) / (NPT - 1)); }
+  }
+  pinGeoLo.translate(0, -PIN_COM, 0);
+  const nPins = new THREE.InstancedMesh(pinGeoLo, pinMat, NB.length * 10);
   NB.forEach((k, li) => PIN_XY.forEach((p, i) => { _m.makeTranslation(p[0] + k * PITCH, PIN_COM, -p[1]); nPins.setMatrixAt(li * 10 + i, _m); }));
   scene.add(nPins);
   const QM = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2), QMi = QM.clone().invert();
@@ -1187,7 +1196,8 @@ function main() {
     m.geometry.setDrawRange(0, Math.max(0, (n - 1) * 6));
   }
   const trail = ribbon(60, 0x2ab8e0), aimLine = ribbon(140, 0xffffff);
-  const trailPts = [];
+  const trailPts = [], trailTmp = [];
+  const trailAlpha = (i, n) => Math.pow(i / n, 1.8) * 0.2;
   const aimArrow = new THREE.Mesh((() => { const s = new THREE.Shape(); s.moveTo(0, 0.16); s.lineTo(-0.07, 0); s.lineTo(-0.025, 0.02); s.lineTo(-0.025, -0.08); s.lineTo(0.025, -0.08); s.lineTo(0.025, 0.02); s.lineTo(0.07, 0); s.closePath(); const g = new THREE.ShapeGeometry(s); g.rotateX(-Math.PI / 2); return g; })(), new THREE.MeshBasicMaterial({ color: new THREE.Color(1.6, 1.6, 1.6), transparent: true, opacity: 0.55, depthWrite: false, toneMapped: false, blending: THREE.AdditiveBlending }));
   aimArrow.renderOrder = 5; scene.add(aimArrow);
 
@@ -1937,8 +1947,8 @@ function main() {
     if (phase === 'roll' && (b.st === 1 || b.st === 2)) {
       const L = trailPts.length;
       if (L < 2 || Math.hypot(b.x - trailPts[L - 2], b.y - trailPts[L - 1]) > 0.12) { trailPts.push(b.x, b.y); if (trailPts.length > 120) trailPts.splice(0, 2); }
-      const tp = trailPts.slice(); tp.push(b.x, b.y);
-      setRibbon(trail, tp, tp.length / 2, 0.045, (i, n) => Math.pow(i / n, 1.8) * 0.2);
+      const tp = trailTmp; tp.length = 0; for (let i = 0; i < trailPts.length; i++) tp.push(trailPts[i]); tp.push(b.x, b.y);
+      setRibbon(trail, tp, tp.length / 2, 0.045, trailAlpha);
       trail.visible = true;
     } else if (trail.visible && phase !== 'roll') {
       trail.visible = phase === 'result';
@@ -2030,15 +2040,25 @@ function main() {
     if (game) { $('board').style.setProperty('--nmw', game.players.length > 1 ? (VW < 700 ? '52px' : '86px') : (VW < 700 ? '30px' : '44px')); layoutHUD(); }
   }
   window.addEventListener('resize', resize);
-  const QKEY = 'quality:' + location.pathname.split('/').filter(Boolean).slice(-1)[0];
-  const baseRatio = Math.min(window.devicePixelRatio || 1, small ? 1.75 : 2);
-  const QLEVELS = [
-    { ratio: baseRatio, bloom: true, shadow: true },
-    { ratio: Math.min(baseRatio, 1.35), bloom: true, shadow: true },
-    { ratio: 1, bloom: true, shadow: true },
-    { ratio: 1, bloom: false, shadow: true },
-    { ratio: 1, bloom: false, shadow: false },
-    { ratio: 0.8, bloom: false, shadow: false }
+  // 畫質表改過：換 key（v2），舊的存檔不會套到新表
+  const QKEY = 'quality2:' + location.pathname.split('/').filter(Boolean).slice(-1)[0];
+  const baseRatio = Math.min(window.devicePixelRatio || 1, small ? 1.5 : 2);
+  // post：走後製（RenderPass → OutputPass，色調與半透明球道的混色跟原本一樣）；bloom：加光暈
+  // 手機：不開光暈、解析度最多 1.5；桌機：光暈 → 降解析度 → 關光暈 → 關影子（換 shader 前先預熱）
+  // 手機只降解析度（不換 shader，降級時不會卡）；影子貼圖本來就只有 512
+  const QLEVELS = small ? [
+    { ratio: baseRatio, post: true, bloom: false, shadow: true },
+    { ratio: Math.min(baseRatio, 1.25), post: true, bloom: false, shadow: true },
+    { ratio: 1, post: true, bloom: false, shadow: true },
+    { ratio: 0.85, post: true, bloom: false, shadow: true },
+    { ratio: 0.7, post: true, bloom: false, shadow: true }
+  ] : [
+    { ratio: baseRatio, post: true, bloom: true, shadow: true },
+    { ratio: Math.min(baseRatio, 1.35), post: true, bloom: true, shadow: true },
+    { ratio: 1, post: true, bloom: true, shadow: true },
+    { ratio: 1, post: false, bloom: false, shadow: true },
+    { ratio: 1, post: false, bloom: false, shadow: false },
+    { ratio: 0.8, post: false, bloom: false, shadow: false }
   ];
   let qLevel = clamp(KG.store.get(QKEY, KG.lowEnd ? 2 : 0) | 0, 0, QLEVELS.length - 1);
   const perf = { last: 0, n: 0, sum: 0, cool: 2.5 };
@@ -2048,25 +2068,64 @@ function main() {
     renderer.setSize(VW, VH, false);
     composer.setPixelRatio(q.ratio);
     composer.setSize(VW, VH);
+    bloom.enabled = q.bloom;
     if (renderer.shadowMap.enabled !== q.shadow) {
       renderer.shadowMap.enabled = q.shadow;
-      scene.traverse(o => { if (o.material) [].concat(o.material).forEach(m => { m.needsUpdate = true; }); });
+      scene.traverse(bumpMat);
     }
+    shadowKick = 2;
+  }
+  // 影子：只有球瓶、球、掃瓶桿在動的時候才重畫影子貼圖
+  let shadowKick = 2;
+  renderer.shadowMap.autoUpdate = false;
+  let shadowPhase = '';
+  function shadowUpdate() {
+    if (phase !== shadowPhase) { shadowPhase = phase; shadowKick = 2; }
+    if (phase === 'roll' || phase === 'result' || phase === 'sweep' || shadowKick > 0) { renderer.shadowMap.needsUpdate = true; if (shadowKick > 0) shadowKick--; }
+  }
+  // 降級前先用下一級的設定，每幀把幾個物件畫到很小的畫布上（shader 與驅動的管線都在這時候編好；
+  // 每個材質會留著各版本的 program），真正切換時就不會卡住
+  let pend = null;
+  function bumpMat(o) { if (o.material) [].concat(o.material).forEach(m => { m.needsUpdate = true; }); }
+  const preRT = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType });
+  const _vp = new THREE.Vector4();
+  function prewarmList() { const l = []; scene.traverse(o => { if (o.material) l.push(o); }); return l; }
+  function prewarmStep() { pend.i = warmObjects(QLEVELS[pend.q], pend.list, pend.i, Math.min(pend.list.length, pend.i + 2)); }
+  function warmObjects(q, list, i0, i1) {
+    const sm = renderer.shadowMap, s0 = sm.enabled, au = sm.autoUpdate, nu = sm.needsUpdate, rt0 = renderer.getRenderTarget();
+    const vis = list.map(o => o.visible), fc = list.map(o => o.frustumCulled);
+    list.forEach((o, k) => { o.visible = k >= i0 && k < i1; if (o.visible) { o.frustumCulled = false; bumpMat(o); } });
+    sm.enabled = q.shadow; sm.autoUpdate = false; sm.needsUpdate = false;
+    try {
+      if (q.post) { renderer.setRenderTarget(preRT); renderer.render(scene, camera); }
+      else { renderer.setRenderTarget(null); renderer.getViewport(_vp); renderer.setViewport(0, 0, 1, 1); renderer.render(scene, camera); renderer.setViewport(_vp); }
+    } catch (e) { /* 忽略 */ }
+    sm.enabled = s0; sm.autoUpdate = au; sm.needsUpdate = nu; renderer.setRenderTarget(rt0);
+    list.forEach((o, k) => { o.visible = vis[k]; o.frustumCulled = fc[k]; if (k >= i0 && k < i1) bumpMat(o); });
+    return i1;
   }
   function renderFrame() {
-    if (QLEVELS[qLevel].bloom) composer.render(); else renderer.render(scene, camera);
+    // 預熱放在正式畫面之前：正式畫面會整張蓋掉，不會看到
+    if (pend && pend.i < pend.list.length) prewarmStep();
+    shadowUpdate();
+    if (QLEVELS[qLevel].post) composer.render(); else renderer.render(scene, camera);
     const now = performance.now(), dt = perf.last ? Math.min(0.5, (now - perf.last) / 1000) : 0;
     perf.last = now;
     if (document.hidden || qLevel >= QLEVELS.length - 1) return;
     perf.cool -= dt;
     if (perf.cool > 0) return;
+    if (pend) { // 等下一級的 shader 在背景編好再切換
+      if (pend.i < pend.list.length) { /* 在下一幀畫面之前做（見上面） */ }
+      else if ((pend.t -= dt) <= 0 && --pend.f <= 0) { qLevel = pend.q; pend = null; KG.store.set(QKEY, qLevel); applyQuality(); perf.cool = 1; perf.n = 0; perf.sum = 0; }
+      return;
+    }
     perf.sum += dt; perf.n++;
-    if (perf.n >= 60) {
+    // 約 1.5 秒一個判斷窗：平均低於 45 fps 就降一級（記住）
+    if (perf.sum >= 1.5 && perf.n >= 12) {
       if (perf.sum / perf.n > 1 / 45) {
-        qLevel++;
-        KG.store.set(QKEY, qLevel);
-        applyQuality();
-        perf.cool = 1.5;
+        const cur = QLEVELS[qLevel], nx = QLEVELS[qLevel + 1];
+        if (cur.shadow !== nx.shadow || cur.post !== nx.post) pend = { q: qLevel + 1, i: 0, list: prewarmList(), t: 0.3, f: 3 };
+        else { qLevel++; KG.store.set(QKEY, qLevel); applyQuality(); perf.cool = 1; }
       }
       perf.n = 0; perf.sum = 0;
     }
@@ -2128,6 +2187,26 @@ function main() {
   $('title').classList.remove('hide');
   updateTitle();
   drawMonitor();
+  // 預先建好所有球的材質、上傳貼圖，並用目前畫質的路徑先畫一張（含影子），開始打球時就不用再編 shader
+  {
+    const pre = new THREE.Group();
+    BALLV.forEach((v, i) => { const m = ballMat(i); try { renderer.initTexture(m.map); } catch (e) { /* 忽略 */ } if (i === 1 || v.kind === 'glitter') pre.add(new THREE.Mesh(ballGeo, m)); });
+    pre.children.forEach(me => { me.frustumCulled = false; me.scale.setScalar(0.001); me.castShadow = true; });
+    sync3D(0); computeCamera(0.016);
+    trail.visible = aimLine.visible = aimArrow.visible = true;
+    setRibbon(trail, [0, 0, 0, 1], 2, 0.01, () => 0); setRibbon(aimLine, [0, 0, 0, 1], 2, 0.01, () => 0);
+    pre.position.copy(camera.position);
+    scene.add(pre);
+    scene.updateMatrixWorld();
+    [laneTex, pinTex, sparkTex, blobTex, myMaskTex, monTex].forEach(t => { try { if (t) renderer.initTexture(t); } catch (e) { /* 忽略 */ } });
+    renderer.shadowMap.needsUpdate = true;
+    if (QLEVELS[qLevel].post) composer.render(); else renderer.render(scene, camera);
+    // 平常看不到的物件（拖尾、粒子、各種球…）也用目前的設定畫一次到小畫布
+    { const l = prewarmList(); warmObjects(QLEVELS[qLevel], l, 0, l.length); }
+    scene.remove(pre);
+    setRibbon(trail, [], 0, 0, () => 0); setRibbon(aimLine, [], 0, 0, () => 0);
+    trail.visible = aimLine.visible = aimArrow.visible = false;
+  }
   requestAnimationFrame(frame);
 
   /* =========================================================

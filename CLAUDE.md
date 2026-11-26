@@ -35,7 +35,7 @@
 
 ## 音樂與音效（一定要做）
 
-用 `assets/kg-music.js`，不要再用舊的 `KG.note` / `KG.sound`：
+用 `assets/kg-music.js`，不要再用舊的 `KG.note` / `KG.sound`（全部 150 個遊戲都已經改好，新遊戲也一樣）：
 
 ```html
 <script src="../../assets/common.js"></script>
@@ -88,7 +88,7 @@
 
 - 本機：`python3 -m http.server <port>`（在專案根目錄），用 Playwright + Chromium（已安裝，`require('playwright')`）。
   3D 要加 `--use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader`，軟體繪圖很慢，用測試掛鉤（`window.__xx`）快轉。
-- 一定要測 390×844（觸控）、844×390（觸控）、1280×800，用真的點擊／拖曳／按鍵，截圖**自己看過**，修掉重疊、太擠、跑出畫面。
+- 一定要測 390×844（觸控）、844×390（觸控）、1280×800；橫式再看一下 667×375（小手機），標題的主要按鈕最容易在這裡跑出畫面底下，用真的點擊／拖曳／按鍵，截圖**自己看過**，修掉重疊、太擠、跑出畫面。
 - 不能有任何 console error / warning。
 - 點擊畫面時不要點左上角（會按到 🏠 跳回首頁）。
 

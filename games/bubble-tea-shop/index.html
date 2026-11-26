@@ -17,6 +17,7 @@
 <body>
 <canvas id="game" aria-label="珍奶小店"></canvas>
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
 <script>
 'use strict';
 const SLUG = 'bubble-tea-shop';
@@ -336,81 +337,165 @@ function hitBtn(x, y) {
   return null;
 }
 
-/* ---------- 背景音樂 ---------- */
-let userActed = false;
-window.addEventListener('pointerdown', () => { userActed = true; }, { capture: true });
-window.addEventListener('keydown', () => { userActed = true; }, { capture: true });
-const NOTE_IDX = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
-function nf(name) {
-  const m = /^([A-G])(#|b)?(\d)$/.exec(name);
-  if (!m) return 0;
-  const n = NOTE_IDX[m[1]] + (m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0) + (parseInt(m[3], 10) + 1) * 12;
-  return 440 * Math.pow(2, (n - 69) / 12);
+/* ---------- 音樂與音效（kg-music.js） ---------- */
+const M = KG.music, S = KG.sfx;
+let sfxOn = KG.store.get(SLUG + ':sfx', true) !== false;
+const sfxLast = Object.create(null);
+const PO = { vol: 1, pitch: 1, pan: 0 };
+/** 播放音效：同一種 40 ms 內只播一次、音高隨機 ±5%、依畫面左右 pan */
+function sfx(name, o, gap) {
+  if (!sfxOn || !S || KG.isMuted()) return;
+  const now = performance.now();
+  if (now - (sfxLast[name] || -1e9) < (gap == null ? 40 : gap)) return;
+  sfxLast[name] = now;
+  PO.vol = o && o.vol != null ? o.vol : 1;
+  PO.pitch = (o && o.pitch || 1) * (o && o.exact ? 1 : 0.95 + Math.random() * 0.1);
+  PO.pan = o && o.pan || 0;
+  S.play(name, PO);
 }
-const Music = {
-  on: false, song: null, step: 0, next: 0,
-  start(song) {
-    if (this.song && this.song.src === song) return;
-    this.song = { src: song, bpm: song.bpm, mel: song.mel.trim().split(/\s+/), bass: (song.bass || '').trim().split(/\s+/), vol: song.vol || 1, wave: song.wave || 'triangle' };
-    this.on = true; this.step = 0; this.next = 0.15;
-  },
-  update(dt) {
-    if (!this.on || !this.song || !userActed) return;
-    this.next -= dt;
-    if (this.next < -0.3) this.next = 0;
-    const s = this.song, beat = 60 / s.bpm / 2;
-    while (this.next <= 0) {
-      if (!KG.isMuted() && !document.hidden) {
-        const i = this.step % s.mel.length, tok = s.mel[i];
-        if (tok !== '-' && tok !== '.') {
-          let len = 1;
-          while (s.mel[(i + len) % s.mel.length] === '-' && len < 8) len++;
-          const f = nf(tok);
-          KG.note(f, beat * len * 0.9, s.wave, 0.045 * s.vol);
-          KG.note(f * 2, beat * len * 0.4, 'sine', 0.012 * s.vol);
-        }
-        if (s.bass.length > 1) {
-          const bi = this.step % s.bass.length, bt = s.bass[bi];
-          if (bt !== '-' && bt !== '.') KG.note(nf(bt), beat * 1.6, 'sine', 0.07 * s.vol);
-        }
-        if (this.step % 4 === 2) KG.note(2400, 0.03, 'square', 0.008 * s.vol);
-      }
-      this.step++;
-      this.next += beat;
-    }
-  }
-};
-const SONG_PLAY = {
-  bpm: 132, wave: 'triangle',
-  mel: 'C5 E5 G5 E5 A5 G5 E5 . F5 A5 C6 A5 G5 - E5 . D5 F5 A5 F5 G5 E5 C5 . D5 E5 F5 D5 C5 - - . ' +
-       'E5 G5 C6 G5 A5 F5 A5 . G5 E5 G5 C6 B5 - G5 . A5 G5 F5 E5 D5 E5 F5 . G5 F5 E5 D5 C5 - - .',
-  bass: 'C3 . G3 . A2 . E3 . F2 . C3 . G2 . D3 . D3 . A2 . G2 . B2 . C3 . G2 . C3 . . . ' +
-        'C3 . G3 . F2 . C3 . E3 . G3 . A2 . E3 . F2 . C3 . G2 . D3 . C3 . G2 . C3 . . .'
-};
-const SONG_MENU = {
-  bpm: 100, wave: 'sine', vol: 1.1,
-  mel: 'E5 . G5 . C6 - B5 . A5 . G5 - E5 . . . F5 . A5 . G5 - E5 . D5 . E5 - C5 . . .',
-  bass: 'C3 . . . G2 . . . A2 . . . E3 . . . F2 . . . C3 . . . G2 . . . C3 . . .'
-};
+function panX(x) { return clamp((x / Math.max(1, W)) * 2 - 1, -1, 1) * 0.6; }
+const DEG = [0, 2, 4, 5, 7, 9, 11, 12, 14, 16];
+const degPitch = n => Math.pow(2, DEG[clamp(n | 0, 0, DEG.length - 1)] / 12);
+function jingle(def) { return (M && sfxOn) ? M.jingle(def) : 0; }
+function music(song) { if (!M || !song) return; M.setVolume(song.mv || 0.3); M.play(song); }
 
-/* ---------- 音效 ---------- */
-const Sfx = {
-  tap(i) { KG.note(620 + (i || 0) * 45, 0.07, 'triangle', 0.16); },
-  cup() { KG.note(520, 0.08, 'triangle', 0.18); KG.note(880, 0.1, 'sine', 0.12, 0.05); },
-  pour() { KG.sound('splash'); KG.note(260, 0.5, 'sine', 0.09, 0.05, 620); },
-  plop(n) { for (let i = 0; i < n; i++) KG.note(260 + Math.random() * 200, 0.08, 'sine', 0.18, 0.15 + i * 0.06, 110); },
-  clink(n) { for (let i = 0; i < n; i++) KG.note(2000 + Math.random() * 900, 0.06, 'triangle', 0.07, 0.12 + i * 0.07); },
-  sugar() { KG.sound('sparkle'); },
-  thunk() { KG.sound('hit'); KG.note(85, 0.22, 'square', 0.12, 0, 45); },
-  ding() { KG.note(1568, 0.4, 'sine', 0.22); KG.note(2093, 0.55, 'sine', 0.16, 0.09); KG.note(3136, 0.3, 'sine', 0.05, 0.09); },
-  coin() { KG.note(1319, 0.06, 'square', 0.07); KG.note(1760, 0.12, 'square', 0.06, 0.05); },
-  bell() { KG.note(1318, 0.18, 'sine', 0.13); KG.note(1046, 0.3, 'sine', 0.11, 0.12); },
-  happy() { KG.sound('correct'); },
-  angry() { KG.sound('wrong'); },
-  trash() { KG.sound('whoosh'); KG.note(300, 0.15, 'triangle', 0.12, 0.05, 140); },
-  no() { KG.note(240, 0.12, 'square', 0.07, 0, 180); },
-  bubble() { KG.note(180 + Math.random() * 160, 0.09, 'sine', 0.1, 0, 420); }
+/*SONGS-BEGIN*/
+// 標題／選單：台灣小清新獨立流行（烏克麗麗刷弦、鐘琴＋長笛旋律、輕拍手、圓圓的貝斯），D 大調 92
+const SONG_MENU = {
+  bpm: 92, steps: 16, swing: 0.08, mv: 0.62,
+  chords: ['D', 'A', 'Bm', 'G', 'D', 'A', 'G', 'A'],
+  tracks: [
+    { inst: 'pluck', chord: 'R.R...R.R.R...R.', oct: 4, vol: 0.2 },
+    { inst: 'pluck', chord: '3.3...3.3.3...3.', oct: 4, vol: 0.2 },
+    { inst: 'pluck', chord: '5.5...5.5.5...5.', oct: 4, vol: 0.2 },
+    { inst: 'bass', chord: 'R.......5...R...', vol: 0.5 },
+    { inst: 'clap', pat: '....x.......x...', vol: 0.3 },
+    { inst: 'shaker', pat: 'x.x.x.x.x.x.x.x.', vol: 0.4 },
+    { inst: 'flute', chord: '3-------5-------', oct: 4, vol: 0.26 },
+    { inst: 'bell', vol: 0.66, seq: [
+      'F#5 - A5 - F#5 E5 D5 -', 'E5 - C#5 - A4 - E5 -', 'D5 - F#5 - B4 - D5 -', 'B4 - D5 - G5 - F#5 -',
+      'A5 - F#5 - D5 E5 F#5 -', 'E5 - C#5 E5 A4 - . .', 'B4 - D5 - G5 - B4 -', 'C#5 - E5 - A4 - . .'] }
+  ]
 };
+// 營業中：華語「珍奶流行」舞曲（反拍撥弦和弦、鐘琴＋晶片五聲音階主旋律、八度貝斯、四拍大鼓），A 大調 126
+const SONG_PLAY = {
+  bpm: 126, steps: 16, swing: 0, mv: 0.34,
+  chords: ['A', 'E', 'F#m', 'D', 'A', 'E', 'D', 'E', 'F#m', 'D', 'A', 'E', 'F#m', 'D', 'Bm7', 'E'],
+  layers: { rush: false },
+  tracks: [
+    { inst: 'kick', pat: 'x...x...x...x...', vol: 0.62 },
+    { inst: 'clap', pat: '....x.......x...', vol: 0.45 },
+    { inst: 'ohat', pat: '..x...x...x...x.', vol: 0.36 },
+    { inst: 'bass', chord: 'R.8.R.8.R.8.R.8.', vol: 0.46 },
+    { inst: 'pluck', chord: '..3...3...3...3.', oct: 4, vol: 0.24 },
+    { inst: 'pluck', chord: '..5...5...5...5.', oct: 4, vol: 0.22 },
+    { inst: 'bell', vol: 0.6, seq: [
+      'C#5 E5 - C#5 A4 - E5 -', 'B4 - G#4 B4 E5 - B4 .', 'A4 - C#5 - F#5 E5 C#5 -', 'D5 - F#5 - A5 - F#5 E5',
+      'E5 - C#5 E5 A5 - E5 -', 'G#5 - E5 - B4 - E5 -', 'F#5 E5 D5 - A4 - B4 C#5', 'B4 - - . E5 - . .',
+      'A5 - F#5 - E5 - C#5 -', 'D5 E5 F#5 - A5 - F#5 -', 'E5 - C#5 - A4 B4 C#5 E5', 'B4 - G#4 - E4 - . .',
+      'C#5 - F#5 - A5 - F#5 E5', 'F#5 - D5 - A4 - D5 E5', 'F#5 - D5 - B4 - A4 B4', 'B4 - E5 - G#5 - - .'] },
+    { inst: 'chip', vol: 0.22, seq: [
+      '', '', '', '', '', '', '', '',
+      'A5 - F#5 - E5 - C#5 -', 'D5 E5 F#5 - A5 - F#5 -', 'E5 - C#5 - A4 B4 C#5 E5', 'B4 - G#4 - E4 - . .',
+      'C#5 - F#5 - A5 - F#5 E5', 'F#5 - D5 - A4 - D5 E5', 'F#5 - D5 - B4 - A4 B4', 'B4 - E5 - G#5 - - .'] },
+    { inst: 'hat', pat: 'xoxoxoxoxoxoxoxo', vol: 0.4, layer: 'rush' },
+    { inst: 'brass', chord: 'R.....R.........', oct: 4, vol: 0.32, layer: 'rush' },
+    { inst: 'brass', chord: '5.....5.........', oct: 4, vol: 0.3, layer: 'rush' },
+    { inst: 'tom', pat: ['', '', '', '............xxXX'], pitch: 190, vol: 0.45, layer: 'rush' }
+  ]
+};
+const SONGS_CHECK = { menu: { song: SONG_MENU, scale: [2, 4, 6, 7, 9, 11, 1] }, play: { song: SONG_PLAY, scale: [9, 11, 1, 2, 4, 6, 8] } };
+/*SONGS-END*/
+
+if (S) {
+  S.define('b_cup', (p, s) => { s.tone(520 * p, 0.07, { type: 'triangle', vol: 0.16 }); s.tone(880 * p, 0.09, { vol: 0.1, delay: 0.04 }); s.noise(0.03, { vol: 0.12, freq: 2200 * p, q: 2 }); });
+  S.define('b_pour', (p, s) => { s.noise(0.22, { vol: 0.13, freq: 1300 * p, sweep: 600, q: 0.8 }); s.tone(260 * p, 0.4, { vol: 0.05, slide: 620 * p, delay: 0.04 }); });
+  S.define('b_pearl', (p, s) => { for (let i = 0; i < 5; i++) s.tone((260 + Math.random() * 200) * p, 0.08, { vol: 0.15, slide: 110, delay: 0.1 + i * 0.06 }); });
+  S.define('b_coco', (p, s) => { for (let i = 0; i < 4; i++) { s.tone((700 + Math.random() * 300) * p, 0.05, { type: 'triangle', vol: 0.1, slide: 400 * p, delay: 0.1 + i * 0.05 }); } });
+  S.define('b_jelly', (p, s) => { s.tone(300 * p, 0.12, { vol: 0.18, slide: 520 * p, delay: 0.08 }); s.tone(520 * p, 0.14, { vol: 0.14, slide: 260 * p, delay: 0.19 }); s.tone(280 * p, 0.12, { vol: 0.1, slide: 420 * p, delay: 0.32 }); });
+  S.define('b_drizzle', (p, s) => { s.tone(500 * p, 0.32, { vol: 0.11, slide: 300 * p, delay: 0.05 }); s.noise(0.3, { vol: 0.06, freq: 700 * p, q: 1, type: 'lowpass', delay: 0.05 }); });
+  [1, 2, 4].forEach(n => S.define('b_ice' + n, (p, s) => {
+    for (let i = 0; i < n; i++) { s.tone((2000 + Math.random() * 900) * p, 0.06, { type: 'triangle', vol: 0.07, delay: 0.1 + i * 0.07 }); s.noise(0.04, { vol: 0.07, freq: 3800 * p, q: 3, delay: 0.1 + i * 0.07 }); }
+  }));
+  S.define('b_sugar', (p, s) => { for (let i = 0; i < 6; i++) s.noise(0.03, { vol: 0.09, freq: 5200 * p, q: 2, delay: i * 0.04 }); s.tone(1760 * p, 0.2, { vol: 0.05, delay: 0.12 }); s.tone(2349 * p, 0.25, { vol: 0.04, delay: 0.18 }); });
+  S.define('b_sealstart', (p, s) => { s.tone(400 * p, 0.16, { type: 'triangle', vol: 0.1, slide: 700 * p }); });
+  S.define('b_rattle', (p, s) => { for (let i = 0; i < 3; i++) s.noise(0.03, { vol: 0.08, freq: (2600 + Math.random() * 1600) * p, q: 3, delay: i * 0.025 }); });
+  S.define('b_seal', (p, s) => { s.tone(150 * p, 0.16, { vol: 0.34, slide: 60 }); s.noise(0.08, { vol: 0.16, freq: 600, q: 1, type: 'lowpass' }); s.noise(0.12, { vol: 0.07, freq: 3200 * p, q: 1.5, delay: 0.04 }); });
+  S.define('b_sealdone', (p, s) => { s.tone(1175 * p, 0.14, { vol: 0.11 }); s.tone(1568 * p, 0.2, { vol: 0.07, delay: 0.06 }); });
+  S.define('b_straw', (p, s) => { s.noise(0.03, { vol: 0.18, freq: 3000 * p, q: 3 }); s.tone(900 * p, 0.09, { vol: 0.11, slide: 300 * p, delay: 0.02 }); s.tone(420 * p, 0.12, { vol: 0.08, slide: 560 * p, delay: 0.14 }); });
+  S.define('b_door', (p, s) => { s.tone(1318 * p, 0.2, { vol: 0.11 }); s.tone(2636 * p, 0.1, { vol: 0.025 }); s.tone(1046 * p, 0.32, { vol: 0.1, delay: 0.12 }); });
+  S.define('b_happy', (p, s) => { s.tone(660 * p, 0.1, { type: 'triangle', vol: 0.14, slide: 990 * p }); s.tone(990 * p, 0.2, { type: 'triangle', vol: 0.12, delay: 0.09, slide: 1320 * p }); });
+  S.define('b_angry', (p, s) => { s.tone(220 * p, 0.32, { type: 'sawtooth', vol: 0.035, slide: 150 * p }); s.tone(196 * p, 0.34, { type: 'triangle', vol: 0.14, slide: 130 * p }); s.tone(165 * p, 0.3, { type: 'triangle', vol: 0.12, slide: 110 * p, delay: 0.22 }); });
+  S.define('b_confused', (p, s) => { s.tone(330 * p, 0.26, { type: 'triangle', vol: 0.12, slide: 520 * p }); });
+  S.define('b_register', (p, s) => { s.noise(0.08, { vol: 0.14, freq: 1500, q: 1.5 }); s.tone(2093 * p, 0.3, { vol: 0.08, delay: 0.05 }); s.tone(2637 * p, 0.42, { vol: 0.07, delay: 0.09 }); });
+  S.define('b_trash', (p, s) => { s.noise(0.25, { vol: 0.14, freq: 2000 * p, sweep: 500, q: 1 }); s.tone(300 * p, 0.15, { type: 'triangle', vol: 0.12, slide: 140 * p, delay: 0.06 }); });
+  S.define('b_no', (p, s) => { s.tone(240 * p, 0.12, { type: 'square', vol: 0.05, slide: 180 * p }); });
+  S.define('b_save', (p, s) => { s.tone(784 * p, 0.1, { type: 'triangle', vol: 0.1 }); s.tone(1175 * p, 0.2, { type: 'triangle', vol: 0.1, delay: 0.08 }); });
+}
+const Sfx = {
+  tap(i) { sfx('click', { pitch: 1 + (i || 0) * 0.05, vol: 0.8 }); },
+  cup() { sfx('b_cup', { pan: panX(L.cupX) }); },
+  pour() { sfx('b_pour', { pan: panX(L.cupX) }); },
+  top(id) {
+    const o = { pan: panX(L.cupX) };
+    if (id === 'brown' || id === 'cream') sfx('b_drizzle', o);
+    else if (id === 'pudding' || id === 'grass') { o.pitch = id === 'grass' ? 0.8 : 1; sfx('b_jelly', o); }
+    else if (id === 'coco') sfx('b_coco', o);
+    else { o.pitch = id === 'taro' ? 1.2 : 1; sfx('b_pearl', o); }
+  },
+  clink(n) { sfx(n >= 4 ? 'b_ice4' : n >= 2 ? 'b_ice2' : 'b_ice1', { pan: panX(L.cupX), vol: n ? 1 : 0.5 }); },
+  sugar() { sfx('b_sugar', { pan: panX(L.cupX) }); },
+  thunk() { sfx('b_seal', { pan: panX(L.sealX) }); },
+  ding() { sfx('b_register'); },
+  coin(k) { sfx('coin', { pitch: degPitch(k || 0), exact: true, vol: 0.7 }, 30); },
+  bell(x) { sfx('b_door', { pan: x == null ? 0 : panX(x) }); },
+  happy(x) { sfx('b_happy', { pan: panX(x) }); },
+  angry(x) { sfx('b_angry', { pan: panX(x) }); },
+  trash() { sfx('b_trash', { pan: panX(L.trashX) }); },
+  no() { sfx('b_no'); },
+  bubble() { sfx('bubble', { pan: panX(L.potX), pitch: 0.7 + Math.random() * 0.4, vol: 0.6 }); }
+};
+// 持續的聲音：倒茶（長度跟著倒的量）、封口機搖杯
+let pourLp = null, sealLp = null, pourOn = false, sealOn = false, loopT = 0, rattleT = 0, coinSeq = 0, coinSeqT = 0;
+function audioTick(dt) {
+  if (!S) return;
+  const live = sfxOn && !KG.isMuted() && G && scene === 'play' && !G.paused && (G.phase === 'run' || G.phase === 'ending');
+  const d = live ? G.drink : null;
+  const now = performance.now();
+  if (d && d.tea && d.fill < 1) {
+    if (!pourLp) pourLp = S.loop('water');
+    if (now - loopT > 60) { loopT = now; pourLp.set(0.2 + d.fill * 0.6, d.size === 'L' ? 0.2 : 0.16); pourOn = true; }
+  } else if (pourOn) { pourLp.set(0, 0); pourOn = false; }
+  if (d && d.sealing) {
+    if (!sealLp) sealLp = S.loop('hum');
+    if (!sealOn) { sealLp.set(0.15, 0.05); sealOn = true; }
+    rattleT -= dt;
+    if (rattleT <= 0) { rattleT = 0.09; sfx('b_rattle', { pan: panX(L.sealX), vol: 0.8 }, 60); }
+  } else if (sealOn) { sealLp.set(0, 0); sealOn = false; }
+  if (coinSeqT > 0) { coinSeqT -= dt; if (coinSeqT <= 0) coinSeq = 0; }
+}
+function stopLoops() { if (pourLp) pourLp.stop(); if (sealLp) sealLp.stop(); pourLp = sealLp = null; pourOn = sealOn = false; }
+// 音樂：客人排滿或有人快生氣時加「趕場」層；最後兩位客人時加快
+let mixT = 0, rushOn = false, fastOn = false;
+function updateMix(dt) {
+  if (!M || !G || G.mode !== 'day' || G.paused || G.phase !== 'run') return;
+  mixT -= dt; if (mixT > 0) return; mixT = 0.3;
+  let waiting = 0, worried = false;
+  for (let i = 0; i < L.slots; i++) { const c = G.slots[i]; if (c && c.state === 'wait') { waiting++; if (c.pat / c.patMax < 0.3) worried = true; } }
+  const rush = waiting >= L.slots || worried;
+  if (rush !== rushOn) { rushOn = rush; M.setLayer('rush', rush); }
+  const fast = G.queue.length <= 2;
+  if (fast !== fastOn) { fastOn = fast; M.setTempo(fast ? 1.06 : 1); }
+}
+function resetMix() { rushOn = fastOn = false; mixT = 0; if (M) { M.setTempo(1); M.setLayer('rush', false); } }
+function toggleMusic() { if (M) M.setEnabled(!M.isEnabled()); }
+function toggleSfx() { sfxOn = !sfxOn; KG.store.set(SLUG + ':sfx', sfxOn); if (!sfxOn) stopLoops(); else sfx('ui'); }
+/** 兩顆聲音開關按鈕（畫布按鈕） */
+function soundToggles(x, y, w, h) {
+  const gap = 10, bw = (w - gap) / 2, mOn = M ? M.isEnabled() : false;
+  button('tgMusic', x, y, bw, h, { label: '音樂 ' + (mOn ? '開' : '關'), color: mOn ? 'blue' : 'white', size: Math.min(17, h * 0.4), onClick: toggleMusic });
+  button('tgSfx', x + bw + gap, y, bw, h, { label: '音效 ' + (sfxOn ? '開' : '關'), color: sfxOn ? 'blue' : 'white', size: Math.min(17, h * 0.4), onClick: toggleSfx });
+}
 
 /* =====================================================================
  * 遊戲資料
@@ -590,7 +675,7 @@ function layout() {
   const land = W > H * 1.05;
   L.land = land;
   if (!land) {
-    L.hudBottom = Math.min(100, 62 + 34);
+    L.hudBottom = 108;
     const ph = clamp(H * 0.34, 236, 300);
     L.panel = { x: 6, y: H - ph - 6, w: W - 12, h: ph };
     const avail = L.panel.y - L.hudBottom;
@@ -602,6 +687,8 @@ function layout() {
     const lw = Math.round(clamp(W * 0.47, 290, 640));
     L.hudBottom = 62;
     L.panel = { x: lw + 6, y: 64, w: W - lw - 12, h: H - 64 - 6 };
+    // 暫停鈕在右上 🔊 下面：操作台會貼到最上面時，右邊讓出一欄
+    if (Math.min((L.panel.h - 8) / 4, 124) * 4 + 12 >= L.panel.h - 96) L.panel.w -= 52;
     L.custTop = 60;
     L.counterY = Math.round(60 + (H - 60) * 0.55);
     L.left = { x: 0, w: lw };
@@ -1434,7 +1521,7 @@ function startDay(day) {
   G.newTeas = TEAS.filter(t => t.day === day); G.newTops = TOPS.filter(t => t.day === day);
   scene = 'play'; sceneT = 0;
   layoutPanel(); bgBack = null;
-  Music.start(SONG_PLAY);
+  stopLoops(); music(SONG_PLAY); resetMix();
   return true;
 }
 function startFree() {
@@ -1444,7 +1531,7 @@ function startFree() {
   G.pot.n = G.pot.cap = 99;
   scene = 'play'; sceneT = 0;
   layoutPanel(); bgBack = null;
-  Music.start(SONG_PLAY);
+  stopLoops(); music(SONG_PLAY); resetMix();
   return true;
 }
 function say(s) { G.msg = { s, t: 0 }; }
@@ -1535,7 +1622,7 @@ function pressStation(kind, id) {
       G.pot.n--;
     }
     d.tops.push(id); d.topT.push(0);
-    if (id === 'brown' || id === 'cream') KG.note(500, 0.3, 'sine', 0.12, 0.05, 300); else Sfx.plop(5);
+    Sfx.top(id);
   } else if (kind === 'ice') {
     if (!d.tea) { say(nextNeed()); Sfx.no(); return false; }
     d.ice = id; d.iceT = 0; Sfx.clink(byId(ICES, id).n || 1);
@@ -1554,7 +1641,7 @@ function pressSeal() {
   if (d.sealed) { say('封好了！拖到客人那裡吧'); return false; }
   if (!d.sugar) { say(nextNeed() || '還沒做好喔'); Sfx.no(); return false; }
   d.sealing = { t: 0, dur: G.sealDur, thunk: false };
-  KG.note(400, 0.15, 'triangle', 0.1, 0, 700);
+  sfx('b_sealstart', { pan: panX(L.sealX) });
   return true;
 }
 function trashDrink() {
@@ -1606,21 +1693,21 @@ function serve(i) {
     G.maxCombo = Math.max(G.maxCombo, G.combo);
     tip = Math.round((3 + price * 0.25 * frac) * (1 + 0.15 * G.jar) * (1 + 0.2 * Math.min(Math.max(G.combo - 1, 0), 5)));
     c.mood = 'delight'; c.react = { kind: 'happy', t: 0 };
-    Sfx.happy(); Sfx.ding();
+    sfx('b_straw', { pan: panX(cx) }); setTimeout(() => { Sfx.happy(cx); Sfx.ding(); }, 160);
     fx.burst(cx, cy, { n: 12, colors: ['#ff5a86', '#ff8fb1', '#ffd1dc'], shape: 'heart', size: 8, speed: 200, g: -100, up: 60 });
     fx.text(cx, cy - 40 * L.k, KG.pick(['好好喝！', '謝謝！', '讚啦！', '完美！', '就是這杯！']), { color: '#fff', stroke: '#ff6b9a', size: 18 });
-    if (G.combo >= 2 && !free) { fx.text(L.cupX, L.work.y + 28, G.combo + ' 連擊！', { color: '#fff3a8', stroke: '#e8467c', size: 26, life: 1.2 }); KG.note(880 + G.combo * 60, 0.15, 'square', 0.06, 0.25); }
+    if (G.combo >= 2 && !free) { fx.text(L.cupX, L.work.y + 28, G.combo + ' 連擊！', { color: '#fff3a8', stroke: '#e8467c', size: 26, life: 1.2 }); setTimeout(() => sfx('pickup', { pitch: degPitch(G ? G.combo - 2 : 0), exact: true }), 420); }
     if (G.goal && G.goal.type === 'tea' && c.order.tea === G.goal.id) G.goal.prog++;
     if (G.goal && G.goal.type === 'top' && c.order.tops.includes(G.goal.id)) G.goal.prog++;
   } else if (free) {
     c.mood = 'delight'; c.react = { kind: 'happy', t: 0 };
-    Sfx.happy(); Sfx.ding();
+    sfx('b_straw', { pan: panX(cx) }); setTimeout(() => Sfx.happy(cx), 160);
     fx.text(cx, cy - 40 * L.k, KG.pick(['也很好喝！', '哇，新口味！', '謝謝你！']), { color: '#fff', stroke: '#ff6b9a', size: 18 });
     fx.burst(cx, cy, { n: 8, colors: ['#ff5a86', '#ff8fb1'], shape: 'heart', size: 8, speed: 180, g: -100 });
   } else {
     G.wrong++; G.combo = 0;
     c.mood = 'sad'; c.react = { kind: 'sad', t: 0 };
-    Sfx.no(); KG.note(330, 0.25, 'triangle', 0.12, 0.1, 260);
+    sfx('b_straw', { pan: panX(cx) }); setTimeout(() => sfx('b_confused', { pan: panX(cx) }), 180);
     fx.text(cx, cy - 40 * L.k, '咦？不是這杯…', { color: '#fff', stroke: '#5a7ab0', size: 16 });
   }
   if (free) { G.hearts++; Save.data.freeServed++; }
@@ -1640,7 +1727,7 @@ function customerLeavesAngry(i) {
   const c = G.slots[i];
   c.mood = 'angry'; c.react = { kind: 'angry', t: 0 };
   G.angry++; G.combo = 0;
-  Sfx.angry(); shake(5, 0.25);
+  Sfx.angry(L.slotX[i]); shake(5, 0.25);
   fx.text(L.slotX[i], L.counterY - 100 * L.k, '等太久了啦！', { color: '#fff', stroke: '#d43b3b', size: 17 });
   G.slots[i] = null; G.leaving.push(c);
   if (G.focus === i) G.focus = -1;
@@ -1661,7 +1748,7 @@ function checkGoalLive() {
   const p = goalProgress();
   if (p[0] >= p[1]) {
     g.done = true; G.goalFlash = 1.5;
-    KG.sound('sparkle'); fx.text(W / 2, L.custTop + 40, '今日目標達成！', { color: '#fff3a8', stroke: '#3a9a52', size: 24, life: 1.6, vy: -30 });
+    jingle({ bpm: 168, inst: 'bell', vol: 0.28, notes: [['E5', 1], ['A5', 1], ['C#6', 2]] }); fx.text(W / 2, L.custTop + 40, '今日目標達成！', { color: '#fff3a8', stroke: '#3a9a52', size: 24, life: 1.6, vy: -30 });
   }
 }
 function finishDay() {
@@ -1682,7 +1769,13 @@ function finishDay() {
   G.phase = 'result';
   G.result = { stars, ratio, bonus, best, t: 0, shown: 0, panel: { s: 0 } };
   tween(G.result.panel, { s: 1 }, 0.5, 'outBack');
-  if (stars > 0) { KG.sound('win'); KG.confetti(); } else KG.sound('lose');
+  stopLoops(); resetMix();
+  if (M) M.stop(0.3);
+  let jd;
+  if (stars > 0) { KG.confetti(); jd = jingle({ bpm: 150, inst: 'marimba', vol: 0.36, notes: [['A4', 1], ['C#5', 1], ['E5', 1], ['A5', 2], ['F#5', 1], ['A5+E5', 3]], bass: [['A2', 4, 0], ['E2', 2, 4], ['A2', 3, 6]], bassVol: 0.3 }); }
+  else jd = jingle({ bpm: 110, inst: 'pluck', vol: 0.34, notes: [['E5', 1], ['C#5', 1], ['B4', 1], ['A4', 3]], bass: [['A2', 6, 0]], bassVol: 0.25 });
+  setTimeout(() => sfx('b_save'), 500);
+  setTimeout(() => { if (G && G.phase === 'result' && scene === 'play') music(SONG_MENU); }, (jd || 1.4) * 1000 + 600);
 }
 
 /* ---------- 每格更新 ---------- */
@@ -1714,7 +1807,7 @@ function updatePlay(dt) {
       s.thunk = true; d.sealed = true; Sfx.thunk(); shake(3, 0.12); KG.vibrate(25);
       fx.burst(L.sealX, L.cupBottom - L.cupH - 4, { n: 10, colors: ['#ffb3c6', '#fff', '#ffe066'], shape: 'star', size: 5, speed: 160, g: 200 });
     }
-    if (p >= 1) { d.sealing = null; KG.note(1175, 0.12, 'sine', 0.12); }
+    if (p >= 1) { d.sealing = null; sfx('b_sealdone', { pan: panX(L.sealX) }); }
   }
   // 珍珠鍋
   const p = G.pot;
@@ -1723,7 +1816,7 @@ function updatePlay(dt) {
     if (p.bt <= 0) { p.bt = 0.35 + Math.random() * 0.3; Sfx.bubble(); fx.burst(L.potX + (Math.random() - 0.5) * L.potR, L.potY - L.potR * 0.6, { n: 1, colors: ['#ffffff'], shape: 'steam', size: L.potR * 0.25, speed: 30, g: -80, life: 1 }); }
     if (p.t >= p.dur) {
       p.cooking = false; p.n = p.cap; p.t = 0;
-      KG.sound('sparkle'); say('珍珠煮好了！');
+      sfx('pickup', { pan: panX(L.potX) }); sfx('sparkle', { pan: panX(L.potX) }); say('珍珠煮好了！');
       fx.burst(L.potX, L.potY - L.potR * 0.5, { n: 12, colors: ['#ffe066', '#fff', '#5a3a26'], shape: 'star', size: 5, speed: 180, g: 200 });
     }
   }
@@ -1745,7 +1838,7 @@ function updatePlay(dt) {
     if (c.state === 'in') {
       const tx = L.slotX[i];
       c.x += c.dir * sp * dt;
-      if ((c.dir > 0 && c.x >= tx) || (c.dir < 0 && c.x <= tx)) { c.x = tx; c.state = 'wait'; c.bubbleT = 0.001; Sfx.bell(); }
+      if ((c.dir > 0 && c.x >= tx) || (c.dir < 0 && c.x <= tx)) { c.x = tx; c.state = 'wait'; c.bubbleT = 0.001; Sfx.bell(tx); }
     } else if (c.state === 'wait') {
       c.bubbleT += dt;
       if (G.mode !== 'free') {
@@ -1771,7 +1864,7 @@ function updatePlay(dt) {
   for (let j = G.flyers.length - 1; j >= 0; j--) {
     const f = G.flyers[j];
     f.t += dt * 1.6;
-    if (f.t >= 1) { G.coinShown += f.v; G.flyers.splice(j, 1); Sfx.coin(); }
+    if (f.t >= 1) { G.coinShown += f.v; G.flyers.splice(j, 1); Sfx.coin(coinSeq++); coinSeqT = 0.5; }
   }
   checkGoalLive();
   // 收店
@@ -1785,7 +1878,7 @@ function updateResult(dt) {
   R.t += dt;
   while (R.shown < 3 && R.t > 0.6 + R.shown * 0.38) {
     if (R.shown < R.stars) {
-      KG.note(660 * Math.pow(1.26, R.shown), 0.25, 'triangle', 0.2);
+      sfx('star', { pitch: degPitch(R.shown * 2), exact: true });
       const pp = resultStarPos(R.shown);
       fx.burst(pp[0], pp[1], { n: 14, colors: ['#ffe066', '#fff', '#ffb02e'], speed: 240, g: 300, size: 6 });
     }
@@ -1798,18 +1891,18 @@ function updateResult(dt) {
  * ===================================================================== */
 function hudLayout(items) {
   // items: [{w}] → 自動排成一或兩列
-  const left = 66, right = W - 120;
+  const left = 66, right = W - 66;
   let x = left, y = 12, row = 0;
   const tot = items.reduce((s, it) => s + it.w + 8, -8);
   if (tot <= right - left) x = left + (right - left - tot) / 2;
   for (const it of items) {
-    if (x + it.w > (row === 0 ? right : W - 10) && row === 0) { row = 1; y = 62; x = 10; }
+    if (x + it.w > right && row === 0) { row = 1; y = 62; x = 10; }
     it.x = x; it.y = y; x += it.w + 8;
   }
   if (row === 1) {
     const r1 = items.filter(it => it.y === 62);
     const w1 = r1.reduce((s, it) => s + it.w + 8, -8);
-    let xx = (W - w1) / 2;
+    let xx = Math.max(8, Math.min((W - w1) / 2, W - 62 - w1));
     for (const it of r1) { it.x = xx; xx += it.w + 8; }
   }
 }
@@ -1854,11 +1947,12 @@ function drawHudItems(items, fs, h) {
     ctx.restore();
   }
   // 暫停鈕
-  button('pause', W - 114, 10, 48, 48, { icon: 'pause', color: 'white', radius: 24, onClick: () => setPaused(true) });
+  button('pause', W - 56, 62, 44, 44, { icon: 'pause', color: 'white', radius: 22, size: 18, onClick: () => setPaused(true) });
 }
 function setPaused(p) {
-  if (!G || G.phase === 'result') return;
+  if (!G || G.phase === 'result' || G.paused === p) return;
   G.paused = p;
+  if (p) { stopLoops(); if (M) M.pause(); } else if (M) M.resume();
 }
 function drawPlay() {
   if (!bgBack) buildBackgrounds();
@@ -1979,16 +2073,17 @@ function drawIntro() {
     G.day === 3 ? ['珍珠用完要點鍋子煮，攪拌更快！', '快又正確可以拿到連擊小費'] : [];
   for (const t of tips) { txt(t, cx, y, fitSize(t, c.w - 40, fs * 0.92), '#8a5a3c', { weight: '800', shadow: false }); y += fs * 1.5; }
   const bh = sm ? 48 : 56, bw = Math.min(220, c.w - 60);
-  button('go', cx - bw / 2, c.y + c.h - bh - (sm ? 18 : 26), bw, bh, { label: '開店！', color: 'green', pulse: true, onClick: () => { G.phase = 'run'; KG.sound('pop'); Sfx.bell(); } });
+  button('go', cx - bw / 2, c.y + c.h - bh - (sm ? 18 : 26), bw, bh, { label: '開店！', color: 'green', pulse: true, onClick: () => { G.phase = 'run'; Sfx.bell(); } });
 }
 function drawPause() {
-  const c = cardGeom(360, 330);
+  const c = cardGeom(360, 390);
   card(c.x, c.y, c.w, c.h, '#6cc4ff', '休息一下');
-  const bw = Math.min(240, c.w - 60), bh = Math.min(52, (c.h - 70) / 3.6), cx = W / 2;
-  let y = c.y + 42;
+  const bw = Math.min(240, c.w - 60), bh = Math.min(52, (c.h - 86) / 4.5), cx = W / 2;
+  let y = c.y + 40;
   if (G.goal) { txt('目標：' + G.goal.text, cx, y, fitSize('目標：' + G.goal.text, c.w - 40, 15), '#8a5a3c', { shadow: false }); }
-  y += 24;
-  const gap = (c.y + c.h - 20 - y - bh * 3) / 2;
+  y += 22;
+  const gap = (c.y + c.h - 18 - y - bh * 4) / 3;
+  soundToggles(cx - bw / 2, c.y + c.h - 18 - bh, bw, bh);
   button('resume', cx - bw / 2, y, bw, bh, { label: '繼續', icon: 'play', color: 'green', onClick: () => setPaused(false) }); y += bh + gap;
   if (G.mode === 'day') button('restart', cx - bw / 2, y, bw, bh, { label: '重新開始', icon: 'replay', color: 'yellow', onClick: () => startDay(G.day) });
   else button('hints', cx - bw / 2, y, bw, bh, { label: G.hints ? '提示：開' : '提示：關', color: 'yellow', onClick: () => { G.hints = !G.hints; } });
@@ -2057,7 +2152,7 @@ function menuBg() {
 }
 function goScene(s) {
   scene = s; sceneT = 0;
-  if (s !== 'play') { G = null; Music.start(SONG_MENU); }
+  if (s !== 'play') { G = null; stopLoops(); resetMix(); if (M) M.resume(); music(SONG_MENU); }
   shopScroll = 0;
 }
 function drawTitle() {
@@ -2085,11 +2180,13 @@ function drawTitle() {
   ctx.restore();
   const bw = Math.min(280, W - 60), bh = 60;
   const bx = land ? W * 0.62 - bw / 2 + 20 : W / 2 - bw / 2;
-  let by = land ? H * 0.42 : Math.min(H - 190, cyb + 50);
+  let by = land ? Math.min(H * 0.42, H - 236) : Math.min(H - 246, cyb + 50);
   button('play', bx, by, bw, bh, { label: '開店營業', icon: 'play', color: 'green', pulse: true, onClick: () => goScene('days') });
   by += bh + 18;
   button('free', bx, by, bw, bh, { label: '自由模式', color: 'blue', onClick: () => startFree() });
-  by += bh + 22;
+  by += bh + 14;
+  soundToggles(bx, by, bw, 44);
+  by += 44 + 22;
   txt('星星 ' + Save.totalStars() + '/90 ・ 錢包 ' + Save.data.coins + ' 元', bx + bw / 2, by, 15, '#8a4a2a', { shadow: false });
 }
 const titleCat = { look: { kind: 'cat', kid: false, acc: '#ff6b9a' }, mood: 'happy', anim: 0, blinkT: 1, state: 'wait', x: 0, react: null };
@@ -2143,7 +2240,7 @@ function buyUpgrade(id) {
   Save.data.coins -= cost;
   if (u.kind === 'lv') Save.data.up[u.id]++; else Save.data.decor[u.id] = true;
   Save.save();
-  KG.sound('coin'); Sfx.ding();
+  sfx('powerup'); Sfx.ding(); setTimeout(() => sfx('b_save'), 450);
   bgBack = null;
   return true;
 }
@@ -2228,7 +2325,7 @@ function playDown(x, y) {
     if (b) pressStation(b.kind, b.id);
     return;
   }
-  if (d.sealed && !d.sealing && cupHit(x, y)) { G.drag = { x, y, sx: x, sy: y, moved: false }; KG.note(700, 0.06, 'sine', 0.12); return; }
+  if (d.sealed && !d.sealing && cupHit(x, y)) { G.drag = { x, y, sx: x, sy: y, moved: false }; sfx('pickup', { pan: panX(x) }); return; }
   const g = sealGeom();
   if (x >= g.x - 10 && x <= g.x + g.w + 10 && y >= g.y - 10 && y <= g.by + 14) { pressSeal(); return; }
   if (Math.hypot(x - L.potX, y - (L.potY - L.potR * 0.2)) < L.potR * 1.45) { cookPearls(); return; }
@@ -2237,7 +2334,7 @@ function playDown(x, y) {
   const si = slotAt(x, y, false);
   if (si >= 0) {
     if (d.sealed && !d.sealing) serve(si);
-    else { G.focus = si; KG.note(900, 0.06, 'sine', 0.1); }
+    else { G.focus = si; sfx('select', { pan: panX(L.slotX[si]) }); }
   }
 }
 function playMove(x, y) {
@@ -2267,7 +2364,7 @@ cv.addEventListener('pointerdown', (e) => {
   kbOn = false;
   const [x, y] = toLocal(e);
   const b = hitBtn(x, y);
-  if (b) { pressed = { id: b.id, pid: e.pointerId }; KG.note(880, 0.05, 'sine', 0.12); return; }
+  if (b) { pressed = { id: b.id, pid: e.pointerId }; sfx('click', { pan: panX(x), vol: 0.7 }); return; }
   if (scene === 'play' && G) { try { cv.setPointerCapture(e.pointerId); } catch (er) { /* 忽略 */ } playDown(x, y); }
 });
 cv.addEventListener('pointermove', (e) => { if (scene === 'play' && G) { const [x, y] = toLocal(e); playMove(x, y); } });
@@ -2276,7 +2373,7 @@ function endPointer(e, cancel) {
   if (pressed && pressed.pid === e.pointerId) {
     const b = hitBtn(x, y), id = pressed.id;
     pressed = null;
-    if (!cancel && b && b.id === id && b.onClick) { KG.sound('pop'); b.onClick(); }
+    if (!cancel && b && b.id === id && b.onClick) { sfx('ui', { pan: panX(x) }); b.onClick(); }
     return;
   }
   if (scene === 'play' && G) { if (cancel) G.drag = null; else playUp(x, y); }
@@ -2331,7 +2428,7 @@ window.addEventListener('keydown', (e) => {
   }
 });
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) { Music.next = 0.2; if (G && scene === 'play' && G.phase === 'run') G.paused = true; }
+  if (document.hidden && G && scene === 'play' && G.phase === 'run') setPaused(true);
 });
 
 /* =====================================================================
@@ -2364,7 +2461,8 @@ function frame(now) {
   time += dt;
   if (!document.hidden) {
     tick(dt);
-    Music.update(dt);
+    if (scene === 'play' && G) updateMix(dt);
+    audioTick(dt);
     btnReg = [];
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
@@ -2417,7 +2515,7 @@ window.__bt = {
 };
 
 resizeCanvas();
-Music.start(SONG_MENU);
+music(SONG_MENU);
 requestAnimationFrame((t) => { lastFrame = t; frame(t); });
 </script>
 </body>

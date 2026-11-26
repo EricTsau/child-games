@@ -331,6 +331,14 @@
     .titlepic { width: min(220px, 56vw); }
   }
   @media (prefers-reduced-motion: reduce) { .screen.on, .lv.cur, .ch.blank.nowb, .cell.sel { animation: none; } }
+  /* 音樂／音效開關（標題） */
+  .au-tg { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  .au-tg button { font-family: inherit; font-weight: 700; font-size: 14px; display: inline-flex; align-items: center; gap: 5px; min-height: 36px; padding: 4px 14px 4px 10px; border-radius: 999px; border: 1px solid var(--line2); background: #efe6d2; color: var(--mute); cursor: pointer; white-space: nowrap; }
+  .au-tg button svg { width: 18px; height: 18px; flex: 0 0 auto; }
+  .au-tg button.on { background: var(--jade); border-color: var(--jade3); color: #fff; }
+  .au-tg button:active { transform: translateY(1px); }
+  #pauseToggles { display: grid; grid-template-columns: 1fr 1fr; }
+  #pauseToggles .tg:last-child { grid-column: 1 / -1; }
 </style>
 </head>
 <body>
@@ -345,6 +353,7 @@
     <div class="row"><button class="btn ghost small" data-go="book">成語本</button><button class="btn ghost small" data-go="review">錯題本</button><button class="btn ghost small" data-go="stats">紀錄</button></div>
   </div>
   <div class="tprog" id="tProg"></div>
+  <div id="tAudio"></div>
 </section>
 
 <section id="s-hub" class="screen">
@@ -420,6 +429,7 @@
 
 <canvas id="fx" aria-hidden="true"></canvas>
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
 <script>
 'use strict';
 /* ===================== 成語資料 =====================
@@ -2102,7 +2112,7 @@ const S = {
   book: KG.store.get('iq:book', {}),
   wrong: KG.store.get('iq:wrong', {}),
   stats: Object.assign({ answered: 0, first: 0, miss: 0, levels: 0, maxCombo: 0, streak: 0, lastDaily: '', daily: {} }, KG.store.get('iq:stats', {})),
-  set: Object.assign({ timed: false, homo: false, music: true, say: true }, KG.store.get('iq:set', {}))
+  set: Object.assign({ timed: false, homo: false, say: true }, KG.store.get('iq:set', {}))
 };
 const save = (k) => KG.store.set('iq:' + k, S[k]);
 const today = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
@@ -2222,35 +2232,156 @@ const FX = (() => {
 })();
 
 /* ---------- 背景音樂（五聲音階，輕柔） ---------- */
-const Music = (() => {
-  const SC = [293.66, 329.63, 392.0, 440.0, 493.88, 587.33, 659.25, 783.99];
-  const MEL = [4, 3, 2, -1, 3, 2, 0, -1, 1, 2, 4, 5, 4, -1, -1, -1, 5, 6, 5, 4, 3, -1, 2, 3, 4, -1, 2, 1, 0, -1, -1, -1];
-  const BASS = [146.83, 196.0, 220.0, 196.0];
-  let i = 0, acc = 0, on = false;
-  const beat = 0.42;
+/* ===================== 聲音：KG.music 背景音樂 + KG.sfx 音效 ===================== */
+const AU = (function () {
+  const M = KG.music, S = KG.sfx;
+  const KEY = 'idiom-quest:sfx';
+  let sfxOn = KG.store.get(KEY, true) !== false;
+  const last = Object.create(null);
+  const PO = { vol: 1, pitch: 1, pan: 0 };
+  let base = 0.3, ducked = false, duckIv = 0, sayAt = 0;
+  function applyVol() { if (M) M.setVolume(ducked ? base * 0.3 : base); }
+  function can(name, gap) {
+    if (!sfxOn || !S || KG.isMuted()) return false;
+    const now = performance.now();
+    if (now - (last[name] || -1e9) < (gap == null ? 40 : gap)) return false;
+    last[name] = now;
+    return true;
+  }
+  /** 播放音效：40 ms 內同一種只播一次，音高隨機 ±4%（exact:true 不加隨機） */
+  function sfx(name, o, gap) {
+    if (!can(name, gap)) return;
+    PO.vol = o && o.vol != null ? o.vol : 1;
+    PO.pitch = (o && o.pitch || 1) * (o && o.exact ? 1 : 0.96 + Math.random() * 0.08);
+    PO.pan = o && o.pan || 0;
+    S.play(name, PO);
+  }
+  /** 依畫面 x 座標算左右聲道 */
+  function pan(x) { const w = innerWidth || 1; return Math.max(-0.6, Math.min(0.6, (x / w) * 1.2 - 0.6)); }
+  function panEl(el) { if (!el || !el.getBoundingClientRect) return 0; const r = el.getBoundingClientRect(); return pan(r.left + r.width / 2); }
+  /** 連續答對：大調音階一階一階往上 */
+  const DEG = [0, 2, 4, 5, 7, 9, 11, 12];
+  function streakPitch(n) { return Math.pow(2, DEG[Math.max(0, Math.min(DEG.length - 1, (n || 1) - 1))] / 12); }
+  /** 講話時把音樂調小，講完再恢復（KG.say 自動處理；自己呼叫 speechSynthesis 的地方呼叫 AU.duck()） */
+  function duck() {
+    if (KG.isMuted() || !window.speechSynthesis) return;
+    sayAt = performance.now();
+    if (!ducked) { ducked = true; applyVol(); }
+    if (!duckIv) duckIv = setInterval(checkDuck, 150);
+  }
+  const rawSay = KG.say;
+  KG.say = function (text, rate) { rawSay(text, rate); duck(); };
+  function checkDuck() {
+    const ss = window.speechSynthesis, el = performance.now() - sayAt;
+    if (el < 450 || (ss && (ss.speaking || ss.pending) && el < 15000)) return;
+    clearInterval(duckIv); duckIv = 0; ducked = false; applyVol();
+  }
+  function music(song) { if (!M || !song) return; base = song.mv || 0.3; applyVol(); M.play(song); }
+  function jingle(def) { if (M && sfxOn) return M.jingle(def); return 0; }
+  /** 「音樂 開/關」「音效 開/關」兩顆按鈕 */
+  function paintOne(el) {
+    const m = el.querySelector('.au-m'), s = el.querySelector('.au-s');
+    const mo = !M || M.isEnabled();
+    m.classList.toggle('on', mo); m.lastChild.textContent = '音樂 ' + (mo ? '開' : '關');
+    s.classList.toggle('on', sfxOn); s.lastChild.textContent = '音效 ' + (sfxOn ? '開' : '關');
+    m.setAttribute('aria-pressed', mo); s.setAttribute('aria-pressed', sfxOn);
+  }
+  function paint() { document.querySelectorAll('.au-tg').forEach(paintOne); }
+  const IC_M = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 17.5V5.5l11-2.5v12" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linejoin="round"/><ellipse cx="6.2" cy="17.6" rx="3.3" ry="2.6" fill="currentColor"/><ellipse cx="17.2" cy="15.1" rx="3.3" ry="2.6" fill="currentColor"/></svg>';
+  const IC_S = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9.5h4l5-4.5v14l-5-4.5H3z" fill="currentColor"/><path d="M15.5 8.5q2.2 3.5 0 7M18.5 6q4 6 0 12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>';
+  function toggles(cls) {
+    const el = document.createElement('div');
+    el.className = 'au-tg' + (cls ? ' ' + cls : '');
+    el.innerHTML = '<button type="button" class="au-m">' + IC_M + '<span></span></button><button type="button" class="au-s">' + IC_S + '<span></span></button>';
+    el.querySelector('.au-m').addEventListener('click', e => { e.stopPropagation(); if (M) M.setEnabled(!M.isEnabled()); sfx('ui'); paint(); });
+    el.querySelector('.au-s').addEventListener('click', e => { e.stopPropagation(); sfxOn = !sfxOn; KG.store.set(KEY, sfxOn); sfx('ui'); paint(); });
+    paintOne(el);
+    return el;
+  }
+  /* 自己做的音效（短而清脆；雜音一律用 bandpass/lowpass，不用 highpass，避免突波） */
+  if (S) {
+    S.define('au_correct', (p, s) => { s.tone(784 * p, 0.12, { type: 'triangle', vol: 0.19 }); s.tone(1175 * p, 0.26, { type: 'triangle', vol: 0.17, delay: 0.08 }); s.tone(1568 * p, 0.22, { type: 'sine', vol: 0.05, delay: 0.13 }); });
+    S.define('au_soft', (p, s) => { s.tone(440 * p, 0.15, { type: 'sine', vol: 0.13, slide: 400 * p }); s.tone(349 * p, 0.26, { type: 'sine', vol: 0.12, delay: 0.14, slide: 330 * p }); });
+    S.define('au_star', (p, s) => { s.tone(1047 * p, 0.45, { type: 'sine', vol: 0.15 }); s.tone(1047 * 2.76 * p, 0.12, { type: 'sine', vol: 0.03 }); s.tone(1568 * p, 0.3, { type: 'triangle', vol: 0.05, delay: 0.06 }); });
+    S.define('au_chime', (p, s) => { s.tone(698 * p, 0.14, { type: 'triangle', vol: 0.18 }); s.tone(1047 * p, 0.3, { type: 'sine', vol: 0.12, delay: 0.07 }); s.tone(1397 * p, 0.26, { type: 'sine', vol: 0.04, delay: 0.13 }); });
+    S.define('au_flip', (p, s) => { s.noise(0.08, { vol: 0.16, freq: 1800 * p, sweep: 4200 * p, q: 0.9 }); s.tone(620 * p, 0.05, { type: 'sine', vol: 0.05, delay: 0.03 }); });
+    S.define('au_snap', (p, s) => { s.noise(0.03, { vol: 0.2, freq: 3200 * p, q: 2 }); s.tone(1400 * p, 0.06, { type: 'triangle', vol: 0.1 }); s.tone(2100 * p, 0.08, { type: 'sine', vol: 0.05, delay: 0.02 }); });
+    S.define('au_scratch', (p, s) => { s.noise(0.035, { vol: 0.07, freq: 2600 * p, q: 1.6 }); });
+    S.define('au_pen', (p, s) => { s.tone(880 * p, 0.045, { type: 'sine', vol: 0.07 }); s.noise(0.025, { vol: 0.05, freq: 3000 * p, q: 2 }); });
+    S.define('au_stamp', (p, s) => { s.tone(150 * p, 0.16, { type: 'sine', vol: 0.3, slide: 60 }); s.noise(0.09, { vol: 0.2, freq: 650 * p, type: 'lowpass' }); s.tone(230 * p, 0.05, { type: 'triangle', vol: 0.07 }); });
+    S.define('au_pick', (p, s) => { s.tone(523 * p, 0.09, { type: 'triangle', vol: 0.14, slide: 784 * p }); });
+    S.define('au_hover', (p, s) => { s.tone(1046 * p, 0.035, { type: 'sine', vol: 0.045 }); });
+    S.define('au_page', (p, s) => { s.noise(0.22, { vol: 0.12, freq: 900 * p, sweep: 2600 * p, q: 0.8 }); });
+  }
   return {
-    setOn(v) { on = v; if (!v) acc = 0; },
-    update(dt) {
-      if (!on || !S.set.music || KG.isMuted() || document.hidden) return;
-      acc -= dt;
-      if (acc > 0) return;
-      acc += beat;
-      if (acc < -1) acc = beat;
-      const n = MEL[i % MEL.length];
-      if (n >= 0) { KG.note(SC[n], 0.9, 'triangle', 0.045); KG.note(SC[n] * 2, 0.35, 'sine', 0.012); }
-      if (i % 8 === 0) KG.note(BASS[(i / 8 | 0) % 4], 2.6, 'sine', 0.05);
-      i++;
-    }
+    sfx, pan, panEl, streakPitch, music, jingle, toggles, paint, duck,
+    get on() { return sfxOn; },
+    setSfx(v) { sfxOn = !!v; KG.store.set(KEY, sfxOn); paint(); },
+    tone(f, d, o) { if (sfxOn && S) S.tone(f, d, o); },
+    layer(n, on) { if (M) M.setLayer(n, on); },
+    tempo(x) { if (M) M.setTempo(x); },
+    stop(f) { if (M) M.stop(f); },
+    pause() { if (M) M.pause(); },
+    resume() { if (M) M.resume(); },
+    current() { return M ? M.current() : null; }
   };
 })();
+/* SONGS-BEGIN */
+const MUSIC = {
+  // 標題：古卷展開的序曲（像古箏的分解琶音、像簫的長笛、弦樂長音、鐘、慢慢的鼓）A 羽調五聲音階，沒有爵士鼓
+  title: {
+    key: 'Am', scale: ['A', 'C', 'D', 'E', 'G'], bpm: 70, steps: 16, mv: 0.44,
+    chords: ['Am', 'G', 'Am', 'Em', 'F', 'G', 'Dm', 'Am'],
+    tracks: [
+      { inst: 'flute', vol: 0.9, seq: [
+        'E5 - - D5 C5 - A4 -', 'D5 - - - G4 - - .', 'A4 - C5 D5 E5 - G5 -', 'E5 - - - D5 - - .',
+        'C5 - - D5 C5 - A4 -', 'G4 - A4 - D5 - - .', 'D5 - E5 D5 C5 - A4 -', 'A4 - - - - - - .'] },
+      { inst: 'pluck', arp: 'up', rate: 2, span: 2, oct: 3, vol: 0.38 },
+      { inst: 'strings', chord: 'hold', oct: 3, vol: 0.45 },
+      { inst: 'bell', vol: 0.4, seq: ['A5 . . . . . . .', '', '', '', 'E5 . . . . . . .', '', '', ''] },
+      { inst: 'tom', pat: ['x...............', '................', '................', '........o.......', 'x...............', '................', '................', 'x.......o.......'], vol: 0.4 },
+      { inst: 'sub', chord: 'R...............', vol: 0.5 }
+    ]
+  },
+  // 遊戲中：書生趕路的小跑步（木魚馬蹄、低鼓、拇指琴頑固音型、笛子＋鐘琴旋律）F 宮調五聲音階
+  play: {
+    key: 'F', scale: ['F', 'G', 'A', 'C', 'D'], bpm: 92, steps: 16, swing: 0.05, mv: 0.4,
+    chords: ['F', 'Dm', 'Gm7', 'C', 'F', 'Dm', 'Bb', 'C'],
+    layers: { streak: false, hurry: false },
+    tracks: [
+      { inst: 'flute', vol: 0.85, seq: [
+        'C5 - D5 C5 A4 - - .', 'D5 - F5 D5 C5 - - .', 'D5 - C5 - A4 G4 - .', 'G4 - A4 C5 - - - .',
+        'F5 - G5 F5 D5 - C5 .', 'D5 - C5 A4 C5 - - .', 'D5 - F5 - D5 C5 - .', 'C5 - - - G4 - - .'] },
+      { inst: 'bell', vol: 0.4, seq: ['', '. . . . . . A5 F5', '', '. . . . . . G5 C5', '', '. . . . . . F5 D5', '', '. . . . . . C5 D5'] },
+      { inst: 'kalimba', arp: 'up', rate: 2, oct: 4, vol: 0.42 },
+      { inst: 'sub', chord: 'R.......5.......', vol: 0.55 },
+      { inst: 'rim', pat: 'x..x..x.x..x..x.', vol: 0.42 },
+      { inst: 'tom', pat: 'x.......x.......', vol: 0.35 },
+      { inst: 'bell', arp: 'down', rate: 4, oct: 5, vol: 0.28, layer: 'streak' },
+      { inst: 'shaker', pat: '..x...x...x...x.', vol: 0.45, layer: 'streak' },
+      { inst: 'tom', pat: '....x.......x...', vol: 0.35, pitch: 110, layer: 'hurry' },
+      { inst: 'strings', chord: 'hold', oct: 3, vol: 0.4, layer: 'hurry' }
+    ]
+  }
+};
+/* SONGS-END */
+const JINGLES = {
+  win: { bpm: 132, inst: 'kalimba', vol: 0.36, notes: [['C5', 1], ['D5', 1], ['F5', 1], ['G5', 1], ['A5', 2], ['G5', 1], ['F5+A5+C5', 4]], bass: [['F2', 4, 0], ['C3', 2, 4], ['F2', 4, 7]], bassVol: 0.28 },
+  win2: { bpm: 132, inst: 'bell', vol: 0.16, notes: [['.', 6], ['A5', 1], ['C5+F5', 4]] },
+  lose: { bpm: 110, inst: 'flute', vol: 0.28, notes: [['A4', 1], ['G4', 1], ['E4', 1], ['D4', 1], ['E4', 3]], bass: [['A2', 3, 0], ['E2', 4, 3]], bassVol: 0.22 }
+};
+// 撥弦（像古箏）：填字、放字用，音高沿 F 宮調五聲音階往上
+const PLUCK_F = [349.23, 392.0, 440.0, 523.25, 587.33, 698.46, 783.99, 880.0];
+KG.sfx.define('iq_pluck', (p, s) => { s.tone(349.23 * p, 0.5, { type: 'triangle', vol: 0.18 }); s.tone(698.46 * p, 0.18, { type: 'sine', vol: 0.05 }); s.noise(0.02, { vol: 0.06, freq: 2400 * p, q: 3 }); });
+KG.sfx.define('iq_tick', (p, s) => { s.tone(1180 * p, 0.04, { type: 'sine', vol: 0.09 }); s.noise(0.02, { vol: 0.05, freq: 1800, q: 4 }); });
 const SFX = {
-  tap: () => KG.note(880, 0.06, 'triangle', 0.12),
-  pluck: (k) => { const f = [587.33, 659.25, 783.99, 880, 987.77][k % 5]; KG.note(f, 0.5, 'triangle', 0.2); KG.note(f * 2, 0.18, 'sine', 0.06); },
-  good: () => { [587.33, 739.99, 880, 1174.66].forEach((f, i) => KG.note(f, 0.45, 'triangle', 0.17, i * 0.07)); },
-  bad: () => { KG.note(196, 0.22, 'triangle', 0.18, 0, 150); KG.note(160, 0.25, 'sine', 0.14, 0.08, 120); },
-  stamp: () => { KG.note(110, 0.18, 'sine', 0.35, 0, 60); KG.sound('hit'); },
-  win: () => { [523.25, 587.33, 659.25, 783.99, 880, 1046.5].forEach((f, i) => KG.note(f, 0.5, 'triangle', 0.18, i * 0.1)); KG.note(1318.5, 0.9, 'sine', 0.12, 0.65); },
-  page: () => KG.sound('whoosh')
+  tap: () => AU.sfx('click'),
+  pluck: (k) => AU.sfx('iq_pluck', { pitch: PLUCK_F[k % PLUCK_F.length] / 349.23 }),
+  good: (combo) => { AU.sfx('au_correct', { pitch: AU.streakPitch(Math.max(1, combo || 1)), exact: true }); if (combo >= 3) setTimeout(() => AU.sfx('au_chime', { pitch: AU.streakPitch(combo), exact: true, vol: 0.6 }), 220); },
+  bad: () => AU.sfx('au_soft'),
+  stamp: () => AU.sfx('au_stamp'),
+  win: (stars) => { const d = AU.jingle(stars ? JINGLES.win : JINGLES.lose); if (stars >= 3) AU.jingle(JINGLES.win2); return d; },
+  page: () => AU.sfx('au_page')
 };
 
 /* ---------- 語音（不支援時提示） ---------- */
@@ -2274,6 +2405,7 @@ function show(name) {
   if (name === 'review') renderReview();
   if (name === 'stats') renderStats();
   if (name === 'play') requestAnimationFrame(layoutPlay);
+  else AU.music(MUSIC.title);
 }
 function openModal(id) { $('#' + id).classList.add('on'); }
 function closeModal(id) { $('#' + id).classList.remove('on'); }
@@ -2316,15 +2448,18 @@ function renderLevels(act) {
   $('#lvSet').innerHTML = `<div class="toggles" style="width:min(460px,100%)">${set.join('')}</div>`;
   show('levels');
 }
-function toggleHTML(k, t, d) { return `<button class="tg ${S.set[k] ? 'on' : ''}" data-tg="${k}"><span>${t}<small>${d}</small></span><span class="sw"></span></button>`; }
+const tgVal = k => k === 'music' ? KG.music.isEnabled() : k === 'sfx' ? AU.on : S.set[k];
+function toggleHTML(k, t, d) { return `<button class="tg ${tgVal(k) ? 'on' : ''}" data-tg="${k}" aria-pressed="${!!tgVal(k)}"><span>${t}${d ? `<small>${d}</small>` : ''}</span><span class="sw"></span></button>`; }
 function bindToggles(root) {
   root.addEventListener('click', (e) => {
     const b = e.target.closest('[data-tg]');
     if (!b) return;
     const k = b.dataset.tg;
-    S.set[k] = !S.set[k]; save('set');
-    $$(`[data-tg="${k}"]`).forEach(x => x.classList.toggle('on', S.set[k]));
-    SFX.tap();
+    if (k === 'music') KG.music.setEnabled(!KG.music.isEnabled());
+    else if (k === 'sfx') AU.setSfx(!AU.on);
+    else { S.set[k] = !S.set[k]; save('set'); }
+    $$(`[data-tg="${k}"]`).forEach(x => { x.classList.toggle('on', !!tgVal(k)); x.setAttribute('aria-pressed', !!tgVal(k)); });
+    AU.sfx('select', { pitch: tgVal(k) ? 1.1 : 0.85 });
   });
 }
 
@@ -2387,7 +2522,8 @@ function renderStats() {
     return `<div><span>${A.full}</span><div class="bar"><i style="width:${(t / (A.levels * 3) * 100).toFixed(1)}%"></i></div><span>${t}★${best ? '' : ''}</span></div>`;
   }).join('');
   $('#toggles').innerHTML = [
-    toggleHTML('music', '背景音樂', '輕柔的五聲音階小曲'),
+    toggleHTML('music', '音樂', '古風五聲音階的背景音樂（所有遊戲共用）'),
+    toggleHTML('sfx', '音效', '按鈕、答對、蓋印章的聲音'),
     toggleHTML('say', '自動朗讀', '答對後念出成語（需要裝置支援語音）'),
     toggleHTML('timed', '限時模式', '每題有時間限制，答得快加分'),
     toggleHTML('homo', '同音接龍', '接龍時讀音相同的字也能接')
@@ -2410,7 +2546,9 @@ function startGame(mode, act, level) {
   $('#pCombo').classList.remove('on'); $('#pCombo').textContent = '';
   closeModal('m-result'); closeModal('m-pause');
   show('play');
-  Music.setOn(true);
+  AU.music(MUSIC.play);
+  AU.layer('streak', false); AU.layer('hurry', false); AU.tempo(1); G.hurry = false;
+  AU.sfx('pickup', { vol: 0.8 });
   renderQ();
   return G;
 }
@@ -2421,7 +2559,9 @@ function renderDots() {
 function renderQ() {
   const q = curQ();
   G.qMiss = 0; G.phase = 'ask';
-  G.tmax = S.set.timed ? (TIME[q.type] || 20) : 0; G.time = G.tmax;
+  G.tmax = S.set.timed ? (TIME[q.type] || 20) : 0; G.time = G.tmax; G.tickS = 99;
+  setHurry(false);
+  AU.tempo(G.qi === G.qs.length - 1 && G.qs.length > 3 ? 1.03 : 1);
   $('#pTimer').classList.toggle('on', !!G.tmax);
   renderDots();
   const qb = $('#qbox'), ab = $('#abox');
@@ -2460,6 +2600,12 @@ function renderQ() {
   markActiveBlank();
   layoutPlay();
   $('#qbox').classList.remove('shake');
+}
+function setHurry(on) {
+  if (!G || G.hurry === on) return;
+  G.hurry = on;
+  AU.layer('hurry', on);
+  AU.tempo(on ? 1.05 : (G.qi === G.qs.length - 1 && G.qs.length > 3 ? 1.03 : 1));
 }
 function optsHTML(opts) { return `<div class="opts">${opts.map((w, i) => `<button class="opt tap" data-o="${i}"><span class="kb">${i + 1}</span>${w}</button>`).join('')}</div>`; }
 function tilesHTML(tiles, many) { return `<div class="tiles">${tiles.map((c, i) => `<button class="tile tap" data-t="${i}">${i < 9 ? `<span class="kb">${i + 1}</span>` : ''}${c}</button>`).join('')}</div>`; }
@@ -2648,7 +2794,9 @@ function onCorrect(el) {
     if (G.mode === 'review' && first && S.wrong[w]) { delete S.wrong[w]; KG.toast('已從錯題本移除'); }
   }
   save('book'); save('stats'); save('wrong');
-  SFX.good();
+  setHurry(false);
+  AU.layer('streak', G.combo >= 3);
+  SFX.good(first ? G.combo : 1);
   setTimeout(SFX.stamp, D(180));
   // 印章
   const st = document.createElement('div');
@@ -2665,6 +2813,7 @@ function onWrong(el, wrongWord, words) {
   const q = curQ();
   G.qMiss++; G.mistakes++; G.combo = 0;
   $('#pCombo').classList.remove('on');
+  AU.layer('streak', false);
   S.stats.miss++;
   for (const w of (words || [q.w])) S.wrong[w] = (S.wrong[w] || 0) + 1;
   save('wrong'); save('stats');
@@ -2714,6 +2863,7 @@ function timeUp() {
   for (const w of qWords(q)) S.wrong[w] = (S.wrong[w] || 0) + 1;
   save('wrong');
   G.results[G.qi] = false;
+  setHurry(false); AU.layer('streak', false);
   SFX.bad();
   if (q.type === 'choice') { $$('.opt').forEach((b, i) => b.classList.add(i === q.correct ? 'good' : 'dim')); }
   if (q.type === 'fill' || q.type === 'build') { $$('#qbox .ch.blank:not(.got)').forEach(el => el.classList.add('reveal')); }
@@ -2763,12 +2913,18 @@ function finish() {
     <div class="macts">${hasNext ? `<button class="btn" id="rNext">下一關${ICON.next}</button>` : ''}<div class="row"><button class="btn ghost small" id="rAgain">再玩一次</button><button class="btn ghost small" id="rBack">${G.mode === 'level' ? '選擇關卡' : '回選單'}</button></div></div>`;
   G.phase = 'done';
   openModal('m-result');
-  SFX.win();
+  setHurry(false);
+  const jd = SFX.win(stars);
+  [0, 1, 2].slice(0, stars).forEach(i => setTimeout(() => AU.sfx('au_star', { pitch: [1, 1.26, 1.5][i], exact: true }), D(150 + i * 180)));
+  // 過關音樂播完，換回選單的曲子
+  const gRes = G;
+  setTimeout(() => { if (G === gRes && G.phase === 'done') AU.music(MUSIC.title); }, D(jd * 1000 + 500));
   FX.rain(stars * 20 + 10);
   if (stars === 3) setTimeout(() => { FX.burst(innerWidth / 2, innerHeight * 0.3, 40, 'mix'); }, D(350));
 }
 function quitGame() {
   closeModal('m-pause'); closeModal('m-result');
+  AU.resume();
   const g = G; G = null;
   if (window.speechSynthesis) try { speechSynthesis.cancel(); } catch (e) { /* 忽略 */ }
   if (g && g.mode === 'level') renderLevels(g.act);
@@ -2779,10 +2935,11 @@ function pause(on) {
   if (!G || G.phase === 'done') return;
   G.paused = on;
   if (on) {
+    AU.pause();
     $('#pauseInfo').textContent = `第 ${G.qi + 1} / ${G.qs.length} 題 · 目前 ${G.score} 分`;
-    $('#pauseToggles').innerHTML = toggleHTML('music', '背景音樂', '') + toggleHTML('say', '自動朗讀', '');
+    $('#pauseToggles').innerHTML = toggleHTML('music', '音樂', '') + toggleHTML('sfx', '音效', '') + toggleHTML('say', '自動朗讀', '');
     openModal('m-pause');
-  } else closeModal('m-pause');
+  } else { closeModal('m-pause'); AU.resume(); }
 }
 
 /* ---------- 事件 ---------- */
@@ -2806,12 +2963,13 @@ document.addEventListener('click', (e) => {
   const cell = t.closest('.cell.tap');
   if (cell) { tapCell(cell.dataset.k); return; }
   if (t.closest('#bNext')) { nextQ(); return; }
+  if (t.closest('#bSay') || t.closest('[data-say]')) AU.sfx('click');
   if (t.closest('#bSay')) { const q = curQ(); if (q) say(q.type === 'puzzle' ? q.words.map(w => w.w).join('，') : q.w); return; }
   const sayB = t.closest('[data-say]');
   if (sayB) { say(sayB.dataset.say); return; }
   if (t.closest('[data-close]')) { closeModal('m-card'); SFX.tap(); return; }
   const wb = t.closest('[data-w]');
-  if (wb) { showCard(wb.dataset.w); return; }
+  if (wb) { if (!S.book[wb.dataset.w] && screen === 'book') AU.sfx('au_soft', { vol: 0.6 }); showCard(wb.dataset.w); return; }
   const fc = t.closest('[data-f]');
   if (fc) { bookFilter = fc.dataset.f; SFX.tap(); renderBook(); $('#bookScroll').scrollTop = 0; return; }
 });
@@ -2829,7 +2987,7 @@ function startDaily() {
 $('#bReview').addEventListener('click', () => { SFX.tap(); startGame('review'); });
 $('#pauseBtn').addEventListener('click', () => { SFX.tap(); pause(true); });
 $('#bResume').addEventListener('click', () => { SFX.tap(); pause(false); });
-$('#bRestart').addEventListener('click', () => { SFX.tap(); const g = G; closeModal('m-pause'); startGame(g.mode, g.act, g.level); });
+$('#bRestart').addEventListener('click', () => { SFX.tap(); const g = G; closeModal('m-pause'); AU.resume(); startGame(g.mode, g.act, g.level); });
 $('#bQuit').addEventListener('click', () => { SFX.tap(); quitGame(); });
 $('#m-result').addEventListener('click', (e) => {
   if (e.target.closest('#rNext')) { SFX.tap(); const g = G; startGame('level', g.act, g.level + 1); }
@@ -2838,14 +2996,15 @@ $('#m-result').addEventListener('click', (e) => {
 });
 $('#m-card').addEventListener('click', (e) => { if (e.target.id === 'm-card') closeModal('m-card'); });
 $('#bReset').addEventListener('click', () => {
+  AU.sfx('au_soft');
   $('#cfT').textContent = '清除紀錄？'; $('#cfP').textContent = '星星、成語本、錯題和統計都會清除，無法復原。';
   openModal('m-confirm');
 });
-$('#cfNo').addEventListener('click', () => closeModal('m-confirm'));
+$('#cfNo').addEventListener('click', () => { AU.sfx('back'); closeModal('m-confirm'); });
 $('#cfYes').addEventListener('click', () => {
   S.prog = {}; S.book = {}; S.wrong = {}; S.stats = { answered: 0, first: 0, miss: 0, levels: 0, maxCombo: 0, streak: 0, lastDaily: '', daily: {} };
   ['prog', 'book', 'wrong', 'stats'].forEach(save);
-  closeModal('m-confirm'); renderStats(); KG.toast('已清除');
+  closeModal('m-confirm'); renderStats(); AU.sfx('au_page'); KG.toast('已清除');
 });
 bindToggles($('#s-levels')); bindToggles($('#s-stats')); bindToggles($('#m-pause'));
 
@@ -2898,14 +3057,15 @@ let lastT = performance.now();
 function loop(now) {
   const dt = Math.min(0.05, (now - lastT) / 1000); lastT = now;
   FX.update(dt);
-  Music.setOn(!(screen === 'play' && G && G.paused));
-  Music.update(dt);
   if (G && screen === 'play' && !G.paused && G.tmax && G.phase === 'ask' && !anyModal()) {
     G.time -= dt * (FAST ? 20 : 1);
     const f = clamp(G.time / G.tmax, 0, 1);
     $('#pTimerArc').setAttribute('stroke-dashoffset', (100.5 * (1 - f)).toFixed(1));
     $('#pTimerArc').setAttribute('stroke', f < 0.25 ? '#d0553f' : '#3d7a64');
     $('#pTimerTxt').textContent = Math.ceil(Math.max(0, G.time));
+    if (f < 0.3 && !G.hurry) setHurry(true);
+    const sec = Math.ceil(G.time);
+    if (sec <= 5 && sec >= 1 && sec < G.tickS) { G.tickS = sec; AU.sfx('iq_tick', { pitch: 1 + (5 - sec) * 0.06, exact: true }); }
     if (G.time <= 0) timeUp();
   }
   requestAnimationFrame(loop);
@@ -2963,6 +3123,7 @@ window.__iq = {
 };
 
 /* ---------- 開始 ---------- */
+$('#tAudio').appendChild(AU.toggles());
 relayout();
 show('title');
 requestAnimationFrame(loop);

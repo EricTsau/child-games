@@ -194,6 +194,7 @@
     <div class="frow" id="rowLv"><label>難度</label><div class="seg" id="segLv"><button data-v="1">新手</button><button data-v="2">簡單</button><button data-v="3">普通</button><button data-v="4">困難</button><button data-v="5">大師</button></div></div>
     <div class="frow" id="rowFirst"><label>先手</label><div class="seg" id="segFirst"><button data-v="me">我先</button><button data-v="ai">電腦先</button><button data-v="alt">輪流</button></div></div>
     <div class="frow" id="rowPFirst"><label>先手</label><div class="seg" id="segPFirst"><button data-v="1">紅方先</button><button data-v="2">黃方先</button></div></div>
+    <div class="frow"><label>聲音</label><div class="seg" id="tSnd"><button data-k="music">音樂 開</button><button data-k="sfx">音效 開</button></div></div>
     <div class="tbtns"><button class="gbtn go" id="tStart">開始遊戲</button><button class="gbtn hide" id="tResume">繼續上局</button></div>
     <div class="tlinks"><button class="gbtn soft" id="tHelp">規則說明</button><button class="gbtn soft" id="tStats">戰績</button></div>
     <div class="rec" id="tRec"></div>
@@ -203,7 +204,7 @@
 <div id="pauseOv" class="ov hide">
   <div class="card pcard">
     <h2>暫停</h2>
-    <div class="frow"><label>背景音樂</label><div class="seg" id="pMusic"><button data-v="on">開</button><button data-v="off">關</button></div></div>
+    <div class="frow"><label>聲音</label><div class="seg" id="pSnd"><button data-k="music">音樂 開</button><button data-k="sfx">音效 開</button></div></div>
     <div class="acts">
       <button class="gbtn go" id="pResume">繼續遊戲</button>
       <button class="gbtn soft" id="pRestart">重新開始</button>
@@ -263,6 +264,7 @@
 </div>
 
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
 <script>
 /*ENGINE-START*/
 function C4Engine(opt) {
@@ -797,7 +799,7 @@ function C4Engine(opt) {
   const PNAME = { 1: '紅方', 2: '黃方' };
 
   /* ---------------- 偏好與戰績 ---------------- */
-  const prefs = Object.assign({ tab: 'ai', vvar: 'popout', vopp: 'ai', level: 3, first: 'me', pfirst: 1, alt: 1, music: true }, store.get('c4:prefs', {}));
+  const prefs = Object.assign({ tab: 'ai', vvar: 'popout', vopp: 'ai', level: 3, first: 'me', pfirst: 1, alt: 1 }, store.get('c4:prefs', {}));
   const savePrefs = () => store.set('c4:prefs', prefs);
   const stats = store.get('c4:stats', {}) || {};
   function statOf(v, k) {
@@ -1111,39 +1113,186 @@ function C4Engine(opt) {
     if (a != null && a < 1) ctx.globalAlpha = 1;
   }
 
-  /* ---------------- 音效與音樂 ---------------- */
+  /* ---------------- 音效與音樂（共用引擎 kg-music.js） ---------------- */
+  const M = KG.music, SX = KG.sfx;
+  let sfxOn = store.get('c4:sfx', true) !== false;
+  const sfxLast = Object.create(null);
+  /** 播放音效：同一種 40ms 內只播一次、音高隨機 ±5% */
+  function sfx(name, o) {
+    if (!sfxOn || !SX) return;
+    const t = performance.now();
+    if (t - (sfxLast[name] || 0) < 40) return;
+    sfxLast[name] = t;
+    const pitch = ((o && o.pitch) || 1) * (o && o.exact ? 1 : 0.95 + Math.random() * 0.1);
+    SX.play(name, o ? { vol: o.vol, pitch, pan: o.pan } : { pitch });
+  }
+  const panCol = c => (G && VW && c >= 0 ? clamp((colX(c) / VW) * 2 - 1, -1, 1) * 0.6 : 0);
+  // 連線時一顆顆往上的音（F 大調：F A C D F A）
+  const LINE_P = [1, 1.26, 1.4983, 1.6818, 2, 2.52];
+  if (SX) {
+    // 塑膠圓片掉到底：清脆的「喀啦」＋空心塑膠框的共鳴
+    SX.define('c4_land', (p, s) => {
+      s.noise(0.028, { vol: 0.28, freq: 2300 * p, q: 2.2 });
+      s.tone(560 * p, 0.05, { type: 'triangle', vol: 0.12, slide: 390 * p });
+      s.tone(150 * p, 0.08, { vol: 0.2, slide: 82 * p });
+      s.noise(0.05, { vol: 0.05, freq: 5200 * p, type: 'highpass', delay: 0.012 });
+    });
+    // 彈出：「啵」一聲
+    SX.define('c4_pop', (p, s) => { s.tone(310 * p, 0.13, { vol: 0.24, slide: 960 * p }); s.noise(0.035, { vol: 0.1, freq: 3000 * p, q: 1.5, delay: 0.02 }); });
+    // 放開棋子、開始往下掉：短短的滑落聲
+    SX.define('c4_slide', (p, s) => { s.noise(0.11, { vol: 0.06, freq: 1600 * p, sweep: 800 * p, q: 1.2 }); });
+    SX.define('c4_hover', (p, s) => { s.tone(1250 * p, 0.025, { type: 'triangle', vol: 0.04 }); });
+    SX.define('c4_pick', (p, s) => { s.tone(700 * p, 0.06, { type: 'triangle', vol: 0.08, slide: 950 * p }); });
+    // 不能下：塑膠悶響兩下
+    SX.define('c4_bad', (p, s) => {
+      s.tone(220 * p, 0.11, { type: 'triangle', vol: 0.16, slide: 160 * p });
+      s.tone(165 * p, 0.15, { type: 'triangle', vol: 0.12, slide: 120 * p, delay: 0.09 });
+      s.noise(0.03, { vol: 0.06, freq: 900, q: 1 });
+    });
+    SX.define('c4_hint', (p, s) => { [1175, 1397, 1760].forEach((f, i) => s.tone(f * p, 0.2, { vol: 0.07, delay: i * 0.07 })); });
+    // 悔棋：棋子往上滑走
+    SX.define('c4_undo', (p, s) => { s.tone(420 * p, 0.14, { type: 'triangle', vol: 0.1, slide: 920 * p }); s.noise(0.12, { vol: 0.07, freq: 1500 * p, sweep: 3000 * p, q: 1 }); });
+    // 開局：搖一搖棋子盒
+    SX.define('c4_start', (p, s) => { for (let k = 0; k < 4; k++) s.noise(0.02, { vol: 0.17, freq: (2000 + k * 260) * p, q: 2, delay: k * 0.06 }); s.tone(784 * p, 0.2, { type: 'triangle', vol: 0.06, delay: 0.26 }); });
+    // 電腦思考：輕輕的「滴、答」
+    SX.define('c4_think', (p, s) => { s.tone(1400 * p, 0.022, { type: 'triangle', vol: 0.035 }); s.noise(0.012, { vol: 0.035, freq: 3800 * p, q: 4 }); });
+    // 連線：每顆一聲鐵琴
+    SX.define('c4_line', (p, s) => { s.tone(698 * p, 0.45, { vol: 0.1 }); s.tone(698 * 2.76 * p, 0.12, { vol: 0.02 }); });
+    // 出現「下一步就贏」：提醒的兩個音
+    SX.define('c4_threat', (p, s) => { s.tone(880 * p, 0.12, { type: 'triangle', vol: 0.07 }); s.tone(1175 * p, 0.2, { type: 'triangle', vol: 0.06, delay: 0.1 }); });
+    SX.define('c4_ui', (p, s) => { s.tone(760 * p, 0.05, { type: 'triangle', vol: 0.12 }); s.tone(1140 * p, 0.06, { vol: 0.06, delay: 0.025 }); });
+    SX.define('c4_page', (p, s) => { s.noise(0.05, { vol: 0.07, freq: 2600 * p, sweep: 1400 * p, q: 0.8 }); });
+  }
+  const uiTap = () => sfx('c4_ui');
   const SFX = {
-    land(v) { const k = clamp(v / 36, 0.12, 1); KG.note(1500 + Math.random() * 200, 0.03, 'triangle', 0.12 * k); KG.note(240 + Math.random() * 40, 0.08, 'sine', 0.3 * k, 0, 110); if (k > 0.6) KG.note(90, 0.09, 'sine', 0.2 * k, 0.005, 50); },
-    hover() { KG.note(1250, 0.025, 'triangle', 0.035); },
-    pick() { KG.note(700, 0.05, 'triangle', 0.08, 0, 950); },
-    pop() { KG.note(320, 0.14, 'sine', 0.28, 0, 980); KG.note(1800, 0.03, 'triangle', 0.08, 0.02); },
-    bad() { KG.note(220, 0.1, 'square', 0.07, 0, 170); KG.note(165, 0.14, 'square', 0.07, 0.09, 120); },
-    hint() { [1175, 1568, 2093].forEach((f, i) => KG.note(f, 0.18, 'sine', 0.08, i * 0.07)); },
-    undo() { KG.note(820, 0.12, 'triangle', 0.1, 0, 380); },
-    start() { [523, 659, 784].forEach((f, i) => KG.note(f, 0.14, 'triangle', 0.12, i * 0.07)); },
-    win() { [523, 659, 784, 1047, 1319].forEach((f, i) => KG.note(f, 0.32, 'triangle', 0.16, i * 0.1)); KG.note(1568, 0.9, 'sine', 0.1, 0.5); KG.note(784, 1.1, 'triangle', 0.08, 0.5); },
-    lose() { [494, 440, 392, 330].forEach((f, i) => KG.note(f, 0.36, 'triangle', 0.13, i * 0.17)); KG.note(196, 0.9, 'sine', 0.1, 0.65); },
-    draw() { [392, 494, 440, 392].forEach((f, i) => KG.note(f, 0.3, 'triangle', 0.11, i * 0.15)); },
-    line() { KG.note(880, 0.4, 'sine', 0.06, 0, 1760); }
-  };
-  const CH = [[261.63, 329.63, 392, 523.25], [220, 261.63, 329.63, 440], [174.61, 220, 261.63, 349.23], [196, 246.94, 293.66, 392]];
-  let musicT = 0, mStep = 0, audioOK = false;
-  const unlock = () => { audioOK = true; };
-  addEventListener('pointerdown', unlock, { once: true, capture: true });
-  addEventListener('keydown', unlock, { once: true, capture: true });
-  function musicTick() {
-    clearTimeout(musicT);
-    if (!audioOK || !prefs.music || document.hidden || S.paused) { musicT = setTimeout(musicTick, 700); return; }
-    if (!KG.isMuted()) {
-      const ch = CH[Math.floor(mStep / 8) % 4], k = mStep % 8;
-      if (k === 0) KG.note(ch[0] / 2, 2.6, 'sine', 0.05);
-      if (k === 4) KG.note(ch[1] / 2, 1.2, 'sine', 0.03);
-      const seq = [0, 2, 1, 3, 2, 1, 3, 2];
-      if (k !== 7 || Math.random() < 0.5) KG.note(ch[seq[k]] * (k > 4 ? 2 : 1), 0.5, 'triangle', 0.028 + (k === 0 ? 0.01 : 0));
-      if (k === 6 && Math.random() < 0.4) KG.note(ch[3] * 2, 0.3, 'sine', 0.015, 0.16);
+    land(v, c) { const k = clamp(v / 36, 0.12, 1); sfx('c4_land', { vol: 0.25 + k * 0.85, pitch: 1.08 - k * 0.12, pan: panCol(c) }); },
+    hover(c) { sfx('c4_hover', { pan: panCol(c) }); },
+    pick(c) { sfx('c4_pick', { pan: panCol(c) }); },
+    slide(c) { sfx('c4_slide', { pan: panCol(c) }); },
+    pop(c) { sfx('c4_pop', { pan: panCol(c) }); },
+    page() { sfx('c4_page'); },
+    bad(c) { sfx('c4_bad', { pan: panCol(c) }); },
+    hint() { sfx('c4_hint'); },
+    undo() { sfx('c4_undo'); },
+    start() { sfx('c4_start'); },
+    win() { jingle(J_WIN); },
+    lose() { jingle(J_LOSE); },
+    draw() { jingle(J_DRAW); },
+    line(run, H) {
+      if (!run) return;
+      run.forEach((i, k) => setTimeout(() => sfx('c4_line', { pitch: LINE_P[k % LINE_P.length], exact: true, pan: panCol(Math.floor(i / H)) }), k * 110));
     }
-    mStep++;
-    musicT = setTimeout(musicTick, 330);
+  };
+  function jingle(j) { if (!M || !sfxOn) return; for (const part of j) M.jingle(part); }
+
+  /*SONGS*/
+  // 標題：〈海島鋼鼓〉C 大調，110 bpm；鐵琴＋木琴疊成鋼鼓的聲音，克拉維 3-2 節奏、沙鈴、卡利普索低音
+  const SONG_TITLE = {
+    bpm: 110, steps: 16, swing: 0.08,
+    chords: ['C', 'F', 'G', 'C', 'Am', 'F', 'G7', 'C', 'F', 'G', 'Em', 'Am', 'F', 'G', 'G7', 'C'],
+    tracks: [
+      { inst: 'kick', pat: 'x.......x.......', vol: 0.5 },
+      { inst: 'rim', pat: 'x..x..x...x.x...', vol: 0.32 },
+      { inst: 'shaker', pat: 'x.xxx.xxx.xxx.xx', vol: 0.4 },
+      { inst: 'bass', chord: 'R..5..R.R..5..8.', vol: 0.6 },
+      { inst: 'pluck', chord: '..3...3...3...3.', oct: 4, vol: 0.26 },
+      { inst: 'pluck', chord: '..5...5...5...5.', oct: 4, vol: 0.22 },
+      { inst: 'marimba', vol: 0.9, seq: [
+        'E5 - G5 . E5 C5 - D5', 'F5 - A5 . F5 - C5 .', 'D5 - B4 . D5 G5 - F5', 'E5 - - . C5 - - .',
+        'A4 - C5 . E5 A5 - G5', 'F5 - E5 . C5 - A4 .', 'B4 - D5 . F5 - E5 D5', 'C5 - - . G4 - - .',
+        'A4 C5 F5 . A5 - G5 F5', 'G5 - D5 . B4 - D5 .', 'E5 - G5 . B5 - G5 E5', 'C5 - E5 . A5 - - .',
+        'F5 - A5 . G5 F5 - E5', 'D5 - G5 . F5 - D5 .', 'B4 - D5 . F5 - G5 .', 'C5 - - . . . . .'] },
+      { inst: 'bell', vol: 0.5, seq: [
+        'E5 - G5 . E5 C5 - D5', 'F5 - A5 . F5 - C5 .', 'D5 - B4 . D5 G5 - F5', 'E5 - - . C5 - - .',
+        'A4 - C5 . E5 A5 - G5', 'F5 - E5 . C5 - A4 .', 'B4 - D5 . F5 - E5 D5', 'C5 - - . G4 - - .',
+        'A4 C5 F5 . A5 - G5 F5', 'G5 - D5 . B4 - D5 .', 'E5 - G5 . B5 - G5 E5', 'C5 - E5 . A5 - - .',
+        'F5 - A5 . G5 F5 - E5', 'D5 - G5 . F5 - D5 .', 'B4 - D5 . F5 - G5 .', 'C5 - - . . . . .'] }
+    ]
+  };
+  // 對局：〈慢慢投〉F 大調，74 bpm；溫和的雷鬼 one-drop：第三拍的大鼓＋邊擊、反拍的風琴、低音貝斯、長笛旋律；
+  // 有人下一步就能贏或棋盤快滿時加開鈸、拍手和鐵琴
+  const SONG_PLAY = {
+    bpm: 74, steps: 16, swing: 0.1,
+    chords: ['F', 'Bb', 'C', 'F', 'Dm', 'Bb', 'C', 'C', 'F', 'Am', 'Bb', 'F', 'Gm', 'Bb', 'C', 'F'],
+    layers: { tension: false },
+    tracks: [
+      { inst: 'kick', pat: '........X.......', vol: 0.6 },
+      { inst: 'rim', pat: '........x.......', vol: 0.4 },
+      { inst: 'hat', pat: '..x...x...x...x.', vol: 0.35 },
+      { inst: 'sub', chord: 'R.....5.R...3...', vol: 0.65 },
+      { inst: 'organ', chord: '....R.......R...', oct: 4, vol: 0.32 },
+      { inst: 'organ', chord: '....3.......3...', oct: 4, vol: 0.28 },
+      { inst: 'organ', chord: '....5.......5...', oct: 4, vol: 0.28 },
+      { inst: 'flute', vol: 1.0, seq: [
+        'A4 - - C5 - - A4 -', 'D5 - - - Bb4 - - .', 'C5 - E5 - G5 - E5 -', 'F5 - - - . . . .',
+        'D5 - F5 - A5 - - F5', 'D5 - - C5 Bb4 - - .', 'G4 - C5 - E5 - - D5', 'C5 - - - . . . .',
+        'F4 - A4 - C5 - - F5', 'E5 - - C5 A4 - - .', 'Bb4 - D5 - F5 - - D5', 'C5 - - - A4 - - .',
+        'G4 - Bb4 - D5 - - Bb4', 'F5 - - D5 Bb4 - C5 D5', 'E5 - - - G5 - E5 -', 'F5 - - - - - . .'] },
+      { inst: 'kalimba', vol: 0.35, seq: ['', '', '', 'C5 . A4 . F4 . . .', '', '', '', 'G4 . C5 . E5 . . .'] },
+      { inst: 'ohat', pat: '......x.......x.', vol: 0.4, layer: 'tension' },
+      { inst: 'clap', pat: '....x.......x...', vol: 0.3, layer: 'tension' },
+      { inst: 'bell', arp: 'up', rate: 4, oct: 5, span: 1, vol: 0.3, layer: 'tension' }
+    ]
+  };
+  /*SONGS-END*/
+  const J_WIN = [
+    { bpm: 150, inst: 'bell', vol: 0.4, notes: [['F4', 1], ['A4', 1], ['C5', 1], ['F5', 2], ['E5', 1], ['F5+A5', 4]], bass: [['F2', 6, 0], ['C3', 4, 6]], bassVol: 0.25 },
+    { bpm: 150, inst: 'marimba', vol: 0.4, notes: [['F4', 1], ['A4', 1], ['C5', 1], ['F5', 2], ['E5', 1], ['C5+F5', 4]] }
+  ];
+  const J_LOSE = [{ bpm: 104, inst: 'marimba', vol: 0.4, notes: [['A4', 1], ['G4', 1], ['F4', 1], ['D4', 2], ['E4', 1], ['C4', 4]], bass: [['Bb2', 3, 0], ['C3', 2, 3], ['F2', 4, 6]], bassVol: 0.22 }];
+  const J_DRAW = [{ bpm: 120, inst: 'marimba', vol: 0.4, notes: [['C5', 1], ['A4', 1], ['Bb4', 1], ['G4', 1], ['C5', 3]], bass: [['C3', 7, 0]], bassVol: 0.2 }];
+  function playSong(s) { if (!M) return; M.setVolume(s === SONG_PLAY ? 0.34 : 0.28); M.play(s); }
+
+  // 緊張程度：有人下一步就能連線，或棋盤 80% 滿
+  function winsAt(b, V, c, r, who) {
+    for (let d = 0; d < 4; d++) {
+      const dc = DIRS[d][0], dr = DIRS[d][1];
+      let n = 1;
+      for (let k = 1; k < V.N; k++) { const x = c + dc * k, y = r + dr * k; if (x < 0 || x >= V.W || y < 0 || y >= V.H || b[x * V.H + y] !== who) break; n++; }
+      for (let k = 1; k < V.N; k++) { const x = c - dc * k, y = r - dr * k; if (x < 0 || x >= V.W || y < 0 || y >= V.H || b[x * V.H + y] !== who) break; n++; }
+      if (n >= V.N) return true;
+    }
+    return false;
+  }
+  let tense = false;
+  function updateTension() {
+    if (!M) return;
+    let on = false;
+    if (S.screen === 'play' && !S.over && S.replay < 0) {
+      const V = S.V, b = S.board;
+      let filled = 0;
+      for (let c = 0; c < V.W; c++) {
+        const h = heightOf(b, V, c); filled += h;
+        if (!on && h < V.H && (winsAt(b, V, c, h, 1) || winsAt(b, V, c, h, 2))) on = true;
+      }
+      if (filled >= V.W * V.H * 0.8) on = true;
+      M.setTempo(filled >= V.W * V.H - 6 ? 1.06 : 1);
+    } else M.setTempo(1);
+    if (on && !tense) sfx('c4_threat');
+    tense = on;
+    M.setLayer('tension', on);
+  }
+  // 聲音開關（標題與暫停選單）
+  function refreshSnd() {
+    for (const id of ['tSnd', 'pSnd']) for (const b of $(id).querySelectorAll('button')) {
+      const mus = b.dataset.k === 'music', on = mus ? (M ? M.isEnabled() : false) : sfxOn;
+      b.classList.toggle('on', on);
+      b.textContent = (mus ? '音樂 ' : '音效 ') + (on ? '開' : '關');
+    }
+  }
+  for (const id of ['tSnd', 'pSnd']) for (const b of $(id).querySelectorAll('button')) {
+    b.addEventListener('click', () => {
+      if (b.dataset.k === 'music') { if (M) M.setEnabled(!M.isEnabled()); } else { sfxOn = !sfxOn; store.set('c4:sfx', sfxOn); }
+      refreshSnd(); uiTap();
+    });
+  }
+  // 電腦思考時的滴答聲（在主迴圈裡檢查，不另外開計時器）
+  let thinkNext = 0, thinkK = 0;
+  function thinkTick(t) {
+    if (!S.thinking || (S.aiPending && S.aiPending.aim) || S.paused || S.screen !== 'play') { thinkNext = t + 250; return; }
+    if (t < thinkNext) return;
+    thinkNext = t + 380;
+    sfx('c4_think', { pitch: (thinkK++ & 1) ? 0.84 : 1, exact: true });
   }
 
   /* ---------------- 動畫：棋子落下、彈出、粒子、震動 ---------------- */
@@ -1187,7 +1336,7 @@ function C4Engine(opt) {
         if (v > 3) {
           VEL[i] = -v * 0.27;
           if (!quietAnim) {
-            SFX.land(v);
+            SFX.land(v, Math.floor(i / H));
             if (v > 18) {
               const c = Math.floor(i / H), r = i % H;
               shake = Math.max(shake, G.c * 0.05 * clamp(v / 36, 0.3, 1));
@@ -1420,12 +1569,13 @@ function C4Engine(opt) {
     S.hover = Math.floor(V.W / 2); S.hx = colX(S.hover); S.aiHover = S.hover;
     S.screen = 'play';
     settleAll();
+    playSong(SONG_PLAY); tense = false;
     if (o.moves && o.moves.length) {
       for (const m of o.moves) { if (!doMove({ t: m.t, c: m.c }, { instant: true, noAI: true, noSave: true })) break; }
     } else SFX.start();
     S.kb = false;
     updateHUD();
-    saveGame();
+    saveGame(); updateTension();
     if (!S.over && isAI(S.turn)) scheduleAI();
   }
   function rebuild(n) {
@@ -1443,8 +1593,8 @@ function C4Engine(opt) {
     S.hint = null;
     if (!o.instant) {
       quietAnim = false;
-      if (m.t === 'd') animDrop(m.c, info.r);
-      else { animPop(m.c, p); SFX.pop(); KG.vibrate(20); }
+      if (m.t === 'd') { animDrop(m.c, info.r); SFX.slide(m.c); }
+      else { animPop(m.c, p); SFX.pop(m.c); KG.vibrate(20); }
     }
     const res = judge(b, V, m, p);
     if (res) S.over = { winner: res.winner, runs: res.runs, t: 0, why: 'line' };
@@ -1460,12 +1610,15 @@ function C4Engine(opt) {
     }
     if (S.over) { if (o.instant) S.over.t = 2; onGameEnd(o); }
     else if (!o.noSave) saveGame();
+    if (!o.instant) updateTension();
     updateHUD();
     if (!S.over && !o.noAI && isAI(S.turn)) scheduleAI();
     return true;
   }
   function onGameEnd(o) {
     store.set('c4:save', null);
+    tense = false;
+    if (M && !(o && o.instant)) M.stop(0.8);
     S.overShown = !!(o && o.instant);
     const w = S.over.winner;
     if (w) S.session[w]++;
@@ -1489,10 +1642,11 @@ function C4Engine(opt) {
     const cx = r.left + (G.bx + G.bw / 2) * r.width / VW, cy = r.top + (G.by + G.bh * 0.35) * r.height / VH;
     if (!w) SFX.draw();
     else if (S.mode === 'ai' && w !== S.human) { SFX.lose(); shake = G.c * 0.08; }
-    else { SFX.line(); SFX.win(); KG.confetti(cx, cy, KG.lowEnd ? 70 : 130); shake = G.c * 0.12; KG.vibrate(60); }
+    else { SFX.line(S.over.runs[0], S.V.H); SFX.win(); KG.confetti(cx, cy, KG.lowEnd ? 70 : 130); shake = G.c * 0.12; KG.vibrate(60); }
   }
   function showOver() {
     S.overShown = true;
+    playSong(SONG_TITLE);
     const w = S.over.winner, big = $('oBig');
     let title, cls = '';
     if (S.mode === 'ai') { title = !w ? '平手！' : w === S.human ? '你贏了！' : '電腦獲勝'; cls = !w ? '' : w === S.human ? 'win' : 'lose'; }
@@ -1571,7 +1725,7 @@ function C4Engine(opt) {
 
   /* ---------------- 玩家操作 ---------------- */
   function bad(c, msg) {
-    S.bad = { c, t: 0.45 }; SFX.bad(); KG.vibrate(30);
+    S.bad = { c, t: 0.45 }; SFX.bad(c); KG.vibrate(30);
     if (msg) KG.toast(msg);
   }
   function tryMove(m) {
@@ -1599,7 +1753,7 @@ function C4Engine(opt) {
     if (S.V.pop) { const rb = rebuild(0); let t = S.first; const b2 = rb.b; for (const m of S.hist) { applyRaw(b2, S.V, m, m.p); t = 3 - m.p; const k = posKey(b2, S.V, t); S.reps.set(k, (S.reps.get(k) || 0) + 1); } }
     S.undos++; S.hint = null;
     settleAll(); SFX.undo();
-    saveGame(); updateHUD();
+    saveGame(); updateHUD(); updateTension();
     if (isAI(S.turn)) scheduleAI();
   }
   function hint() {
@@ -1631,8 +1785,8 @@ function C4Engine(opt) {
     if (animate && k === S.replay + 1) {
       const m = S.hist[k - 1], info = applyRaw(S.rb, S.V, m, m.p);
       quietAnim = false;
-      if (m.t === 'd') animDrop(m.c, info.r); else { animPop(m.c, m.p); SFX.pop(); }
-    } else { S.rb = rebuild(k).b; settleAll(); SFX.hover(); }
+      if (m.t === 'd') animDrop(m.c, info.r); else { animPop(m.c, m.p); SFX.pop(m.c); }
+    } else { S.rb = rebuild(k).b; settleAll(); SFX.page(); }
     S.replay = k;
     if (k >= S.hist.length) S.rPlay = false;
     updateHUD();
@@ -1666,7 +1820,7 @@ function C4Engine(opt) {
     if (c < 0 || !z) return;
     if (!canHumanAct()) return;
     drag = { id: e.pointerId, zone: z, col: c };
-    if (S.hover !== c || S.hoverZone !== z) SFX.pick();
+    if (S.hover !== c || S.hoverZone !== z) SFX.pick(c);
     S.hover = c; S.hoverZone = z;
     try { cv.setPointerCapture(e.pointerId); } catch (er) { /* 忽略 */ }
     e.preventDefault();
@@ -1676,14 +1830,14 @@ function C4Engine(opt) {
     const p = toLocal(e);
     if (drag && e.pointerId === drag.id) {
       const c = colAt(p.x);
-      if (c !== drag.col && c >= 0) SFX.hover();
+      if (c !== drag.col && c >= 0) SFX.hover(c);
       drag.col = c;
       if (c >= 0) S.hover = c;
       return;
     }
     if (e.pointerType === 'mouse') {
       const c = colAt(p.x), z = zoneAt(p.y);
-      if (c >= 0 && z) { if ((c !== S.hover || z !== S.hoverZone) && canHumanAct()) SFX.hover(); S.hover = c; S.hoverZone = z; S.kb = false; }
+      if (c >= 0 && z) { if ((c !== S.hover || z !== S.hoverZone) && canHumanAct()) SFX.hover(c); S.hover = c; S.hoverZone = z; S.kb = false; }
     }
   });
   function endDrag(e, cancel) {
@@ -1715,7 +1869,7 @@ function C4Engine(opt) {
     if (k === 'ArrowLeft' || k === 'ArrowRight') {
       S.kb = true; S.hoverZone = 'drop';
       S.hover = clamp((S.hover < 0 ? Math.floor(V.W / 2) : S.hover) + (k === 'ArrowLeft' ? -1 : 1), 0, V.W - 1);
-      SFX.hover(); e.preventDefault(); return;
+      SFX.hover(S.hover); e.preventDefault(); return;
     }
     if (k === 'Enter' || k === ' ') { if (S.hover >= 0) tryMove({ t: 'd', c: S.hover }); e.preventDefault(); return; }
     if (/^[1-9]$/.test(k) && +k <= V.W) { S.hover = +k - 1; S.hoverZone = 'drop'; tryMove({ t: 'd', c: +k - 1 }); e.preventDefault(); return; }
@@ -1729,7 +1883,7 @@ function C4Engine(opt) {
   function bindSeg(id, fn) {
     $(id).addEventListener('click', e => {
       const b = e.target.closest('button'); if (!b) return;
-      KG.sound('click');
+      uiTap();
       for (const x of $(id).children) x.classList.toggle('on', x === b);
       fn(b.dataset.v);
     });
@@ -1760,7 +1914,7 @@ function C4Engine(opt) {
   function showTitle() {
     cancelAI(); hideAll();
     S.screen = 'title'; S.replay = -1; S.over = null; S.paused = false;
-    refreshTitle();
+    refreshTitle(); refreshSnd(); playSong(SONG_TITLE);
     $('title').classList.remove('hide');
     startDemo();
     updateHUD();
@@ -1771,8 +1925,8 @@ function C4Engine(opt) {
   bindSeg('segLv', v => { prefs.level = +v; savePrefs(); refreshTitle(); });
   bindSeg('segFirst', v => { prefs.first = v; savePrefs(); refreshTitle(); });
   bindSeg('segPFirst', v => { prefs.pfirst = +v; savePrefs(); refreshTitle(); });
-  $('tStart').addEventListener('click', () => { KG.sound('click'); startGame(titleOpts()); });
-  $('tResume').addEventListener('click', () => { KG.sound('click'); resumeSaved(); });
+  $('tStart').addEventListener('click', () => { uiTap(); startGame(titleOpts()); });
+  $('tResume').addEventListener('click', () => { uiTap(); resumeSaved(); });
   function resumeSaved() {
     const sv = store.get('c4:save', null);
     if (!sv || !VARIANTS[sv.v]) return false;
@@ -1782,10 +1936,10 @@ function C4Engine(opt) {
   let helpBack = null;
   function showHelp(back) { helpBack = back; $('helpOv').classList.remove('hide'); drawHelpFigs(); }
   function hideHelp() { $('helpOv').classList.add('hide'); if (helpBack) helpBack(); helpBack = null; }
-  $('tHelp').addEventListener('click', () => { KG.sound('click'); showHelp(null); });
-  $('helpClose').addEventListener('click', () => { KG.sound('click'); hideHelp(); });
-  $('tStats').addEventListener('click', () => { KG.sound('click'); showStats(); });
-  $('statClose').addEventListener('click', () => { KG.sound('click'); $('statOv').classList.add('hide'); });
+  $('tHelp').addEventListener('click', () => { uiTap(); showHelp(null); });
+  $('helpClose').addEventListener('click', () => { uiTap(); hideHelp(); });
+  $('tStats').addEventListener('click', () => { uiTap(); showStats(); });
+  $('statClose').addEventListener('click', () => { uiTap(); $('statOv').classList.add('hide'); });
   function showStats() {
     const rows = [];
     const cell = (v, k) => { const s = statOf(v, k); return '<td><b>' + s.w + '</b>-' + s.l + '-' + s.d + '</td>'; };
@@ -1800,27 +1954,27 @@ function C4Engine(opt) {
     if (on === S.paused) return;
     S.paused = on;
     $('pauseOv').classList.toggle('hide', !on);
-    setSeg('pMusic', prefs.music ? 'on' : 'off');
+    refreshSnd();
+    if (M) { if (on) M.pause(); else M.resume(); }
     if (!on && S.over && !S.overShown && S.over.t > 1.6) showOver();
   }
-  $('bPause').addEventListener('click', () => { KG.sound('click'); togglePause(true); });
-  $('pResume').addEventListener('click', () => { KG.sound('click'); togglePause(false); });
-  $('pRestart').addEventListener('click', () => { KG.sound('click'); S.paused = false; newGame(); });
-  $('pHelp').addEventListener('click', () => { KG.sound('click'); $('pauseOv').classList.add('hide'); showHelp(() => $('pauseOv').classList.remove('hide')); });
-  $('pQuit').addEventListener('click', () => { KG.sound('click'); saveGame(); showTitle(); });
-  bindSeg('pMusic', v => { prefs.music = v === 'on'; savePrefs(); });
-  $('oAgain').addEventListener('click', () => { KG.sound('click'); newGame(); });
-  $('oReplay').addEventListener('click', () => { KG.sound('click'); enterReplay(); });
-  $('oTitle').addEventListener('click', () => { KG.sound('click'); showTitle(); });
+  $('bPause').addEventListener('click', () => { uiTap(); togglePause(true); });
+  $('pResume').addEventListener('click', () => { uiTap(); togglePause(false); });
+  $('pRestart').addEventListener('click', () => { uiTap(); S.paused = false; newGame(); });
+  $('pHelp').addEventListener('click', () => { uiTap(); $('pauseOv').classList.add('hide'); showHelp(() => $('pauseOv').classList.remove('hide')); });
+  $('pQuit').addEventListener('click', () => { uiTap(); saveGame(); showTitle(); });
+  $('oAgain').addEventListener('click', () => { uiTap(); newGame(); });
+  $('oReplay').addEventListener('click', () => { uiTap(); enterReplay(); });
+  $('oTitle').addEventListener('click', () => { uiTap(); showTitle(); });
   $('cUndo').addEventListener('click', () => undo());
   $('cHint').addEventListener('click', () => hint());
-  $('cReplay').addEventListener('click', () => { KG.sound('click'); enterReplay(); });
+  $('cReplay').addEventListener('click', () => { uiTap(); enterReplay(); });
   $('rFirst').addEventListener('click', () => { S.rPlay = false; replayTo(0); });
   $('rPrev').addEventListener('click', () => { S.rPlay = false; replayTo(S.replay - 1); });
   $('rNext').addEventListener('click', () => { S.rPlay = false; replayTo(S.replay + 1, true); });
   $('rLast').addEventListener('click', () => { S.rPlay = false; replayTo(S.hist.length); });
-  $('rPlay').addEventListener('click', () => { KG.sound('click'); if (S.replay >= S.hist.length) replayTo(0); S.rPlay = !S.rPlay; S.rTimer = now() + 200; updateHUD(); });
-  $('rExit').addEventListener('click', () => { KG.sound('click'); exitReplay(); });
+  $('rPlay').addEventListener('click', () => { uiTap(); if (S.replay >= S.hist.length) replayTo(0); S.rPlay = !S.rPlay; S.rTimer = now() + 200; updateHUD(); });
+  $('rExit').addEventListener('click', () => { uiTap(); exitReplay(); });
 
   // 說明頁的小圖
   function drawMini(id, W, H, cells, opt) {
@@ -1896,6 +2050,7 @@ function C4Engine(opt) {
     let dt = (t - last) / 1000; last = t;
     if (dt > 0.05) dt = 0.05; if (dt < 0) dt = 0;
     T += dt;
+    thinkTick(t);
     if (!S.paused) {
       physics(dt);
       if (S.bad) { S.bad.t -= dt; if (S.bad.t <= 0) S.bad = null; }
@@ -1984,7 +2139,6 @@ function C4Engine(opt) {
   layout();
   showTitle();
   requestAnimationFrame(t => { last = t; loop(t); });
-  setTimeout(musicTick, 1200);
 })();
 </script>
 </body>

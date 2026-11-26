@@ -167,6 +167,7 @@
     <div class="seg big" id="segMode"><button data-v="ai">對弈電腦</button><button data-v="pvp">雙人對弈</button><button data-v="puzzle">殘局挑戰</button></div>
     <div class="frow" id="rowSide"><label>執子</label><div class="seg" id="segSide"><button data-v="0">執紅先行</button><button data-v="1">執黑後走</button></div></div>
     <div class="frow" id="rowDiff"><label>難度</label><div class="seg" id="segDiff"><button data-v="easy">入門</button><button data-v="normal">普通</button><button data-v="hard">困難</button><button data-v="master">大師</button></div></div>
+    <div class="frow"><label>聲音</label><div class="seg tog" id="tSnd"><button data-k="m">音樂 開</button><button data-k="s">音效 開</button></div></div>
     <div class="tbtns"><button class="gbtn pri" id="tStart">開始對局</button><button class="gbtn hide" id="tResume">繼續上局</button></div>
     <div class="rec" id="tRec"></div>
     <div class="tips">點選棋子後點選落點，或直接拖曳。鍵盤：方向鍵移動游標・Enter 選取/落子・U 悔棋・H 提示・F 翻轉・P 選單</div>
@@ -183,7 +184,7 @@
 <div id="pauseOv" class="ov hide">
   <div class="card glass pcard">
     <h2>暫停</h2>
-    <div class="frow"><label>背景音樂</label><div class="seg" id="pMusic"><button data-v="on">開</button><button data-v="off">關</button></div></div>
+    <div class="frow"><label>聲音</label><div class="seg tog" id="pSnd"><button data-k="m">音樂 開</button><button data-k="s">音效 開</button></div></div>
     <div class="frow"><label>落點提示</label><div class="seg" id="pDots"><button data-v="on">顯示</button><button data-v="off">隱藏</button></div></div>
     <div class="stat" id="pStats"></div>
     <div class="acts">
@@ -219,6 +220,7 @@
   </div>
 </div>
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
 <script>
 /*ENGINE-START*/
 function XQEngine() {
@@ -916,7 +918,7 @@ function moveToChinese(E, mv) {
   for (const k of DIFF_KEYS) if (!stats[k]) stats[k] = { w: 0, l: 0, d: 0 };
   if (!stats.pz) stats.pz = {};
   if (!stats.pvp) stats.pvp = 0;
-  const prefs = Object.assign({ mode: 'ai', side: 0, diff: 'normal', music: true, dots: true }, store.get('xq:prefs', {}));
+  const prefs = Object.assign({ mode: 'ai', side: 0, diff: 'normal', dots: true }, store.get('xq:prefs', {}));
   function savePrefs() { store.set('xq:prefs', prefs); }
   function saveStats() { store.set('xq:stats', stats); }
 
@@ -1355,37 +1357,143 @@ function moveToChinese(E, mv) {
     animating = draw(t);
   }
 
-  // ---------------- 音效 ----------------
-  const snd = {
-    select() { KG.note(1250, 0.03, 'triangle', 0.05); KG.note(520, 0.05, 'sine', 0.08, 0, 420); },
-    clack() { KG.note(1900, 0.02, 'square', 0.035); KG.note(780, 0.06, 'triangle', 0.22, 0, 260); KG.note(190, 0.09, 'sine', 0.28, 0, 110); },
-    capture() { KG.sound('hit'); KG.note(140, 0.18, 'sine', 0.32, 0, 60); KG.note(1500, 0.03, 'square', 0.05, 0.015); KG.note(620, 0.07, 'triangle', 0.18, 0.02, 220); },
-    check() { const f = 880; KG.note(f, 1.6, 'sine', 0.1); KG.note(f * 2.76, 0.9, 'sine', 0.035); KG.note(f * 5.4, 0.4, 'sine', 0.02); KG.note(f / 2, 1.8, 'sine', 0.05, 0.01); },
-    win() { [392, 440, 523, 587, 659, 784].forEach((f, i) => KG.note(f, 0.55, 'triangle', 0.12, i * 0.13)); KG.note(1047, 1.4, 'sine', 0.09, 0.8); KG.note(523, 1.6, 'sine', 0.06, 0.8); },
-    lose() { [440, 392, 330, 294, 220].forEach((f, i) => KG.note(f, 0.7, 'triangle', 0.11, i * 0.22)); KG.note(147, 1.6, 'sine', 0.08, 1.0); },
-    draw() { [330, 392, 330, 294].forEach((f, i) => KG.note(f, 0.6, 'triangle', 0.1, i * 0.2)); },
-    bad() { KG.note(240, 0.08, 'triangle', 0.08, 0, 180); }
-  };
-  // 古琴風背景音樂（五聲音階）
-  const SCALE = [146.83, 174.61, 196.0, 220.0, 261.63, 293.66, 349.23, 392.0, 440.0, 523.25];
-  let musicT = 0, mIdx = 4, mStep = 0;
-  function musicTick() {
-    clearTimeout(musicT);
-    if (!prefs.music || document.hidden || S.paused) { musicT = setTimeout(musicTick, 800); return; }
-    if (!KG.isMuted()) {
-      mStep++;
-      if (mStep % 16 === 1) KG.note(73.42, 4.5, 'sine', 0.05);
-      if (mStep % 16 === 9) KG.note(110, 4, 'sine', 0.035);
-      if (Math.random() < 0.82) {
-        mIdx = clamp(mIdx + [-2, -1, -1, 1, 1, 2, 0][Math.floor(Math.random() * 7)], 0, SCALE.length - 1);
-        const f = SCALE[mIdx];
-        if (Math.random() < 0.18) KG.note(f, 1.4, 'triangle', 0.045, 0, f * (Math.random() < 0.5 ? 1.06 : 0.95));
-        else { KG.note(f, 1.8, 'triangle', 0.05); KG.note(f * 2, 0.8, 'sine', 0.014); }
-        if (Math.random() < 0.2) KG.note(SCALE[clamp(mIdx - 3, 0, 9)], 1.6, 'triangle', 0.03, 0.02);
-      }
-    }
-    musicT = setTimeout(musicTick, [620, 620, 930, 1240, 620, 1550][Math.floor(Math.random() * 6)]);
+  // ---------------- 聲音（共用引擎 kg-music.js） ----------------
+  const M = KG.music, SN = KG.sfx;
+  let sfxOn = store.get('xq:sfx', true) !== false;
+  const sfxLast = Object.create(null);
+  const panX = x => clamp(x / Math.max(1, W) * 2 - 1, -1, 1) * 0.6;
+  /** 播放音效：同一種 40 ms 內只播一次、音高隨機 ±4%、依畫面位置左右聲道 */
+  function sfx(name, pitch, vol, pan) {
+    if (!sfxOn || !SN) return;
+    const t = performance.now();
+    if (t - (sfxLast[name] || 0) < 40) return;
+    sfxLast[name] = t;
+    const p = (pitch || 1) * (0.96 + Math.random() * 0.08);
+    if (vol == null && !pan) SN.play(name, { pitch: p }); else SN.play(name, { pitch: p, vol: vol == null ? 1 : vol, pan: pan || 0 });
   }
+  function jingle(def) { if (sfxOn && M) M.jingle(def); }
+  // 自己組合的樂器（用引擎內建的聲音疊出來）
+  if (M && M.INST && !M.INST.xqZheng) {
+    const I = M.INST;
+    // 古箏：撥弦＋拇指琴的亮起音
+    I.xqZheng = (f, t, d, v, out) => { I.pluck(f, t, d, v * 0.85, out); I.kalimba(f, t, d, v * 0.45, out); };
+    // 像二胡的拉弦：弦樂＋一點氣音
+    I.xqErhu = (f, t, d, v, out) => { I.strings(f, t, d, v, out); I.flute(f, t, d, v * 0.28, out); };
+    // 鑼：低鼓往下滑＋低音鐘＋一點鈸
+    I.xqGong = (f, t, d, v, out) => { I.tom(f, t, d, v * 0.7, out); I.bell(f * 2.02, t, d, v * 0.5, out); I.crash(0, t, d, v * 0.25, out); };
+  }
+  if (SN) {
+    // 拿起木頭棋子
+    SN.define('xq_pick', (p, s) => { s.noise(0.025, { vol: 0.16, freq: 2800 * p, q: 3 }); s.tone(1250 * p, 0.035, { type: 'triangle', vol: 0.05 }); s.tone(520 * p, 0.05, { vol: 0.08, slide: 420 * p }); });
+    // 在棋盤上推過去
+    SN.define('xq_slide', (p, s) => { s.noise(0.16, { vol: 0.08, freq: 900 * p, sweep: 520 * p, q: 0.9 }); });
+    // 落子：木頭敲木頭的「喀」
+    SN.define('xq_place', (p, s) => { s.noise(0.02, { vol: 0.2, freq: 2400 * p, q: 4 }); s.tone(780 * p, 0.07, { type: 'triangle', vol: 0.2, slide: 270 * p }); s.tone(190 * p, 0.1, { vol: 0.26, slide: 110 * p }); });
+    // 吃子：兩顆棋子撞在一起，比較重
+    SN.define('xq_capture', (p, s) => {
+      s.noise(0.03, { vol: 0.28, freq: 2000 * p, q: 3 }); s.tone(820 * p, 0.06, { type: 'triangle', vol: 0.2, slide: 300 * p });
+      s.noise(0.03, { vol: 0.2, freq: 1500 * p, q: 3, delay: 0.035 }); s.tone(140 * p, 0.2, { vol: 0.38, slide: 58 * p, delay: 0.02 });
+      s.noise(0.14, { vol: 0.12, freq: 600 * p, type: 'lowpass', delay: 0.02 });
+    });
+    // 將軍：一聲鑼加低鼓
+    SN.define('xq_check', (p, s) => {
+      s.tone(98 * p, 0.3, { vol: 0.34, slide: 60 * p }); s.tone(440 * p, 1.3, { vol: 0.09 }); s.tone(440 * 2.76 * p, 0.7, { vol: 0.03 }); s.tone(220 * p, 1.5, { vol: 0.06, delay: 0.01 });
+      s.noise(0.5, { vol: 0.05, freq: 3200 * p, type: 'highpass' });
+    });
+    SN.define('xq_bad', (p, s) => { s.tone(240 * p, 0.09, { type: 'triangle', vol: 0.12, slide: 180 * p }); s.tone(170 * p, 0.11, { type: 'triangle', vol: 0.08, delay: 0.07 }); });
+    SN.define('xq_undo', (p, s) => { s.noise(0.14, { vol: 0.08, freq: 2400 * p, sweep: 700 * p, q: 1.2 }); s.tone(700 * p, 0.08, { type: 'triangle', vol: 0.1, slide: 440 * p }); });
+    SN.define('xq_hint', (p, s) => { [880, 1175, 1480].forEach((f, i) => s.tone(f * p, 0.18, { vol: 0.07, delay: i * 0.05 })); });
+    SN.define('xq_flip', (p, s) => { s.noise(0.3, { vol: 0.1, freq: 500 * p, sweep: 2200 * p, q: 1 }); });
+  }
+  const snd = {
+    tap() { sfx('click'); },
+    select(x) { sfx('xq_pick', 1, null, x != null ? panX(x) : 0); },
+    slide(x) { sfx('xq_slide', 1, null, x != null ? panX(x) : 0); },
+    clack(x) { sfx('xq_place', 1, null, x != null ? panX(x) : 0); },
+    capture(x) { sfx('xq_capture', 1, 1.1, x != null ? panX(x) : 0); },
+    check() { sfx('xq_check'); },
+    bad() { sfx('xq_bad'); },
+    undo() { sfx('xq_undo'); },
+    hint() { sfx('xq_hint'); },
+    flip() { sfx('xq_flip'); },
+    start() { jingle({ bpm: 220, inst: 'xqZheng', vol: 0.36, notes: [['F#4', 1], ['C#5', 1], ['F#5', 3]], bass: [['F#2', 5, 0]], bassVol: 0.22 }); },
+    win() {
+      jingle({ bpm: 132, inst: 'brass', vol: 0.26, notes: [['F4', 1], ['G4', 1], ['Bb4', 1], ['C5', 1], ['D5', 2], ['F5', 1], ['D5', 1], ['Bb4+D5+F5', 5]], bass: [['Bb2', 4, 0], ['F2', 4, 4], ['Bb2', 6, 8]], bassVol: 0.3 });
+      jingle({ bpm: 132, inst: 'xqZheng', vol: 0.32, notes: [['D5', 1], ['F5', 1], ['G5', 1], ['F5', 1], ['Bb5', 2], ['G5', 1], ['F5', 1], ['D5+Bb5', 5]] });
+    },
+    lose() { jingle({ bpm: 92, inst: 'xqZheng', vol: 0.36, notes: [['C#5', 2], ['B4', 1], ['A4', 1], ['E4', 2], ['F#4', 4]], bass: [['B2', 4, 0], ['F#2', 6, 4]], bassVol: 0.2 }); },
+    draw() { jingle({ bpm: 110, inst: 'xqZheng', vol: 0.34, notes: [['A4', 1], ['B4', 1], ['C#5', 2], ['B4', 1], ['A4', 3]], bass: [['A2', 8, 0]], bassVol: 0.2 }); }
+  };
+
+  // ---------------- 背景音樂 ----------------
+  // ==== 曲子 ====
+  // 標題：〈點將〉降 B 宮調五聲（Bb C D F G）76 bpm，低沉戰鼓、銅管號角、古箏刮奏、開頭一聲鑼
+  const MEL_T = [
+    'F4 - Bb4 - D5 - - .', 'C5 - Bb4 - G4 - - .', 'G4 - C5 - D5 - G5 -', 'F5 - - - C5 - - .',
+    'D5 - F5 - G5 - F5 D5', 'C5 - - D5 Bb4 - G4 .', 'F4 - Bb4 - C5 - - .', 'Bb4 - - - - - . .'
+  ];
+  const SONG_TITLE = {
+    bpm: 76, steps: 16, swing: 0,
+    chords: ['Bb6', 'Gm7', 'Csus2', 'Fsus4', 'Bb6', 'Gm7', 'Fsus4', 'Bb6'],
+    tracks: [
+      { inst: 'xqGong', seq: ['Bb2 . . . . . . .', '', '', '', '', '', '', ''], vol: 0.7 },
+      { inst: 'tom', pat: 'X.......x...x...', pitch: 82, vol: 0.55 },
+      { inst: 'tom', pat: ['..............x.', '..........x.x.x.'], pitch: 130, vol: 0.28 },
+      { inst: 'sub', chord: 'R.......5.......', vol: 0.45 },
+      { inst: 'pad', chord: 'hold', vol: 0.35 },
+      { inst: 'xqZheng', arp: 'updown', rate: 2, oct: 4, vol: 0.36 },
+      { inst: 'brass', seq: MEL_T, vol: 0.75 },
+      { inst: 'flute', seq: ['', '', '', '', MEL_T[4], MEL_T[5], MEL_T[6], MEL_T[7]], vol: 0.3 }
+    ]
+  };
+  // 對局：〈楚河漢界〉升 F 羽調五聲（F# A B C# E）90 bpm，古箏分解和弦、二胡般的旋律、木魚；將軍或殘局時加心跳鼓、低音銅管
+  const MEL_P = [
+    'C#5 - - E5 F#5 - E5 C#5', 'B4 - A4 - - - . .', 'F#4 - A4 B4 C#5 - B4 .', 'A4 - - - F#4 - - .',
+    'E5 - F#5 E5 C#5 - B4 .', 'C#5 - E5 - A5 - F#5 E5', 'F#5 - - E5 C#5 - B4 A4', 'B4 - - - - - . .',
+    'F#5 - - A5 F#5 - E5 C#5', 'E5 - - - B4 - C#5 E5', 'C#5 - B4 A4 F#4 - A4 .', 'B4 - - - E4 - F#4 .',
+    'A4 - C#5 - E5 - F#5 -', 'E5 - C#5 - A4 - B4 C#5', 'B4 - - A4 F#4 - E4 .', 'F#4 - - - - - . .'
+  ];
+  const SONG_PLAY = {
+    bpm: 90, steps: 16, swing: 0.04,
+    chords: ['F#m7', 'A6', 'Bsus4', 'F#m7', 'Esus2', 'A6', 'Bsus4', 'Esus4', 'F#m7', 'Bsus4', 'A6', 'Esus2', 'F#m7', 'A6', 'Bsus4', 'F#m7'],
+    layers: { tension: false },
+    tracks: [
+      { inst: 'sub', chord: 'R.......R...5...', vol: 0.5 },
+      { inst: 'pad', chord: 'hold', vol: 0.3 },
+      { inst: 'xqZheng', arp: 'up', rate: 2, oct: 4, vol: 0.3 },
+      { inst: 'xqErhu', seq: MEL_P, vol: 0.85 },
+      { inst: 'rim', pat: 'x.......x...x...', vol: 0.3 },
+      { inst: 'tom', pat: 'x...x...........', pitch: 70, layer: 'tension', vol: 0.6 },
+      { inst: 'brass', chord: 'R-------5-------', oct: 3, layer: 'tension', vol: 0.3 },
+      { inst: 'shaker', pat: 'x.x.x.x.x.x.x.x.', layer: 'tension', vol: 0.32 }
+    ]
+  };
+  // ==== 曲子結束 ====
+  let mood = -1;
+  function musicTitle() { if (M) { M.play(SONG_TITLE); M.setVolume(0.55); mood = -1; } }
+  function musicPlay() { if (M) { M.play(SONG_PLAY, { restart: true }); M.setVolume(0.45); mood = -1; musicMood(); } }
+  /** 被將軍時加緊張層並稍微加快；子力很少的殘局也加緊張層 */
+  function musicMood() {
+    if (!M || S.screen !== 'play' || S.over) return;
+    let n = 0;
+    for (let i = 0; i < 256; i++) if (E.B[i]) n++;
+    const m = E.inCheck() ? 2 : n <= 12 ? 1 : 0;
+    if (m === mood) return;
+    mood = m;
+    M.setLayer('tension', m > 0);
+    M.setTempo(m > 1 ? 1.05 : 1);
+  }
+  function renderSnd() {
+    for (const id of ['tSnd', 'pSnd']) for (const b of $(id).children) {
+      const mus = b.dataset.k === 'm', on = mus ? (M ? M.isEnabled() : false) : sfxOn;
+      b.classList.toggle('on', on); b.textContent = (mus ? '音樂 ' : '音效 ') + (on ? '開' : '關'); b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+  }
+  for (const id of ['tSnd', 'pSnd']) for (const b of $(id).children) b.addEventListener('click', () => {
+    if (b.dataset.k === 'm') { if (M) M.setEnabled(!M.isEnabled()); }
+    else { sfxOn = !sfxOn; store.set('xq:sfx', sfxOn); }
+    snd.tap(); renderSnd();
+  });
 
   // ---------------- 對局流程 ----------------
   function startGame(opts) {
@@ -1405,6 +1513,7 @@ function moveToChinese(E, mv) {
     if (opts.moves) for (const s of opts.moves) { if (!applyQuiet(s)) break; }
     S.screen = 'play';
     showScreen();
+    musicPlay(); if (!opts.moves || !opts.moves.length) snd.start();
     buildStatic();
     updateUI();
     if (opts.moves && opts.moves.length) { const r = evalEnd(); if (r) { finish(r, true); return; } }
@@ -1439,10 +1548,11 @@ function moveToChinese(E, mv) {
     const x2 = sx(E.sqX(dst)), y2 = sy(E.sqY(dst));
     const effects = () => {
       if (cap) {
-        snd.capture(); burst(x2, y2, 18, !!(cap & 8)); shake = { t0: now(), amp: L.c * 0.07 };
+        snd.capture(x2); burst(x2, y2, 18, !!(cap & 8)); shake = { t0: now(), amp: L.c * 0.07 };
         KG.vibrate(25);
-      } else snd.clack();
+      } else snd.clack(x2);
       if (chk && !S.over) { banner = { text: '將軍！', t0: now(), dur: 1150 }; setTimeout(() => snd.check(), 60); }
+      musicMood();
       animating = true; dirty = true;
     };
     if (cap) pops.push({ p: cap, x: x2, y: y2, t0: now() + (opt.instant ? 0 : 200) });
@@ -1450,6 +1560,7 @@ function moveToChinese(E, mv) {
     else {
       const dist = Math.hypot(sx(E.sqX(src)) - x2, sy(E.sqY(src)) - y2);
       anim = { p, to: dst, x1: sx(E.sqX(src)), y1: sy(E.sqY(src)), x2, y2, t0: now(), dur: clamp(140 + dist * 0.55, 170, 360), done: effects };
+      snd.slide((sx(E.sqX(src)) + x2) / 2);
     }
     const res = evalEnd();
     if (res) finish(res);
@@ -1501,6 +1612,7 @@ function moveToChinese(E, mv) {
     if (silent) return;
     const humanLost = (S.mode === 'ai' || S.mode === 'puzzle') && res.winner !== -1 && res.winner !== (S.mode === 'puzzle' ? 0 : S.human);
     setTimeout(() => {
+      if (M) M.stop(0.6);
       if (res.winner === -1) snd.draw(); else if (humanLost) snd.lose(); else snd.win();
       const txt = res.winner === -1 ? '和' : humanLost ? '負' : '勝';
       banner = { text: res.reason === '挑戰失敗' ? '失敗' : res.reason === '長將判負' ? '長將' : res.reason === '和棋' ? '和棋' : res.reason === '困斃' ? '困斃' : res.reason === '認輸' ? '認輸' : (txt === '負' ? '絕殺' : '將死'), t0: now(), dur: 1300, col: res.winner === -1 ? '#3e4a42' : '#a8231c' };
@@ -1542,7 +1654,7 @@ function moveToChinese(E, mv) {
 
   function undo() {
     if (S.screen !== 'play' || S.over && S.mode !== 'puzzle') return;
-    if (S.over) { S.over = null; clearTimeout(S.overTimer); hideOv('overOv'); }
+    if (S.over) { S.over = null; clearTimeout(S.overTimer); hideOv('overOv'); musicPlay(); }
     cancelSearch(); clearTimeout(S.aiTimer); S.searchId++; S.thinking = false;
     const ai = aiSide();
     let popped = 0, humanPopped = false;
@@ -1556,7 +1668,7 @@ function moveToChinese(E, mv) {
     if (!popped) { snd.bad(); return; }
     S.undos++;
     S.sel = -1; S.selMoves = []; S.hint = null; anim = null; banner = null; pops.length = 0;
-    snd.select();
+    snd.undo(); mood = -1; musicMood();
     save(); updateUI(); dirty = true;
     maybeAI();
   }
@@ -1575,7 +1687,7 @@ function moveToChinese(E, mv) {
         const src = r.mv & 255;
         S.sel = src; S.selMoves = E.legalMoves().filter(m => (m & 255) === src);
         KG.toast('提示：' + moveToChinese(E, r.mv));
-        snd.select();
+        snd.hint();
         save();
       }
       updateUI(); animating = true; dirty = true;
@@ -1611,7 +1723,7 @@ function moveToChinese(E, mv) {
   }
   function flip() {
     if (S.screen !== 'play') return;
-    S.userFlip = !S.userFlip; buildStatic(); save(); updateUI(); dirty = true; snd.select();
+    S.userFlip = !S.userFlip; buildStatic(); save(); updateUI(); dirty = true; snd.flip();
   }
 
   // ---------------- 介面 ----------------
@@ -1725,11 +1837,12 @@ function moveToChinese(E, mv) {
     $('tRec').innerHTML = prefs.mode === 'puzzle'
       ? `殘局已破解 <b>${solved}</b> / ${PUZZLES.length}　累計 <b>${starSum}</b> 星`
       : prefs.mode === 'pvp' ? `雙人對局已完成 <b>${s.pvp}</b> 局` : `${DIFF[prefs.diff].name}戰績　<b>${tot(prefs.diff)}</b>`;
+    renderSnd(); musicTitle();
     showOv('title');
     dirty = true;
   }
   function setSeg(id, v) { $(id).querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === v)); }
-  function bindSeg(id, fn) { $(id).querySelectorAll('button').forEach(b => b.addEventListener('click', () => { setSeg(id, b.dataset.v); KG.sound('click'); fn(b.dataset.v); })); }
+  function bindSeg(id, fn) { $(id).querySelectorAll('button').forEach(b => b.addEventListener('click', () => { setSeg(id, b.dataset.v); snd.tap(); fn(b.dataset.v); })); }
 
   function showPuzzles() {
     const g = $('pzGrid'); g.innerHTML = '';
@@ -1738,7 +1851,7 @@ function moveToChinese(E, mv) {
       const b = document.createElement('button');
       b.className = 'lv' + (st ? ' done' : '');
       b.innerHTML = `<div class="no">第 ${i + 1} 局</div><div class="nm">${pz.name}</div><div class="ds">紅先${N_CN[pz.n]}步殺</div><div class="st">${[0, 1, 2].map(k => `<span class="${k < st ? '' : 'off'}">★</span>`).join('')}</div>`;
-      b.addEventListener('click', () => { KG.sound('click'); hideOv('pzOv'); startGame({ mode: 'puzzle', puzzle: i }); KG.toast(pz.tip); });
+      b.addEventListener('click', () => { snd.tap(); hideOv('pzOv'); startGame({ mode: 'puzzle', puzzle: i }); KG.toast(pz.tip); });
       g.appendChild(b);
     });
     showOv('pzOv');
@@ -1783,7 +1896,7 @@ function moveToChinese(E, mv) {
     else if (isPz) { const solved = Object.keys(stats.pz).length; os.innerHTML = `<span>已破解殘局</span><span>${solved} / ${PUZZLES.length}</span>`; os.classList.remove('hide'); }
     else os.classList.add('hide');
     const acts = $('oActs'); acts.innerHTML = '';
-    const btn = (text, cls2, fn) => { const b = document.createElement('button'); b.className = 'gbtn ' + (cls2 || ''); b.textContent = text; b.addEventListener('click', () => { KG.sound('click'); hideOv('overOv'); fn(); }); acts.appendChild(b); };
+    const btn = (text, cls2, fn) => { const b = document.createElement('button'); b.className = 'gbtn ' + (cls2 || ''); b.textContent = text; b.addEventListener('click', () => { snd.tap(); hideOv('overOv'); fn(); }); acts.appendChild(b); };
     if (isPz) {
       if (res.winner === 0 && S.pz < PUZZLES.length - 1) btn('下一題', 'pri', () => { startGame({ mode: 'puzzle', puzzle: S.pz + 1 }); KG.toast(PUZZLES[S.pz].tip); });
       btn(res.winner === 0 ? '再解一次' : '再試一次', res.winner === 0 ? '' : 'pri', () => startGame({ mode: 'puzzle', puzzle: S.pz }));
@@ -1800,8 +1913,9 @@ function moveToChinese(E, mv) {
   function togglePause(v) {
     if (S.screen !== 'play') return;
     S.paused = v == null ? !S.paused : v;
+    if (M) { if (S.paused) M.pause(); else M.resume(); }
     if (S.paused) {
-      setSeg('pMusic', prefs.music ? 'on' : 'off'); setSeg('pDots', prefs.dots ? 'on' : 'off');
+      renderSnd(); setSeg('pDots', prefs.dots ? 'on' : 'off');
       const s = stats;
       $('pStats').innerHTML = DIFF_KEYS.map(k => `<span>${DIFF[k].name}</span><span>${s[k].w}勝 ${s[k].l}負 ${s[k].d}和</span>`).join('') + `<span>殘局破解</span><span>${Object.keys(s.pz).length} / ${PUZZLES.length}</span>`;
       showOv('pauseOv');
@@ -1825,7 +1939,7 @@ function moveToChinese(E, mv) {
   function ownPiece(sq) { const p = E.B[sq]; return p && ((p & 8) ? 0 : 1) === E.sd; }
   function select(sq) {
     S.sel = sq; S.selMoves = E.legalMoves().filter(m => (m & 255) === sq);
-    snd.select(); dirty = true;
+    snd.select(sx(E.sqX(sq))); dirty = true;
   }
   function tapSquare(sq, isDrop) {
     if (!humanTurn()) return false;
@@ -1899,32 +2013,31 @@ function moveToChinese(E, mv) {
   });
 
   // 按鈕
-  $('cHint').addEventListener('click', () => { KG.sound('click'); hint(); });
+  $('cHint').addEventListener('click', () => { snd.tap(); hint(); });
   $('cUndo').addEventListener('click', () => undo());
   $('cFlip').addEventListener('click', () => flip());
-  $('cList').addEventListener('click', () => { KG.sound('click'); openList(); });
-  $('cDraw').addEventListener('click', () => { KG.sound('click'); offerDraw(); });
-  $('cResign').addEventListener('click', () => { KG.sound('click'); resign(); });
+  $('cList').addEventListener('click', () => { snd.tap(); openList(); });
+  $('cDraw').addEventListener('click', () => { snd.tap(); offerDraw(); });
+  $('cResign').addEventListener('click', () => { snd.tap(); resign(); });
   function openList() { renderList($('mlistOv')); showOv('listOv'); const el = $('mlistOv'); el.scrollTop = el.scrollHeight; }
-  $('lClose').addEventListener('click', () => { KG.sound('click'); hideOv('listOv'); });
-  $('cfNo').addEventListener('click', () => { KG.sound('click'); hideOv('cfOv'); cfYes = null; });
-  $('cfYes').addEventListener('click', () => { KG.sound('click'); hideOv('cfOv'); const f = cfYes; cfYes = null; if (f) f(); });
-  $('bPause').addEventListener('click', () => { KG.sound('click'); togglePause(); });
-  $('pResume').addEventListener('click', () => { KG.sound('click'); togglePause(false); });
-  $('pRestart').addEventListener('click', () => { KG.sound('click'); hideOv('pauseOv'); S.paused = false; startGame({ mode: S.mode, side: S.human, diff: S.diff, puzzle: S.pz }); });
-  $('pQuit').addEventListener('click', () => { KG.sound('click'); hideOv('pauseOv'); S.paused = false; cancelSearch(); S.searchId++; clearTimeout(S.aiTimer); save(); S.screen = 'title'; showScreen(); });
-  bindSeg('pMusic', v => { prefs.music = v === 'on'; savePrefs(); });
+  $('lClose').addEventListener('click', () => { snd.tap(); hideOv('listOv'); });
+  $('cfNo').addEventListener('click', () => { snd.tap(); hideOv('cfOv'); cfYes = null; });
+  $('cfYes').addEventListener('click', () => { snd.tap(); hideOv('cfOv'); const f = cfYes; cfYes = null; if (f) f(); });
+  $('bPause').addEventListener('click', () => { snd.tap(); togglePause(); });
+  $('pResume').addEventListener('click', () => { snd.tap(); togglePause(false); });
+  $('pRestart').addEventListener('click', () => { snd.tap(); hideOv('pauseOv'); S.paused = false; startGame({ mode: S.mode, side: S.human, diff: S.diff, puzzle: S.pz }); });
+  $('pQuit').addEventListener('click', () => { snd.tap(); hideOv('pauseOv'); S.paused = false; cancelSearch(); S.searchId++; clearTimeout(S.aiTimer); save(); S.screen = 'title'; showScreen(); });
   bindSeg('pDots', v => { prefs.dots = v === 'on'; savePrefs(); dirty = true; });
   bindSeg('segMode', v => { prefs.mode = v; savePrefs(); showTitle(); });
   bindSeg('segSide', v => { prefs.side = +v; savePrefs(); });
   bindSeg('segDiff', v => { prefs.diff = v; savePrefs(); showTitle(); });
   $('tStart').addEventListener('click', () => {
-    KG.sound('click');
+    snd.tap();
     if (prefs.mode === 'puzzle') { showPuzzles(); return; }
     startGame({ mode: prefs.mode, side: prefs.side, diff: prefs.diff });
   });
-  $('tResume').addEventListener('click', () => { KG.sound('click'); resumeSaved(); });
-  $('pzBack').addEventListener('click', () => { KG.sound('click'); hideOv('pzOv'); showTitle(); });
+  $('tResume').addEventListener('click', () => { snd.tap(); resumeSaved(); });
+  $('pzBack').addEventListener('click', () => { snd.tap(); hideOv('pzOv'); showTitle(); });
   function resumeSaved() {
     const sv = store.get('xq:save', null);
     if (!sv) return false;
@@ -1978,7 +2091,6 @@ function moveToChinese(E, mv) {
   layout();
   showTitle();
   requestAnimationFrame(loop);
-  setTimeout(musicTick, 1500);
 })();
 </script>
 </body>

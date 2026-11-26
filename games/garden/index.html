@@ -96,6 +96,30 @@
   .result p { font-size: 19px; font-weight: 800; margin: 4px 0 14px; color: #4a5a3a; }
   .unlock { display: inline-flex; align-items: center; gap: 8px; margin: -4px 0 12px; padding: 6px 14px; background: #fff3c4; border-radius: 999px; font-weight: 900; color: #a0620a; animation: kg-pop .5s .9s both; }
   #resPic { width: 200px; height: 110px; }
+  /* ===== 暫停鈕（右上 🔊 下面）與聲音開關 ===== */
+  #btnPause { position: fixed; top: 62px; right: 10px; z-index: 8100; width: 46px; height: 46px; border-radius: 50%; border: 3px solid #fff; padding: 0; cursor: pointer;
+    background: linear-gradient(180deg, #fffaf0, #ffe2a8); box-shadow: 0 4px 0 #c98a3c, 0 6px 12px rgba(60, 40, 10, .25); display: grid; place-items: center; touch-action: manipulation; }
+  #btnPause[hidden] { display: none; }
+  #btnPause svg { width: 20px; height: 20px; pointer-events: none; }
+  #btnPause:active { transform: translateY(2px) scale(.95); }
+  .snd { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  .snd .cbtn.off { --b1: #e8e2da; --b2: #b9ada0; --b3: #8a7d70; }
+  #pauseScr .panel { width: min(380px, 100%); }
+  #pauseScr .col { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  @media (max-height: 460px) {
+    #title .logo { font-size: clamp(44px, 20vh, 110px); }
+    #pauseScr .panel { padding: 12px 12px 14px; }
+    #pauseScr .panel h2 { margin: 0 0 8px; font-size: 24px; }
+    #pauseScr .col { gap: 8px; }
+    #resultScr { padding-top: 36px; padding-bottom: 8px; }
+    .result { padding-top: 34px; margin-top: 8px; }
+    #resPic { width: 128px; height: 70px; }
+    .bigstars { margin: 0 0 2px; }
+    .bigstars svg { width: 44px; height: 44px; }
+    .bigstars svg:nth-child(2) { width: 54px; height: 54px; margin-top: -6px; }
+    .result p { margin: 0 0 6px; font-size: 17px; }
+    .unlock { margin: 0 0 6px; }
+  }
 </style>
 </head>
 <body>
@@ -118,7 +142,20 @@
   <div class="tag">種種子、澆澆水，開出漂亮的花！</div>
   <div style="flex:2"></div>
   <button class="cbtn pulse" id="btnStart">開始玩</button>
+  <div class="snd"><button class="cbtn tiny blue tgM">音樂 開</button><button class="cbtn tiny blue tgS">音效 開</button></div>
   <div style="flex:.25"></div>
+</section>
+
+<button id="btnPause" hidden aria-label="暫停"><svg viewBox="0 0 20 20"><rect x="3.5" y="2" width="4.6" height="16" rx="1.6" fill="#7a4a1c"/><rect x="11.9" y="2" width="4.6" height="16" rx="1.6" fill="#7a4a1c"/></svg></button>
+<section class="scr dim" id="pauseScr" hidden>
+  <div class="panel">
+    <h2>休息一下</h2>
+    <div class="col">
+      <button class="cbtn small" id="pResume">繼續玩</button>
+      <div class="snd"><button class="cbtn tiny blue tgM">音樂 開</button><button class="cbtn tiny blue tgS">音效 開</button></div>
+      <button class="cbtn small pink" id="pMenu">回選單</button>
+    </div>
+  </div>
 </section>
 
 <section class="scr dim" id="select" hidden>
@@ -142,6 +179,7 @@
 </section>
 
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
 <script>
 'use strict';
 (function () {
@@ -214,23 +252,164 @@
   }
   addEventListener('resize', resize);
 
-  /* ======================= 背景音樂 ======================= */
-  const NOTE = n => 440 * Math.pow(2, (n - 69) / 12);
-  const BGM = (function () {
-    // G 大調 3/4 拍小圓舞曲
-    const mel = [79, 0, 83, 86, 0, 83, 81, 0, 79, 78, 0, 81, 79, 0, 76, 74, 0, 0, 76, 0, 79, 83, 0, 81, 79, 0, 78, 79, 0, 0];
-    const bass = [55, 50, 52, 50, 48, 50, 55, 55, 52, 50];
-    let timer = null, step = 0;
-    function tick() {
-      if (KG.isMuted() || document.hidden) { step++; return; }
-      const m = mel[step % mel.length];
-      if (m) KG.note(NOTE(m), 0.26, 'sine', 0.055);
-      if (step % 3 === 0) KG.note(NOTE(bass[(step / 3 | 0) % bass.length]), 0.4, 'triangle', 0.06);
-      else KG.note(NOTE(bass[(step / 3 | 0) % bass.length] + 16), 0.1, 'sine', 0.02);
-      step++;
-    }
-    return { start() { if (!timer) { step = 0; timer = setInterval(tick, 260); } }, stop() { clearInterval(timer); timer = null; } };
-  })();
+  /* ======================= 音樂與音效（kg-music.js） ======================= */
+  const M = KG.music, S = KG.sfx;
+  let sfxOn = KG.store.get('garden:sfx', true) !== false;
+  const sfxLast = Object.create(null);
+  const PO = { vol: 1, pitch: 1, pan: 0 };
+  /** 播放音效：同一種 40 ms 內只播一次、音高隨機 ±5%、依畫面左右 pan */
+  function sfx(name, o, gap) {
+    if (!sfxOn || !S || KG.isMuted()) return;
+    const now = performance.now();
+    if (now - (sfxLast[name] || -1e9) < (gap == null ? 40 : gap)) return;
+    sfxLast[name] = now;
+    PO.vol = o && o.vol != null ? o.vol : 1;
+    PO.pitch = (o && o.pitch || 1) * (o && o.exact ? 1 : 0.95 + Math.random() * 0.1);
+    PO.pan = o && o.pan || 0;
+    S.play(name, PO);
+  }
+  const panX = x => clamp((x / Math.max(1, W)) * 2 - 1, -1, 1) * 0.6;
+  const DEG = [0, 2, 4, 5, 7, 9, 11, 12, 14, 16];
+  const degPitch = n => Math.pow(2, DEG[clamp(n | 0, 0, DEG.length - 1)] / 12);
+  function jingle(def) { return (M && sfxOn) ? M.jingle(def) : 0; }
+  // 講話（KG.say）時把音樂調小，講完再恢復
+  let musicBase = 0.3, ducked = false, duckIv = 0, sayAt = 0;
+  function applyVol() { if (M) M.setVolume(ducked ? musicBase * 0.35 : musicBase); }
+  const rawSay = KG.say;
+  KG.say = function (text, rate) {
+    rawSay(text, rate);
+    if (KG.isMuted() || !window.speechSynthesis) return;
+    sayAt = performance.now();
+    if (!ducked) { ducked = true; applyVol(); }
+    if (!duckIv) duckIv = setInterval(() => {
+      const ss = window.speechSynthesis, el = performance.now() - sayAt;
+      if (el < 450 || (ss && (ss.speaking || ss.pending) && el < 15000)) return;
+      clearInterval(duckIv); duckIv = 0; ducked = false; applyVol();
+    }, 150);
+  };
+  function music(song) { if (!M || !song) return; musicBase = song.mv || 0.3; applyVol(); M.play(song); }
+
+  /*SONGS-BEGIN*/
+  // 標題／選關：印象派的晨間花園（長笛、豎琴般的分解和弦、弦樂墊底，沒有鼓），E 大調 80
+  const SONG_TITLE = {
+    bpm: 80, steps: 16, swing: 0.06, mv: 0.42,
+    chords: ['Emaj7', 'Amaj7', 'C#m7', 'Badd9', 'Emaj7', 'G#m7', 'Amaj7', 'Bsus4'],
+    tracks: [
+      { inst: 'pad', chord: 'hold', vol: 0.55 },
+      { inst: 'pluck', arp: 'updown', rate: 2, oct: 4, span: 2, vol: 0.34 },
+      { inst: 'sub', chord: 'R.......5.......', vol: 0.5 },
+      { inst: 'flute', vol: 0.8, seq: [
+        'G#4 - B4 D#5 E5 - - .', 'E5 - C#5 - B4 A4 G#4 -', 'G#4 - - B4 C#5 - E5 -', 'D#5 - C#5 B4 F#4 - - .',
+        'B4 - E5 - G#5 - F#5 E5', 'D#5 - - B4 F#5 - D#5 -', 'C#5 - E5 - A5 - G#5 E5', 'F#5 - - E5 B4 - - .'] },
+      { inst: 'bell', vol: 0.4, seq: ['', '. . . . . . E5 .', '', '. . . . . . D#5 .', '', '. . . . . . B4 .', '', '. . . . E5 . . .'] }
+    ]
+  };
+  // 遊戲中：晴天的罐子樂團小跳舞（班鳩琴、口哨長笛、洗衣板沙鈴、罐子低音），A 大調 108
+  const SONG_PLAY = {
+    bpm: 108, steps: 16, swing: 0.16, mv: 0.36,
+    chords: ['A', 'A', 'D', 'A', 'E7', 'E7', 'A', 'E7', 'D', 'D', 'A', 'F#m', 'B7', 'E7', 'A', 'A'],
+    layers: { bloom: false, finale: false },
+    tracks: [
+      { inst: 'sub', chord: 'R...5...R...5...', vol: 0.62 },
+      { inst: 'pluck', arp: 'up', rate: 2, oct: 4, span: 1, vol: 0.2 },
+      { inst: 'pluck', chord: '....3.......3...', oct: 4, vol: 0.3 },
+      { inst: 'pluck', chord: '....5.......5...', oct: 4, vol: 0.26 },
+      { inst: 'shaker', pat: 'xoxoxoxoxoxoxoxo', vol: 0.55 },
+      { inst: 'rim', pat: '....x.......x...', vol: 0.4 },
+      { inst: 'flute', vol: 0.85, seq: [
+        'E5 - C#5 E5 A5 - E5 .', 'F#5 E5 C#5 A4 B4 - . .', 'A4 - D5 F#5 A5 - F#5 D5', 'E5 - C#5 - A4 . . .',
+        'B4 - G#4 B4 D5 - B4 .', 'E5 D5 B4 G#4 E4 - . .', 'C#5 E5 A5 - G#5 F#5 E5 C#5', 'B4 - - . E5 - . .',
+        'F#5 - A5 F#5 D5 - . .', 'E5 F#5 E5 D5 A4 - . .', 'C#5 - E5 - A4 - C#5 E5', 'F#5 - E5 C#5 A4 - . .',
+        'D#5 - F#5 - B5 - A5 F#5', 'G#5 - E5 - D5 - B4 G#4', 'A4 C#5 E5 A5 G#5 E5 C#5 B4', 'A4 - - . . . . .'] },
+      { inst: 'marimba', arp: 'updown', rate: 4, oct: 5, span: 1, vol: 0.34, layer: 'bloom' },
+      { inst: 'ohat', pat: '..x...x...x...x.', vol: 0.3, layer: 'bloom' },
+      { inst: 'kick', pat: 'x.......x.......', vol: 0.5, layer: 'finale' },
+      { inst: 'bell', vol: 0.32, layer: 'finale', seq: ['A5 . . . . . . .', '', 'F#5 . . . . . . .', '', 'G#5 . . . . . . .', '', 'A5 . . . . . . .', '',
+        'A5 . . . . . . .', '', 'E5 . . . . . . .', '', 'F#5 . . . . . . .', '', 'C#6 . . . . . . .', ''] }
+    ]
+  };
+  const SONGS_CHECK = { title: { song: SONG_TITLE, scale: [4, 6, 8, 9, 11, 1, 3] }, play: { song: SONG_PLAY, scale: [9, 11, 1, 2, 4, 6, 8] } };
+  /*SONGS-END*/
+
+  if (S) {
+    S.define('g_tool', (p, s) => { s.tone(520 * p, 0.06, { type: 'triangle', vol: 0.16 }); s.noise(0.03, { vol: 0.1, freq: 1800 * p, q: 4 }); });
+    S.define('g_seedpick', (p, s) => { for (let i = 0; i < 5; i++) s.noise(0.025, { vol: 0.12, freq: (2500 + Math.random() * 2000) * p, q: 4, delay: i * 0.035 + Math.random() * 0.01 }); });
+    S.define('g_plant', (p, s) => {
+      s.tone(180 * p, 0.14, { vol: 0.3, slide: 90 });
+      s.noise(0.1, { vol: 0.16, freq: 700 * p, q: 1.2, type: 'lowpass' });
+      for (let i = 0; i < 3; i++) s.noise(0.02, { vol: 0.09, freq: 3000 + i * 400, q: 5, delay: 0.05 + i * 0.03 });
+    });
+    S.define('g_drip', (p, s) => { s.tone(1250 * p, 0.05, { vol: 0.05, slide: 520 * p }); });
+    S.define('g_gulp', (p, s) => {
+      s.tone(400 * p, 0.08, { vol: 0.14, slide: 800 * p });
+      s.tone(600 * p, 0.08, { vol: 0.14, slide: 1100 * p, delay: 0.07 });
+      s.tone(800 * p, 0.12, { vol: 0.13, slide: 1500 * p, delay: 0.14 });
+    });
+    S.define('g_grow', (p, s) => { s.tone(523 * p, 0.2, { type: 'triangle', vol: 0.15, slide: 784 * p }); s.tone(1046 * p, 0.24, { vol: 0.07, delay: 0.06, slide: 1568 * p }); });
+    S.define('g_bloom', (p, s) => {
+      s.tone(600 * p, 0.1, { vol: 0.16, slide: 1200 * p });
+      [1319, 1661, 1976, 2637].forEach((f, i) => s.tone(f * p, 0.3, { vol: 0.07, delay: 0.06 + i * 0.05 }));
+    });
+    S.define('g_sun', (p, s) => { s.tone(880 * p, 0.32, { vol: 0.06, slide: 1320 * p, attack: 0.04 }); s.noise(0.25, { vol: 0.04, freq: 4200 * p, q: 2 }); });
+    S.define('g_harvest', (p, s) => {
+      s.tone(300 * p, 0.09, { vol: 0.28, slide: 900 * p });
+      s.noise(0.05, { vol: 0.18, freq: 1500 * p, q: 1.5 });
+      s.noise(0.26, { vol: 0.09, freq: 800, sweep: 2500, q: 1.2, delay: 0.05 });
+    });
+    S.define('g_collect', (p, s) => {
+      s.noise(0.06, { vol: 0.12, freq: 600, q: 1.5, type: 'lowpass' });
+      s.tone(1047 * p, 0.12, { type: 'triangle', vol: 0.14 });
+      s.tone(1568 * p, 0.26, { vol: 0.1, delay: 0.06 });
+    });
+    S.define('g_nope', (p, s) => { s.tone(240 * p, 0.2, { type: 'triangle', vol: 0.15, slide: 170 * p }); });
+    S.define('g_weed', (p, s) => {
+      for (let i = 0; i < 4; i++) s.noise(0.04, { vol: 0.09, freq: 2500 + Math.random() * 1500, q: 2, delay: i * 0.03 });
+      s.tone(300 * p, 0.16, { type: 'triangle', vol: 0.1, slide: 520 * p, delay: 0.05 });
+    });
+    S.define('g_pull', (p, s) => { s.noise(0.18, { vol: 0.16, freq: 900 * p, sweep: 2500 * p, q: 1.4 }); s.tone(250 * p, 0.12, { vol: 0.22, slide: 700 * p, delay: 0.1 }); });
+    S.define('g_snail', (p, s) => { s.tone(170 * p, 0.26, { vol: 0.16, slide: 120 * p }); s.noise(0.2, { vol: 0.07, freq: 420 * p, q: 3 }); });
+    S.define('g_uhoh', (p, s) => { s.tone(440 * p, 0.14, { type: 'triangle', vol: 0.13, slide: 410 * p }); s.tone(330 * p, 0.26, { type: 'triangle', vol: 0.13, delay: 0.15, slide: 300 * p }); });
+    S.define('g_shoo', (p, s) => { s.tone(300 * p, 0.3, { vol: 0.2, slide: 1200 * p }); s.noise(0.3, { vol: 0.09, freq: 900, sweep: 3000, q: 1.2 }); });
+    S.define('g_bee', (p, s) => {
+      s.tone(215 * p, 0.55, { type: 'sawtooth', vol: 0.022, slide: 245 * p, attack: 0.12 });
+      s.tone(221 * p, 0.55, { type: 'sawtooth', vol: 0.02, slide: 236 * p, attack: 0.14 });
+    });
+    S.define('g_flutter', (p, s) => { for (let i = 0; i < 4; i++) s.noise(0.05, { vol: 0.07, freq: 900 * p, q: 1.5, delay: i * 0.07 }); });
+    S.define('g_save', (p, s) => { s.tone(784 * p, 0.1, { type: 'triangle', vol: 0.1 }); s.tone(1175 * p, 0.2, { type: 'triangle', vol: 0.1, delay: 0.08 }); });
+  }
+  // 澆水的水聲（持續的 loop）
+  let waterLp = null, waterSetT = 0;
+  function waterSound(on, amt) {
+    if (!S) return;
+    if (!on || !sfxOn || KG.isMuted()) { if (waterLp && waterSetT >= 0) { waterLp.set(0, 0); waterSetT = -1; } return; }
+    const now = performance.now();
+    if (now - waterSetT < 70) return;
+    waterSetT = now;
+    if (!waterLp) waterLp = S.loop('water');
+    waterLp.set(0.25 + amt * 0.35, 0.16);
+  }
+  function stopLoops() { if (waterLp) { waterLp.stop(); waterLp = null; } waterSetT = 0; }
+  // 背景音樂的變化：花開越多加一層，最後一個目標時加快
+  let mixT = 0, finaleOn = false;
+  function updateMix(dt) {
+    if (!M || state !== 'play') return;
+    mixT -= dt; if (mixT > 0) return; mixT = 0.4;
+    let blooms = 0; plots.forEach(p => { if (p.plant && p.plant.stage === 3) blooms++; });
+    M.setLayer('bloom', blooms >= 2);
+    let left = 0; if (!free) L.goal.forEach(([k, n]) => { left += Math.max(0, n - goalCount(k)); });
+    const fin = !free && left === 1;
+    if (fin !== finaleOn) { finaleOn = fin; M.setLayer('finale', fin); M.setTempo(fin ? 1.06 : 1); }
+  }
+  function refreshToggles() {
+    document.querySelectorAll('.tgM').forEach(b => { const on = M ? M.isEnabled() : false; b.textContent = '音樂 ' + (on ? '開' : '關'); b.classList.toggle('off', !on); });
+    document.querySelectorAll('.tgS').forEach(b => { b.textContent = '音效 ' + (sfxOn ? '開' : '關'); b.classList.toggle('off', !sfxOn); });
+  }
+  document.querySelectorAll('.tgM').forEach(b => b.addEventListener('click', () => { if (M) M.setEnabled(!M.isEnabled()); refreshToggles(); sfx('ui'); }));
+  document.querySelectorAll('.tgS').forEach(b => b.addEventListener('click', () => {
+    sfxOn = !sfxOn; KG.store.set('garden:sfx', sfxOn); refreshToggles();
+    if (sfxOn) sfx('ui'); else stopLoops();
+  }));
+  refreshToggles();
 
   /* ======================= 狀態 ======================= */
   let state = 'title', lvIdx = 0, L = LEVELS[0], free = false;
@@ -768,7 +947,7 @@
 
   function pointerPos(e) { pointer.x = e.clientX; pointer.y = e.clientY; }
   cv.addEventListener('pointerdown', e => {
-    if (state !== 'play') return;
+    if (state !== 'play' || paused) return;
     e.preventDefault();
     pointerPos(e); pointer.inside = true; pointer.down = true;
     try { cv.setPointerCapture(e.pointerId); } catch (err) { /* 忽略 */ }
@@ -783,20 +962,20 @@
     const p = plotAt(pointer.x, pointer.y);
     if (tool === 'seed') {
       if (!p) return;
-      if (p.weed) { say(p.x, p.y - PW * 0.6, '先拔草喔！', '#3f8a2f', 26); KG.sound('boing'); return; }
-      if (p.plant) { p.plant.wiggle = 0.5; KG.sound('boing'); return; }
+      if (p.weed) { say(p.x, p.y - PW * 0.6, '先拔草喔！', '#3f8a2f', 26); sfx('g_nope', { pan: panX(p.x) }); return; }
+      if (p.plant) { p.plant.wiggle = 0.5; sfx('g_nope', { pan: panX(p.x) }); return; }
       p.plant = { kind: seedKind, stage: 0, size: 0, water: 0, ready: false, wait: 0, mood: 'smile', wiggle: 0, pulse: 0 };
-      KG.sound('pop');
+      sfx('g_plant', { pan: panX(p.x) });
       burst(p.x, p.y, 10, ['dot'], ['#a8703f', '#8a5a2e', '#c89a6a'], 140);
       say(p.x, p.y - PW * 0.5, '種好了！', '#3f8a2f', 26);
     } else if (tool === 'water') {
       pointer.pourT = 0.6;
     } else if (tool === 'sun') {
-      KG.sound('sparkle');
+      sfx('g_sun', { pan: panX(pointer.x) });
     } else if (tool === 'basket') {
       if (!p || !p.plant) return;
       if (p.plant.stage >= 3 && p.plant.size > 2.9) harvest(p);
-      else { p.plant.wiggle = 0.5; say(p.x, p.y - PW * 0.7, '還沒好喔～', '#7a6cff', 24); KG.sound('boing'); }
+      else { p.plant.wiggle = 0.5; say(p.x, p.y - PW * 0.7, '還沒好喔～', '#7a6cff', 24); sfx('g_nope', { pan: panX(p.x) }); }
     }
   });
   cv.addEventListener('pointermove', e => { pointerPos(e); pointer.inside = true; });
@@ -812,13 +991,12 @@
     pl.from = pl.size; pl.anim = 0;
     const s = PW / 70;
     burst(p.x, p.y - plantHeight(pl) * s * 0.6, bySun ? 18 : 10, ['star', 'dot'], ['#fff6a0', '#ffffff', '#b8f08a'], 220);
-    KG.note(523 + pl.stage * 130, 0.15, 'triangle', 0.2);
-    KG.note(784 + pl.stage * 130, 0.2, 'triangle', 0.15, 0.08);
+    sfx('g_grow', { pitch: degPitch((pl.stage - 1) * 2), pan: panX(p.x), vol: bySun ? 1.1 : 0.9 });
     if (pl.stage === 3) {
       setTimeout(() => {
         if (!p.plant || p.plant !== pl) return;
         bloomsTotal++;
-        KG.sound('sparkle');
+        sfx('g_bloom', { pan: panX(p.x) });
         const S = SEEDS[pl.kind];
         say(p.x, p.y - plantHeight(pl) * s - PW * 0.3, S.veg ? '成熟了！' : '開花了！', '#ff5f95', 32);
         burst(p.x, p.y - plantHeight(pl) * s, 22, ['heart', 'star'], ['#ff8fb1', '#ffd23a', '#ffffff', '#c78cff'], 280);
@@ -835,7 +1013,7 @@
     const hb = $('goals').getBoundingClientRect();
     flyers.push({ kind: pl.kind, x0: p.x, y0: p.y - plantHeight(pl) * s, x1: hb.left + hb.width / 2, y1: hb.top + hb.height / 2, t: 0 });
     p.plant = null;
-    KG.sound('whoosh');
+    sfx('g_harvest', { pan: panX(p.x) });
     burst(p.x, p.y, 12, ['dot', 'star'], ['#a8703f', '#fff6a0'], 160);
     KG.say(SEEDS[pl.kind].name);
   }
@@ -843,7 +1021,10 @@
   function arrive(f) {
     basket[f.kind] = (basket[f.kind] || 0) + 1;
     save.picked = (save.picked || 0) + 1; persist();
-    KG.sound('coin');
+    const got = Object.values(basket).reduce((a, b) => a + b, 0);
+    sfx('g_collect', { pitch: degPitch((got - 1) % 8), exact: true, pan: panX(f.x1) });
+    // 某一個目標剛好完成：小小的過關樂句
+    if (!free) L.goal.forEach(([k, n]) => { if (goalCount(k) === n && (k === f.kind || (k === 'flower' && SEEDS[f.kind].flower))) setTimeout(() => jingle({ bpm: 170, inst: 'bell', vol: 0.26, notes: [['E5', 1], ['A5', 2]] }), 160); });
     updHud(true);
     if (!free && goalsDone()) setTimeout(levelClear, 900);
     else say(W / 2, 120, KG.pick(['好棒！', '收成囉！', '太厲害了！']), '#ff5f95', 30);
@@ -851,13 +1032,13 @@
 
   function pullWeed(p) {
     p.weed.pull = 0.001;
-    KG.sound('pop');
+    sfx('g_pull', { pan: panX(p.x) });
     burst(p.x + PW * 0.18, p.y - 10, 12, ['dot', 'star'], ['#6cc44a', '#a8703f', '#fff6a0'], 200);
     say(p.x, p.y - PW * 0.5, '拔掉了！', '#3f8a2f', 26);
   }
   function shooSnail(sn) {
     sn.fly = 0.001;
-    KG.sound('boing');
+    sfx('g_shoo', { pan: panX(sn.x) });
     if (sn.target && sn.target.plant) sn.target.plant.blocked = false;
     say(sn.x, sn.y - 40, '蝸牛再見～', '#c86ad0', 24);
   }
@@ -866,7 +1047,9 @@
     const bee = Math.random() < 0.4;
     const pal = [['#ffd0f0', '#ff6fb0'], ['#d0f0ff', '#4aa8ec'], ['#fff0b0', '#ffa94d'], ['#e8d8ff', '#9a78f0']];
     const c = KG.pick(pal);
-    bugs.push({ kind: bee ? 'bee' : 'fly', x: Math.random() < 0.5 ? -30 : W + 30, y: KG.rand(gardenTop * 0.6, gardenTop + 60), vx: 0, vy: 0, s: Math.max(0.9, PW / 90), c1: c[0], c2: c[1], ph: Math.random() * 6, target: null, land: 0, life: KG.rand(14, 24) });
+    const fromL = Math.random() < 0.5;
+    if (state === 'play') sfx(bee ? 'g_bee' : 'g_flutter', { pan: fromL ? -0.6 : 0.6, vol: 0.9 }, 300);
+    bugs.push({ kind: bee ? 'bee' : 'fly', x: fromL ? -30 : W + 30, y: KG.rand(gardenTop * 0.6, gardenTop + 60), vx: 0, vy: 0, s: Math.max(0.9, PW / 90), c1: c[0], c2: c[1], ph: Math.random() * 6, target: null, land: 0, life: KG.rand(14, 24) });
   }
 
   /* ======================= 更新 ======================= */
@@ -883,21 +1066,22 @@
         p.plant.water = Math.min(1, p.plant.water + dt / 0.9);
         if (p.plant.water >= 1) {
           p.plant.ready = true; p.plant.wait = 0;
-          KG.sound('correct');
+          sfx('g_gulp', { pan: panX(p.x) });
           say(p.x, p.y - PW * 0.5, '喝飽了！', '#3d9df0', 26);
         }
       }
-      if (Math.random() < dt * 3) KG.sound('splash');
-    }
+      waterSound(true, p && p.plant ? 1 : 0);
+    } else waterSound(false);
     // 太陽：讓喝飽的植物馬上長大
     if (state === 'play' && tool === 'sun' && pointer.down) {
       const p = plotAt(pointer.x, pointer.y);
       if (p && p.plant && p.plant.ready && !p.plant.blocked) growStep(p, true);
+      else sfx('g_sun', { pan: panX(pointer.x), vol: 0.55 }, 520);
       if (Math.random() < dt * 10) parts.push({ x: pointer.x + KG.rand(-30, 30), y: pointer.y - KG.rand(0, 60), vx: 0, vy: -30, rot: 0, vr: 2, r: KG.rand(3, 6), k: 'star', col: '#fff6a0', life: 0.6, g: 0 });
     }
     drops = drops.filter(d => {
       d.vy += 900 * dt; d.x += d.vx * dt; d.y += d.vy * dt;
-      if (d.y >= d.ty) { ripples.push({ x: d.x, y: d.ty, life: 1 }); return false; }
+      if (d.y >= d.ty) { ripples.push({ x: d.x, y: d.ty, life: 1 }); sfx('g_drip', { pan: panX(d.x), vol: 0.8 }, 110); return false; }
       return true;
     });
     ripples = ripples.filter(r => (r.life -= dt * 2.5) > 0);
@@ -925,7 +1109,7 @@
         if (weedTimer <= 0) {
           weedTimer = KG.rand(9, 14);
           const empty = plots.filter(p => !p.weed && (!p.plant || p.plant.stage < 3));
-          if (empty.length && plots.filter(p => p.weed).length < 2) { const p = KG.pick(empty); p.weed = { k: 0, pull: 0 }; KG.sound('boing'); }
+          if (empty.length && plots.filter(p => p.weed).length < 2) { const p = KG.pick(empty); p.weed = { k: 0, pull: 0 }; sfx('g_weed', { pan: panX(p.x) }); }
         }
       }
       if (L.snails) {
@@ -936,6 +1120,7 @@
           if (targets.length) {
             const tg = KG.pick(targets), fromLeft = tg.x > W / 2 ? false : true;
             snails.push({ x: fromLeft ? -40 : W + 40, y: tg.y + 6, dir: fromLeft ? 1 : -1, s: Math.max(0.9, PW / 80), target: tg, fly: 0 });
+            sfx('g_snail', { pan: fromLeft ? -0.6 : 0.6 });
           }
         }
       }
@@ -946,7 +1131,7 @@
       if (!tg.plant) { sn.fly = 0.001; return true; }
       const dx = tg.x - PW * 0.25 * sn.dir - sn.x;
       if (Math.abs(dx) > 4) { sn.x += Math.sign(dx) * 26 * dt; sn.y = lerp(sn.y, tg.y + 6, dt); }
-      else if (!tg.plant.blocked) { tg.plant.blocked = true; tg.plant.mood = 'sad'; KG.sound('wrong'); }
+      else if (!tg.plant.blocked) { tg.plant.blocked = true; tg.plant.mood = 'sad'; sfx('g_uhoh', { pan: panX(tg.x) }); }
       return true;
     });
     plots.forEach(p => { if (p.plant && p.plant.blocked && !snails.some(sn => sn.target === p && !sn.fly)) { p.plant.blocked = false; p.plant.mood = 'smile'; } });
@@ -961,6 +1146,7 @@
       b.vx += (tx - b.x) * dt * 2.2 - b.vx * dt * 1.6;
       b.vy += (ty - b.y) * dt * 2.2 - b.vy * dt * 1.6 + Math.sin(t * 6 + b.ph) * 40 * dt;
       b.x += b.vx * dt; b.y += b.vy * dt;
+      if (state === 'play' && b.target && Math.random() < dt * 0.08) sfx(b.kind === 'bee' ? 'g_bee' : 'g_flutter', { pan: panX(b.x), vol: 0.7 }, 1500);
       return b.life > -6;
     });
     if (blooms.length && bugs.length < Math.min(4, blooms.length + 1) && Math.random() < dt * 0.3) spawnBug();
@@ -1019,8 +1205,8 @@
       }));
       b.insertAdjacentText('beforeend', label);
       b.addEventListener('click', () => {
-        if (tool === id && id === 'seed') { $('seeds').hidden = !$('seeds').hidden; KG.sound('click'); return; }
-        tool = id; KG.sound('click');
+        if (tool === id && id === 'seed') { $('seeds').hidden = !$('seeds').hidden; sfx($('seeds').hidden ? 'back' : 'select'); return; }
+        tool = id; sfx('g_tool', { pitch: { seed: 1, water: 1.12, sun: 1.26, basket: 1.41 }[id], exact: true });
         $('seeds').hidden = id !== 'seed';
         [...box.children].forEach(c => c.classList.toggle('sel', c.dataset.tool === id));
       });
@@ -1039,8 +1225,8 @@
       b.insertAdjacentText('beforeend', S.name);
       if (!ok) b.insertAdjacentHTML('beforeend', `<span class="need">${starSvg(true, 12)}${S.stars}</span>`);
       b.addEventListener('click', () => {
-        if (!ok) { KG.toast(`收集 ${S.stars} 顆星星就能解鎖！`); KG.sound('wrong'); return; }
-        seedKind = k; KG.sound('pop');
+        if (!ok) { KG.toast(`收集 ${S.stars} 顆星星就能解鎖！`); sfx('error'); return; }
+        seedKind = k; sfx('g_seedpick');
         buildSeeds(); buildTools();
         KG.say(S.name);
       });
@@ -1056,6 +1242,8 @@
     $('tools').hidden = !playing;
     $('hud').hidden = !playing;
     $('freeDone').hidden = !(playing && free);
+    $('btnPause').hidden = !playing || paused;
+    if (!playing) $('pauseScr').hidden = true;
     if (!playing) $('seeds').hidden = true;
   }
 
@@ -1073,14 +1261,18 @@
     $('seeds').hidden = false;
     updHud();
     startTime = performance.now();
-    BGM.start();
+    paused = false; finaleOn = false; mixT = 0;
+    if (M) { M.setTempo(1); }
+    music(SONG_PLAY);
+    if (M) { M.setLayer('bloom', false); M.setLayer('finale', false); }
     setTimeout(() => KG.say(free ? '自由種花囉' : `請種出${goalText().replace('＋', '和')}`), 400);
   }
 
   function levelClear() {
     if (state !== 'play') return;
     state = 'result';
-    BGM.stop();
+    stopLoops();
+    if (M) { M.setTempo(1); M.stop(0.3); }
     const sec = (performance.now() - startTime) / 1000;
     const starsN = sec <= L.t[0] ? 3 : sec <= L.t[1] ? 2 : 1;
     const before = totalStars();
@@ -1094,10 +1286,14 @@
     $('resMsg').textContent = `花了 ${Math.round(sec)} 秒完成任務！`;
     $('resUnlock').innerHTML = newSeed ? `<div class="unlock">🎁 新種子：${SEEDS[newSeed].name}！</div>` : '';
     $('resStars').innerHTML = [0, 1, 2].map(k => starSvg(k < starsN, 70)).join('');
-    [...$('resStars').children].forEach((s, k) => { s.style.animationDelay = (0.25 + k * 0.25) + 's'; if (k < starsN) setTimeout(() => KG.note(880 + k * 220, 0.18, 'triangle', 0.2), 250 + k * 250); });
-    KG.sound('win'); KG.confetti();
+    [...$('resStars').children].forEach((s, k) => { s.style.animationDelay = (0.25 + k * 0.25) + 's'; if (k < starsN) setTimeout(() => sfx('star', { pitch: degPitch(k * 2), exact: true }), 900 + k * 250); });
+    KG.confetti();
+    const jd = jingle({ bpm: 150, inst: 'marimba', vol: 0.36, notes: [['A4', 1], ['C#5', 1], ['E5', 1], ['A5', 2], ['G#5', 1], ['A5+E5', 3]], bass: [['A2', 4, 0], ['E2', 2, 4], ['A2', 3, 6]], bassVol: 0.32 });
+    setTimeout(() => sfx('g_save'), 600);
+    if (newSeed) setTimeout(() => sfx('unlock'), 1700);
+    setTimeout(() => { if (state === 'result') music(SONG_TITLE); }, (jd || 1.4) * 1000 + 500);
     const box = $('resBtns'); box.innerHTML = '';
-    const mk = (txt, cls, fn) => { const b = document.createElement('button'); b.className = 'cbtn small ' + cls; b.textContent = txt; b.addEventListener('click', () => { KG.sound('click'); fn(); }); box.appendChild(b); };
+    const mk = (txt, cls, fn) => { const b = document.createElement('button'); b.className = 'cbtn small ' + cls; b.textContent = txt; b.addEventListener('click', () => { sfx('select'); fn(); }); box.appendChild(b); };
     const hasNext = lvIdx < LEVELS.length - 1;
     if (hasNext) mk('下一關', '', () => startLevel(lvIdx + 1));
     mk('再玩一次', hasNext ? 'blue' : '', () => startLevel(lvIdx));
@@ -1120,8 +1316,10 @@
 
   function openSelect() {
     state = 'select';
+    paused = false; stopLoops();
     show('select');
-    BGM.start();
+    if (M) M.setTempo(1);
+    music(SONG_TITLE);
     const total = totalStars();
     $('totalStars').innerHTML = starSvg(true, 28) + ` ${total} / ${LEVELS.length * 3}`;
     const box = $('lvls'); box.innerHTML = '';
@@ -1135,8 +1333,8 @@
       b.appendChild(kindIcon(lv.goal[0][0] === 'flower' ? 'tulip' : lv.goal[0][0], 50));
       b.insertAdjacentHTML('beforeend', `<small>${lv.name}</small><div class="stars-row">${[0, 1, 2].map(k => starSvg(k < s, 20)).join('')}</div>`);
       b.addEventListener('click', () => {
-        if (!ok) { KG.sound('wrong'); b.classList.remove('kg-shake'); void b.offsetWidth; b.classList.add('kg-shake'); KG.toast('先過前一關喔！'); return; }
-        KG.sound('pop'); startLevel(i);
+        if (!ok) { sfx('error'); b.classList.remove('kg-shake'); void b.offsetWidth; b.classList.add('kg-shake'); KG.toast('先過前一關喔！'); return; }
+        sfx('select'); startLevel(i);
       });
       box.appendChild(b);
     });
@@ -1146,7 +1344,7 @@
     f.innerHTML = '<span class="num">∞</span>';
     f.appendChild(kindIcon('sunflower', 50));
     f.insertAdjacentHTML('beforeend', '<small>自由花園</small><div class="stars-row" style="font-size:12px;font-weight:900">想種就種</div>');
-    f.addEventListener('click', () => { KG.sound('pop'); startLevel(-1); });
+    f.addEventListener('click', () => { sfx('select'); startLevel(-1); });
     box.appendChild(f);
     const locked = SEED_ORDER.filter(k => SEEDS[k].stars != null && total < SEEDS[k].stars);
     $('unlockInfo').textContent = locked.length ? `收集星星解鎖：${locked.map(k => `${SEEDS[k].name}（${SEEDS[k].stars}★）`).join('、')}` : '所有種子都解鎖了！';
@@ -1161,15 +1359,38 @@
     for (let i = 0; i < 3; i++) spawnBug();
   }
 
-  $('btnStart').addEventListener('click', () => { KG.sound('click'); openSelect(); });
-  $('freeDone').addEventListener('click', () => { KG.sound('click'); openSelect(); });
+  $('btnStart').addEventListener('click', () => { sfx('select'); openSelect(); });
+  $('freeDone').addEventListener('click', () => { sfx('back'); openSelect(); });
+  /* ======================= 暫停 ======================= */
+  let paused = false, pauseAt = 0;
+  function setPaused(on) {
+    if (state !== 'play' || on === paused) return;
+    paused = on;
+    $('pauseScr').hidden = !on;
+    $('btnPause').hidden = on;
+    if (on) {
+      pauseAt = performance.now(); pointer.down = false; pointer.pourT = 0;
+      waterSound(false); refreshToggles();
+      if (M) M.pause();
+      sfx('back');
+    } else {
+      startTime += performance.now() - pauseAt;
+      if (M) M.resume();
+      sfx('select');
+    }
+  }
+  $('btnPause').addEventListener('click', () => setPaused(true));
+  $('pResume').addEventListener('click', () => setPaused(false));
+  $('pMenu').addEventListener('click', () => { setPaused(false); $('pauseScr').hidden = true; openSelect(); });
   window.addEventListener('keydown', e => {
     if (state !== 'play') return;
+    if (e.code === 'Escape' || e.code === 'KeyP') { setPaused(!paused); e.preventDefault(); return; }
+    if (paused) return;
     const map = { Digit1: 'seed', Digit2: 'water', Digit3: 'sun', Digit4: 'basket' };
     if (map[e.code]) { const b = document.querySelector(`.tool[data-tool="${map[e.code]}"]`); if (b) b.click(); }
   });
   document.addEventListener('contextmenu', e => e.preventDefault());
-  document.addEventListener('visibilitychange', () => { if (document.hidden) BGM.stop(); else if (state === 'play' || state === 'select') BGM.start(); });
+  document.addEventListener('visibilitychange', () => { if (document.hidden && state === 'play') setPaused(true); });
 
   (function () {
     const cols = [['#ff7fa8', '#c2426f'], ['#ffb347', '#c87a12'], ['#7bd88f', '#2f8a48'], ['#5cc8ff', '#2a7fc0']];
@@ -1179,12 +1400,14 @@
   let last = performance.now();
   function loop(now) {
     const dt = Math.max(0, Math.min(0.05, (now - last) / 1000)); last = now;
-    update(dt); render();
+    if (!paused) { update(dt); updateMix(dt); }
+    render();
     requestAnimationFrame(loop);
   }
   resize();
   demoGarden();
   show('title');
+  music(SONG_TITLE);
   requestAnimationFrame(loop);
   window.__garden = () => ({ state, tool, basket: Object.assign({}, basket), plots: plots.map(p => ({ x: p.x, y: p.y, plant: p.plant && { stage: p.plant.stage, size: p.plant.size, water: p.plant.water, ready: p.plant.ready }, weed: !!p.weed })), PW });
 })();

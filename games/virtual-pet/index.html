@@ -103,6 +103,24 @@
   .bigstars svg:nth-child(2) { width: 86px; height: 86px; margin-top: -12px; }
   @keyframes starIn { from { transform: scale(0) rotate(-120deg); opacity: 0; } to { transform: none; opacity: 1; } }
   .result p { font-size: 18px; font-weight: 800; margin: 4px 0 14px; color: #6a4a5a; }
+  /* ===== 暫停鈕（右上 🔊 下面）與聲音開關 ===== */
+  #btnPause { position: fixed; top: 62px; right: 10px; z-index: 8100; width: 46px; height: 46px; border-radius: 50%; border: 3px solid #fff; padding: 0; cursor: pointer;
+    background: linear-gradient(180deg, #fff8f2, #ffe0ea); box-shadow: 0 4px 0 #f2b8c8, 0 6px 12px rgba(120, 60, 60, .22); display: grid; place-items: center; touch-action: manipulation; }
+  #btnPause[hidden] { display: none; }
+  #btnPause svg { width: 20px; height: 20px; pointer-events: none; }
+  #btnPause:active { transform: translateY(2px) scale(.95); }
+  .cbtn.tiny { font-size: 16px; padding: .35em .9em; min-height: 44px; }
+  .cbtn.blue { --b1: #8ad6ff; --b2: #3d9df0; --b3: #2470b8; }
+  .snd { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  .snd .cbtn.off { --b1: #e8e2da; --b2: #b9ada0; --b3: #8a7d70; }
+  #pauseScr .panel { width: min(380px, 100%); }
+  #pauseScr .col { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  @media (max-height: 460px) {
+    #title .logo { font-size: clamp(40px, 18vh, 96px); }
+    #pauseScr .panel { padding: 12px 12px 14px; }
+    #pauseScr .panel h2 { margin: 0 0 8px; font-size: 24px; }
+    #pauseScr .col { gap: 8px; }
+  }
   .unlock { display: inline-flex; align-items: center; gap: 8px; margin: -4px 0 12px; padding: 6px 14px; background: #fff3c4; border-radius: 999px; font-weight: 900; color: #a0620a; animation: kg-pop .5s .9s both; }
 </style>
 </head>
@@ -124,7 +142,20 @@
   <div class="tag">餵牠吃飯、洗澡、陪牠玩！</div>
   <div style="flex:2.4"></div>
   <button class="cbtn pulse" id="btnStart">開始照顧</button>
+  <div class="snd"><button class="cbtn tiny blue tgM">音樂 開</button><button class="cbtn tiny blue tgS">音效 開</button></div>
   <div style="flex:.15"></div>
+</section>
+
+<button id="btnPause" hidden aria-label="暫停"><svg viewBox="0 0 20 20"><rect x="3.5" y="2" width="4.6" height="16" rx="1.6" fill="#8a3a5a"/><rect x="11.9" y="2" width="4.6" height="16" rx="1.6" fill="#8a3a5a"/></svg></button>
+<section class="scr dim" id="pauseScr" hidden>
+  <div class="panel">
+    <h2>休息一下</h2>
+    <div class="col">
+      <button class="cbtn small" id="pResume">繼續照顧</button>
+      <div class="snd"><button class="cbtn tiny blue tgM">音樂 開</button><button class="cbtn tiny blue tgS">音效 開</button></div>
+      <button class="cbtn small pink" id="pTitle">回標題</button>
+    </div>
+  </div>
 </section>
 
 <section class="scr dim" id="missionScr" hidden>
@@ -157,6 +188,7 @@
 </section>
 
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
 <script>
 'use strict';
 (function () {
@@ -251,27 +283,189 @@
   }
   addEventListener('resize', resize);
 
-  /* ======================= 背景音樂 ======================= */
-  const NOTE = n => 440 * Math.pow(2, (n - 69) / 12);
-  const BGM = (function () {
-    const mel = [72, 0, 76, 79, 0, 76, 77, 0, 74, 0, 0, 0, 71, 0, 74, 77, 0, 74, 76, 0, 72, 0, 0, 0, 72, 0, 76, 79, 0, 84, 83, 0, 81, 79, 0, 77, 76, 0, 74, 0, 72, 0, 0, 0];
-    const bass = [48, 45, 41, 43, 48, 45, 41, 43, 48, 48, 41];
-    let timer = null, step = 0;
-    function tick() {
-      if (KG.isMuted() || document.hidden || sleeping) { step++; return; }
-      const m = mel[step % mel.length];
-      if (m) { KG.note(NOTE(m), 0.3, 'sine', 0.05); KG.note(NOTE(m + 12), 0.12, 'sine', 0.012); }
-      if (step % 4 === 0) KG.note(NOTE(bass[(step / 4 | 0) % bass.length]), 0.5, 'triangle', 0.05);
-      step++;
+  /* ======================= 音樂與音效（kg-music.js） ======================= */
+  const M = KG.music, S = KG.sfx;
+  let sfxOn = KG.store.get('virtual-pet:sfx', true) !== false;
+  const sfxLast = Object.create(null);
+  const PO = { vol: 1, pitch: 1, pan: 0 };
+  /** 播放音效：同一種 40 ms 內只播一次、音高隨機 ±5%、依畫面左右 pan */
+  function sfx(name, o, gap) {
+    if (!sfxOn || !S || KG.isMuted()) return;
+    const now = performance.now();
+    if (now - (sfxLast[name] || -1e9) < (gap == null ? 40 : gap)) return;
+    sfxLast[name] = now;
+    PO.vol = o && o.vol != null ? o.vol : 1;
+    PO.pitch = (o && o.pitch || 1) * (o && o.exact ? 1 : 0.95 + Math.random() * 0.1);
+    PO.pan = o && o.pan || 0;
+    S.play(name, PO);
+  }
+  const panX = x => clamp((x / Math.max(1, W)) * 2 - 1, -1, 1) * 0.6;
+  function jingle(def) { return (M && sfxOn) ? M.jingle(def) : 0; }
+  // 講話（KG.say）時把音樂調小，講完再恢復
+  let musicBase = 0.3, ducked = false, duckIv = 0, sayAt = 0;
+  function applyVol() { if (M) M.setVolume(ducked ? musicBase * 0.35 : musicBase); }
+  const rawSay = KG.say;
+  KG.say = function (text, rate) {
+    rawSay(text, rate);
+    if (KG.isMuted() || !window.speechSynthesis) return;
+    sayAt = performance.now();
+    if (!ducked) { ducked = true; applyVol(); }
+    if (!duckIv) duckIv = setInterval(() => {
+      const ss = window.speechSynthesis, el = performance.now() - sayAt;
+      if (el < 450 || (ss && (ss.speaking || ss.pending) && el < 15000)) return;
+      clearInterval(duckIv); duckIv = 0; ducked = false; applyVol();
+    }, 150);
+  };
+  function music(song) { if (!M || !song) return; musicBase = song.mv || 0.3; applyVol(); M.play(song); }
+
+  /*SONGS-BEGIN*/
+  // 標題：夢幻臥室流行（合唱效果般的撥弦分解和弦、鐘琴旋律、溫暖的 pad、輕輕的鼓機），F 大調 82
+  const SONG_TITLE = {
+    bpm: 82, steps: 16, swing: 0.1, mv: 0.5,
+    chords: ['Fmaj7', 'Dm7', 'Bbmaj7', 'Csus4', 'Fmaj7', 'Am7', 'Gm7', 'C7'],
+    tracks: [
+      { inst: 'pad', chord: 'hold', vol: 0.45 },
+      { inst: 'pluck', arp: 'up', rate: 2, oct: 4, span: 2, vol: 0.3 },
+      { inst: 'bass', chord: 'R.....R...5.....', vol: 0.5 },
+      { inst: 'kick', pat: 'x.......x.x.....', vol: 0.45 },
+      { inst: 'rim', pat: '....x.......x...', vol: 0.42 },
+      { inst: 'hat', pat: '..o...o...o...o.', vol: 0.5 },
+      { inst: 'bell', vol: 0.7, seq: [
+        'C5 - A4 - E5 - C5 .', 'D5 - F5 - E5 D5 C5 .', 'D5 - - F5 A4 - Bb4 -', 'C5 - G4 - F4 - . .',
+        'A4 - C5 - F5 - E5 -', 'E5 - C5 - A4 - G4 -', 'Bb4 - D5 - F5 - D5 C5', 'Bb4 - G4 - E4 - . .'] }
+    ]
+  };
+  // 房間：動畫日常生活的配樂（吉他刷弦、鐘琴＋長笛旋律、輕沙鈴），Eb 大調 104
+  const SONG_ROOM = {
+    bpm: 104, steps: 16, swing: 0.08, mv: 0.44,
+    chords: ['Abmaj7', 'Bb', 'Gm7', 'Cm7', 'Fm7', 'Bb', 'Eb', 'Eb', 'Abmaj7', 'Bb', 'Gm', 'Cm', 'Ab', 'Bb', 'Ebmaj7', 'Bbsus4'],
+    layers: { play: false, needy: false },
+    tracks: [
+      { inst: 'pluck', chord: 'R.....R...R.....', oct: 4, vol: 0.24 },
+      { inst: 'pluck', chord: '3.....3...3.....', oct: 4, vol: 0.24 },
+      { inst: 'pluck', chord: '5.....5...5.....', oct: 4, vol: 0.24 },
+      { inst: 'bass', chord: 'R.....R.5...R...', vol: 0.5 },
+      { inst: 'shaker', pat: 'x.x.x.x.x.x.x.x.', vol: 0.45 },
+      { inst: 'rim', pat: '....x.......x...', vol: 0.38 },
+      { inst: 'bell', vol: 0.62, seq: [
+        'Eb5 - F5 G5 - Eb5 C5 .', 'D5 - Bb4 - F5 - D5 .', 'G5 - F5 D5 - Bb4 G4 .', 'C5 - Eb5 - G5 - Bb4 .',
+        'Ab4 - C5 - F5 - Eb5 C5', 'D5 - - . Bb4 C5 D5 F5', 'G5 - Eb5 - Bb4 - G4 -', 'Eb5 - - - . . . .',
+        '', '', '', '', '', '', '', ''] },
+      { inst: 'flute', vol: 0.75, seq: [
+        '', '', '', '', '', '', '', '',
+        'C5 - Eb5 - Ab5 - G5 Eb5', 'F5 - D5 - Bb4 - C5 D5', 'D5 - G4 - Bb4 - D5 -', 'Eb5 - D5 C5 - G4 Bb4 C5',
+        'Eb5 - C5 - Ab4 - Bb4 C5', 'D5 - F5 - Bb5 - - .', 'G5 - F5 Eb5 D5 - Bb4 -', 'Eb5 - - - F5 - - .'] },
+      { inst: 'marimba', arp: 'updown', rate: 2, oct: 5, span: 1, vol: 0.3, layer: 'play' },
+      { inst: 'kick', pat: 'x...x...x...x...', vol: 0.5, layer: 'play' },
+      { inst: 'clap', pat: '....x.......x...', vol: 0.35, layer: 'play' },
+      { inst: 'flute', chord: '5-------3-------', oct: 4, vol: 0.32, layer: 'needy' }
+    ]
+  };
+  // 睡覺：小夜燈音樂盒搖籃曲（12/8 拍，鐘琴、拇指琴、pad，沒有鼓），Ab 大調 56
+  const SONG_SLEEP = {
+    bpm: 56, steps: 12, mv: 0.5,
+    chords: ['Abmaj7', 'Dbmaj7', 'Fm7', 'Eb', 'Abmaj7', 'Dbmaj7', 'Bbm7', 'Eb'],
+    tracks: [
+      { inst: 'pad', chord: 'hold', vol: 0.42 },
+      { inst: 'kalimba', arp: 'up', rate: 3, oct: 4, span: 1, vol: 0.4 },
+      { inst: 'sub', chord: 'R.....R.....', vol: 0.42 },
+      { inst: 'bell', vol: 0.55, seq: [
+        'C5 - Eb5 - Ab4 -', 'F5 - - Eb5 C5 -', 'C5 - - Ab4 - -', 'Bb4 - G4 - Eb4 -',
+        'Eb5 - Ab5 - G5 -', 'F5 - Db5 - C5 -', 'Db5 - C5 - Bb4 -', 'G4 - - - - .'] }
+    ]
+  };
+  const SONGS_CHECK = { title: { song: SONG_TITLE, scale: [5, 7, 9, 10, 0, 2, 4] }, room: { song: SONG_ROOM, scale: [3, 5, 7, 8, 10, 0, 2] }, sleep: { song: SONG_SLEEP, scale: [8, 10, 0, 1, 3, 5, 7] } };
+  /*SONGS-END*/
+
+  if (S) {
+    // 咪咪的聲音：開心、肚子餓、想睡、想玩
+    S.define('p_meow', (p, s) => {
+      s.tone(620 * p, 0.17, { type: 'triangle', vol: 0.15, slide: 1050 * p, attack: 0.02 });
+      s.tone(1040 * p, 0.26, { type: 'triangle', vol: 0.13, slide: 640 * p, delay: 0.14 });
+      s.tone(2080 * p, 0.2, { vol: 0.03, slide: 1300 * p, delay: 0.15 });
+    });
+    S.define('p_hungry', (p, s) => {
+      s.tone(520 * p, 0.24, { type: 'triangle', vol: 0.13, slide: 760 * p, attack: 0.04 });
+      s.tone(760 * p, 0.5, { type: 'triangle', vol: 0.12, slide: 420 * p, delay: 0.21 });
+      s.tone(1520 * p, 0.4, { vol: 0.025, slide: 840 * p, delay: 0.22 });
+    });
+    S.define('p_yawn', (p, s) => {
+      s.tone(520 * p, 0.75, { vol: 0.11, slide: 260 * p, attack: 0.15 });
+      s.noise(0.6, { vol: 0.05, freq: 900, sweep: 500, q: 1 });
+    });
+    S.define('p_chirp', (p, s) => { [[700, 950], [820, 1150], [940, 1350]].forEach(([a, b], i) => s.tone(a * p, 0.06, { type: 'triangle', vol: 0.12, slide: b * p, delay: i * 0.055 })); });
+    S.define('p_full', (p, s) => { s.tone(420 * p, 0.11, { type: 'triangle', vol: 0.12, slide: 390 * p }); s.tone(340 * p, 0.17, { type: 'triangle', vol: 0.12, delay: 0.13, slide: 300 * p }); });
+    S.define('p_crunch', (p, s) => {
+      for (let i = 0; i < 3; i++) s.noise(0.03, { vol: 0.2, freq: (1800 + Math.random() * 1500) * p, q: 3, delay: i * 0.025 });
+      s.tone(140 * p, 0.05, { vol: 0.12, slide: 90 });
+    });
+    S.define('p_lap', (p, s) => { s.tone(300 * p, 0.07, { vol: 0.16, slide: 520 * p }); s.noise(0.05, { vol: 0.08, freq: 1100 * p, q: 2, type: 'lowpass' }); });
+    S.define('p_bounce', (p, s) => { s.tone(150 * p, 0.11, { vol: 0.3, slide: 80 }); s.noise(0.05, { vol: 0.12, freq: 500, type: 'lowpass' }); });
+    S.define('p_squeak', (p, s) => { s.tone(1100 * p, 0.07, { type: 'triangle', vol: 0.13, slide: 1600 * p }); s.tone(1600 * p, 0.09, { type: 'triangle', vol: 0.11, slide: 1000 * p, delay: 0.06 }); });
+    S.define('p_swish', (p, s) => { s.noise(0.12, { vol: 0.09, freq: 1800 * p, sweep: 3500 * p, q: 1.5 }); });
+    S.define('p_swipe', (p, s) => { s.noise(0.06, { vol: 0.12, freq: 2500 * p, q: 2 }); s.tone(700 * p, 0.06, { type: 'triangle', vol: 0.06, slide: 1100 * p }); });
+    S.define('p_clean', (p, s) => {
+      s.tone(1200 * p, 0.12, { vol: 0.08, slide: 2400 * p });
+      [1568, 2093, 2637].forEach((f, i) => s.tone(f * p, 0.25, { vol: 0.08, delay: 0.08 + i * 0.06 }));
+    });
+    S.define('p_stinky', (p, s) => { s.tone(480 * p, 0.32, { type: 'triangle', vol: 0.12, slide: 280 * p }); s.noise(0.25, { vol: 0.05, freq: 600, q: 2 }); });
+    S.define('p_lamp', (p, s) => { s.tone(2000 * p, 0.025, { type: 'triangle', vol: 0.08 }); s.noise(0.025, { vol: 0.15, freq: 3000 * p, q: 3 }); });
+    S.define('p_dress', (p, s) => { s.noise(0.18, { vol: 0.09, freq: 1500 * p, sweep: 4000 * p, q: 1.5 }); s.tone(1319 * p, 0.2, { vol: 0.08, delay: 0.1 }); s.tone(1760 * p, 0.25, { vol: 0.08, delay: 0.16 }); });
+    S.define('p_save', (p, s) => { s.tone(784 * p, 0.1, { type: 'triangle', vol: 0.1 }); s.tone(1175 * p, 0.2, { type: 'triangle', vol: 0.1, delay: 0.08 }); });
+  }
+  // 持續的聲音：洗澡的水聲、摸摸的呼嚕嚕
+  let bathLp = null, purrLp = null, bathT = 0, purrSetT = 0, bathOn = false, purrOn = false, bathAmt = 0;
+  function loopsTick(dt) {
+    if (!S) return;
+    const can = sfxOn && !KG.isMuted() && state === 'room';
+    bathAmt = Math.max(0, bathAmt - dt * 3);
+    const wantBath = can && bathAmt > 0.05;
+    const now = performance.now();
+    if (wantBath) {
+      if (!bathLp) bathLp = S.loop('water');
+      if (now - bathT > 70) { bathT = now; bathLp.set(0.2 + bathAmt * 0.5, 0.13); bathOn = true; }
+    } else if (bathOn && bathLp) { bathLp.set(0, 0); bathOn = false; }
+    const wantPurr = can && kit.pet > 0.5 && !sleeping;
+    if (wantPurr) {
+      if (!purrLp) purrLp = S.loop('engine');
+      if (now - purrSetT > 60) { purrSetT = now; const br = 0.6 + 0.4 * Math.sin(t * 4.2); purrLp.set(0.02 + 0.03 * br, 0.16 * br); purrOn = true; }
+    } else if (purrOn && purrLp) { purrLp.set(0, 0); purrOn = false; }
+  }
+  function stopLoops() { if (bathLp) bathLp.stop(); if (purrLp) purrLp.stop(); bathLp = purrLp = null; bathOn = purrOn = false; bathAmt = 0; }
+  // 音樂跟著房間狀況變：玩耍加打擊、有需求時加長笛
+  let mixT = 0;
+  const lowPrev = { food: false, clean: false, fun: false, energy: false };
+  function updateMix(dt) {
+    if (state !== 'room') return;
+    mixT -= dt; if (mixT > 0) return; mixT = 0.4;
+    if (M && !sleeping) {
+      M.setLayer('play', mode === 'play' || !!ball);
+      M.setLayer('needy', N.food < 30 || N.clean < 25 || N.fun < 30 || N.energy < 30);
     }
-    return { start() { if (!timer) { step = 0; timer = setInterval(tick, 250); } }, stop() { clearInterval(timer); timer = null; } };
-  })();
+    // 需求剛變低：咪咪出聲告訴你
+    if (sleeping) return;
+    const cur = { food: N.food < 30, clean: N.clean < 25, fun: N.fun < 30, energy: N.energy < 30 };
+    if (cur.food && !lowPrev.food) sfx('p_hungry');
+    else if (cur.energy && !lowPrev.energy) sfx('p_yawn');
+    else if (cur.clean && !lowPrev.clean) sfx('p_stinky');
+    else if (cur.fun && !lowPrev.fun) sfx('p_hungry', { pitch: 1.15 });
+    Object.assign(lowPrev, cur);
+  }
+  function refreshToggles() {
+    document.querySelectorAll('.tgM').forEach(b => { const on = M ? M.isEnabled() : false; b.textContent = '音樂 ' + (on ? '開' : '關'); b.classList.toggle('off', !on); });
+    document.querySelectorAll('.tgS').forEach(b => { b.textContent = '音效 ' + (sfxOn ? '開' : '關'); b.classList.toggle('off', !sfxOn); });
+  }
+  document.querySelectorAll('.tgM').forEach(b => b.addEventListener('click', () => { if (M) M.setEnabled(!M.isEnabled()); refreshToggles(); sfx('ui'); }));
+  document.querySelectorAll('.tgS').forEach(b => b.addEventListener('click', () => {
+    sfxOn = !sfxOn; KG.store.set('virtual-pet:sfx', sfxOn); refreshToggles();
+    if (sfxOn) sfx('ui'); else stopLoops();
+  }));
 
   /* ======================= 狀態 ======================= */
   let state = 'title', mode = 'none', sleeping = false, t = 0;
   const kit = { look: { x: 0, y: 0 }, blink: 0, nextBlink: 2, ear: 0, earT: 3, earSide: 1, jump: 0, jv: 0, squash: 0, chew: 0, mouthOpen: 0, swipe: 0, swipeT: 0,
     pet: 0, meow: 0, happy: 0, yawn: 0, tilt: 0, bathT: 0, wantEat: 0 };
-  let drag = null, ball = null, parts = [], texts = [], zzzT = 0, saveT = 0, purrT = 0, petAcc = 0, bathDone = false, playAcc = 0;
+  let drag = null, ball = null, parts = [], texts = [], zzzT = 0, saveT = 0, petAcc = 0, bathDone = false, playAcc = 0;
   const pointer = { x: -999, y: -999, inside: false };
 
   /* ======================= 繪圖：小圖示 ======================= */
@@ -728,7 +922,7 @@
       tk.done = true;
       save.stars++;
       persist();
-      KG.sound('coin');
+      sfx('coin'); setTimeout(() => sfx('star', { exact: true }), 120);
       say(W / 2, 200, '任務完成！', '#ff8a3d', 34);
       const r = $('missionBtn').getBoundingClientRect();
       burst(r.left + r.width / 2, r.top + r.height / 2, 14, ['star'], ['#ffd23a', '#fff6a0'], 200);
@@ -747,18 +941,24 @@
   let rewardBase = 0;
   function showReward() {
     state = 'reward';
-    BGM.stop();
+    stopLoops();
+    if (M) M.stop(0.3);
     show('resultScr');
     $('resStars').innerHTML = [0, 1, 2].map(() => starSvg(true, 70)).join('');
-    [...$('resStars').children].forEach((s, k) => { s.style.animationDelay = (0.25 + k * 0.25) + 's'; setTimeout(() => KG.note(880 + k * 220, 0.18, 'triangle', 0.2), 250 + k * 250); });
+    [...$('resStars').children].forEach((s, k) => { s.style.animationDelay = (0.25 + k * 0.25) + 's'; setTimeout(() => sfx('star', { pitch: [1, 1.26, 1.5][k], exact: true }), 1300 + k * 250); });
     const newly = UNLOCKS.filter(u => u.need > save.stars - 3 && u.need <= save.stars);
     $('resUnlock').innerHTML = newly.length ? `<div class="unlock">🎁 解鎖：${newly.map(u => u.name).join('、')}！</div>` : '';
     const next = UNLOCKS.find(u => u.need > save.stars);
     $('resMsg').textContent = next ? `咪咪好幸福！再收集 ${next.need - save.stars} 顆星星解鎖「${next.name}」` : '咪咪好幸福，謝謝你！';
-    KG.sound('win'); KG.confetti();
-    KG.say('任務全部完成，好棒');
+    KG.confetti();
+    const jd = jingle({ bpm: 140, inst: 'bell', vol: 0.34, notes: [['Bb4', 1], ['Eb5', 1], ['G5', 1], ['Bb5', 2], ['Ab5', 1], ['G5+Eb5', 3]], bass: [['Eb3', 4, 0], ['Bb2', 2, 4], ['Eb3', 3, 6]], bassVol: 0.3 });
+    setTimeout(() => sfx('p_meow', { pitch: 1.1 }), 900);
+    setTimeout(() => sfx('p_save'), 600);
+    if (newly.length) setTimeout(() => sfx('unlock'), 2100);
+    setTimeout(() => { if (state === 'reward') music(SONG_TITLE); }, (jd || 1.6) * 1000 + 600);
+    setTimeout(() => { if (state === 'reward') KG.say('任務全部完成，好棒'); }, 1400);
   }
-  $('resOk').addEventListener('click', () => { KG.sound('click'); newTasks(); updMission(); enterRoom(); });
+  $('resOk').addEventListener('click', () => { sfx('select'); newTasks(); updMission(); enterRoom(); });
 
   function openMissions() {
     if (state !== 'room') return;
@@ -771,8 +971,8 @@
     const next = UNLOCKS.find(u => u.need > save.stars);
     $('nextUnlock').innerHTML = next ? `${starSvg(true, 18)} ${save.stars} 顆星星・下一個獎勵：${next.name}（${next.need} 顆）` : `${starSvg(true, 18)} ${save.stars} 顆星星・全部解鎖了！`;
   }
-  $('missionBtn').addEventListener('click', () => { KG.sound('click'); openMissions(); });
-  $('missionClose').addEventListener('click', () => { KG.sound('click'); enterRoom(); });
+  $('missionBtn').addEventListener('click', () => { sfx('select'); openMissions(); });
+  $('missionClose').addEventListener('click', () => { sfx('back'); enterRoom(); });
 
   /* ======================= 衣櫃 ======================= */
   function openWardrobe() {
@@ -787,9 +987,9 @@
       b.insertAdjacentText('beforeend', label);
       if (!ok) b.insertAdjacentHTML('beforeend', `<span class="need">${starSvg(true, 12)}${u.need}</span>`);
       b.addEventListener('click', () => {
-        if (!ok) { KG.toast(`收集 ${u.need} 顆星星就能解鎖！`); KG.sound('wrong'); return; }
+        if (!ok) { KG.toast(`收集 ${u.need} 顆星星就能解鎖！`); sfx('error'); return; }
         const changed = save[type] !== id;
-        save[type] = id; persist(); KG.sound('sparkle');
+        save[type] = id; persist(); sfx('p_dress');
         if (changed) taskProgress('dress');
         if (type === 'wall') buildPattern();
         openWardrobe();
@@ -810,7 +1010,7 @@
   function miniKitten(g, coat, acc) {
     drawKitten(g, 30, 58, 0.14, { coat, acc, look: { x: 0, y: 0 }, mood: 'happy', tail: 0, blink: 0, dirt: 0 });
   }
-  $('wClose').addEventListener('click', () => { KG.sound('click'); enterRoom(); });
+  $('wClose').addEventListener('click', () => { sfx('p_save'); enterRoom(); });
 
   /* ======================= 動作列與托盤 ======================= */
   const ACTS = [
@@ -839,7 +1039,7 @@
     document.querySelectorAll('.act').forEach(b => { const v = m[b.dataset.act]; b.classList.toggle('alert', v != null && v < 30 && !sleeping); });
   }
   function onAct(id) {
-    KG.sound('click');
+    sfx('ui', { pitch: 1 + ACTS.findIndex(a => a[0] === id) * 0.06 });
     if (id === 'dress') { setMode('none'); openWardrobe(); return; }
     if (id === 'sleep') {
       if (sleeping) wake(false); else goSleep();
@@ -867,7 +1067,7 @@
       if (locked) b.insertAdjacentHTML('beforeend', `<span class="need">${starSvg(true, 12)}${FOODS.cookie.need}</span>`);
       b.addEventListener('pointerdown', e => {
         e.preventDefault();
-        if (locked) { KG.toast(`收集 ${FOODS.cookie.need} 顆星星就能解鎖！`); KG.sound('wrong'); return; }
+        if (locked) { KG.toast(`收集 ${FOODS.cookie.need} 顆星星就能解鎖！`); sfx('error'); return; }
         startDrag(it, e);
       });
       tray.appendChild(b);
@@ -890,7 +1090,7 @@
     if (state !== 'room') return;
     drag = { it, pid: e.pointerId, x: e.clientX, y: e.clientY, px: e.clientX, py: e.clientY, vx: 0, vy: 0, rot: 0, bite: 0 };
     if (it === 'ball') { ball = null; }
-    KG.sound('pop');
+    sfx(it === 'feather' || it === 'ball' ? 'p_squeak' : it === 'sponge' ? 'bubble' : 'pickup', { pan: panX(e.clientX) });
   }
   addEventListener('pointermove', e => {
     pointer.x = e.clientX; pointer.y = e.clientY; pointer.inside = true;
@@ -903,11 +1103,12 @@
         N.clean = Math.min(100, N.clean + dist * 0.045);
         kit.pet = Math.min(1, kit.pet + 0.05);
         if (Math.random() < dist * 0.06) parts.push({ x: drag.x + KG.rand(-24, 24), y: drag.y + KG.rand(-18, 18), vx: KG.rand(-20, 20), vy: KG.rand(-40, -10), rot: 0, vr: 0, r: KG.rand(6, 15), k: 'bubble', col: '#fff', life: 1, dur: KG.rand(1.2, 2.2), g: -10 });
-        if (Math.random() < dist * 0.004) KG.note(KG.rand(900, 1500), 0.06, 'sine', 0.08);
+        bathAmt = Math.min(1, bathAmt + dist * 0.02);
+        if (Math.random() < dist * 0.006) sfx('bubble', { pitch: KG.rand(1.6, 2.6), vol: 0.5, pan: panX(drag.x) }, 90);
         if (N.clean >= 99.5 && !bathDone) {
           bathDone = true;
           say(KX, KY - 400 * K, '香噴噴！', '#3d9df0', 36);
-          KG.sound('sparkle'); kit.happy = 1.5;
+          sfx('p_clean'); setTimeout(() => sfx('p_meow', { pitch: 1.12 }), 350); kit.happy = 1.5;
           burst(KX, KY - 200 * K, 26, ['star', 'bubble'], ['#fff', '#bfe6ff', '#fff6a0'], 260, 100);
           taskProgress('bath');
         }
@@ -915,6 +1116,7 @@
       if (drag.it === 'feather') {
         const sp = Math.min(dist, 60);
         N.fun = Math.min(100, N.fun + sp * 0.02);
+        if (sp > 25) sfx('p_swish', { pan: panX(drag.x), vol: Math.min(1, sp / 60), pitch: 0.8 + sp / 120 }, 140);
         playAcc += sp * 0.02;
         while (playAcc >= 1) { playAcc -= 1; taskProgress('play'); }
       }
@@ -926,10 +1128,10 @@
     if (FOODS[d.it]) {
       const mp = mouthPos();
       if (Math.hypot(d.x - mp.x, d.y - mp.y) < 95 * K + 30) eat(d.it);
-      else { KG.sound('boing'); }
+      else { sfx('drop', { pan: panX(d.x) }); }
     } else if (d.it === 'ball') {
       ball = { x: d.x, y: d.y, vx: clamp(d.vx, -1600, 1600), vy: clamp(d.vy, -1800, 1200), r: 20 * Math.max(0.8, K), rot: 0, bounces: 0 };
-      if (Math.hypot(d.vx, d.vy) > 250) { taskProgress('ball'); KG.sound('whoosh'); }
+      if (Math.hypot(d.vx, d.vy) > 250) { taskProgress('ball'); sfx('whoosh', { pan: panX(d.x), vol: Math.min(1, Math.hypot(d.vx, d.vy) / 1400 + 0.3) }); }
     }
   }
   addEventListener('pointerup', endDrag);
@@ -939,7 +1141,7 @@
     if (N.food > 96) {
       say(KX, KY - 400 * K, '吃飽飽了～', '#ff8a3d', 28);
       kit.tilt = 0.3; setTimeout(() => { kit.tilt = 0; }, 700);
-      KG.sound('boing');
+      sfx('p_full');
       return;
     }
     kit.chew = 1.4;
@@ -947,25 +1149,28 @@
     N.food = Math.min(100, N.food + FOODS[it].amt);
     taskProgress('feed');
     const mp = mouthPos();
-    for (let i = 0; i < 4; i++) setTimeout(() => { KG.note(320 + Math.random() * 80, 0.07, 'square', 0.06); burst(mp.x, mp.y + 10, 4, ['dot'], it === 'milk' ? ['#ffffff', '#e8f4ff'] : it === 'cookie' ? ['#d89a4a', '#ffe0a8'] : ['#9ad8ff', '#5ab0f0'], 120); }, i * 280);
-    setTimeout(() => { say(KX, KY - 400 * K, KG.pick(['好吃！', '真好吃～', '喵～好香']), '#ff8a3d', 34); burst(mp.x, mp.y - 60 * K, 8, ['heart'], ['#ff6f9a', '#ff9ab8'], 160, -40); kit.happy = 1.2; }, 1200);
+    for (let i = 0; i < 4; i++) setTimeout(() => { sfx(it === 'milk' ? 'p_lap' : 'p_crunch', { pitch: it === 'cookie' ? 1.15 : 1 }); burst(mp.x, mp.y + 10, 4, ['dot'], it === 'milk' ? ['#ffffff', '#e8f4ff'] : it === 'cookie' ? ['#d89a4a', '#ffe0a8'] : ['#9ad8ff', '#5ab0f0'], 120); }, i * 280);
+    setTimeout(() => { sfx('p_meow', { pitch: 1.05 }); say(KX, KY - 400 * K, KG.pick(['好吃！', '真好吃～', '喵～好香']), '#ff8a3d', 34); burst(mp.x, mp.y - 60 * K, 8, ['heart'], ['#ff6f9a', '#ff9ab8'], 160, -40); kit.happy = 1.2; }, 1200);
   }
 
   /* ======================= 睡覺 ======================= */
   function goSleep() {
-    if (N.energy > 95) { say(KX, KY - 400 * K, '還不想睡～', '#7a6cff', 28); KG.sound('boing'); return; }
+    if (N.energy > 95) { say(KX, KY - 400 * K, '還不想睡～', '#7a6cff', 28); sfx('p_chirp'); return; }
     setMode('none');
     sleeping = true;
     buildBar();
-    KG.sound('whoosh');
-    KG.note(392, 0.4, 'sine', 0.12); KG.note(330, 0.5, 'sine', 0.1, 0.35);
+    stopLoops();
+    sfx('p_yawn'); setTimeout(() => sfx('p_lamp'), 650);
+    music(SONG_SLEEP);
     say(KX, KY - 380 * K, '晚安，咪咪', '#9a78f0', 30);
   }
   function wake(full) {
     sleeping = false;
     buildBar();
-    if (full || N.energy >= 95) { taskProgress('sleep'); say(KX, KY - 400 * K, '睡飽了！精神好好', '#ff8a3d', 30); KG.sound('sparkle'); kit.happy = 1.4; kit.jv = 380; }
-    else { say(KX, KY - 400 * K, '早安！', '#ff8a3d', 30); KG.sound('pop'); }
+    sfx('p_lamp');
+    if (state === 'room' || state === 'pause') music(SONG_ROOM);
+    if (full || N.energy >= 95) { taskProgress('sleep'); say(KX, KY - 400 * K, '睡飽了！精神好好', '#ff8a3d', 30); setTimeout(() => sfx('p_chirp', { pitch: 1.1 }), 150); kit.happy = 1.4; kit.jv = 380; }
+    else { say(KX, KY - 400 * K, '早安！', '#ff8a3d', 30); setTimeout(() => sfx('p_meow', { pitch: 0.92 }), 150); }
     kit.yawn = 1.2;
   }
 
@@ -974,6 +1179,7 @@
   cv.addEventListener('pointerdown', e => {
     if (state !== 'room') return;
     e.preventDefault();
+    if (sleeping && kitHit(e.clientX, e.clientY)) sfx('p_yawn', { vol: 0.6, pitch: 1.1 }, 1500);
     pointer.x = e.clientX; pointer.y = e.clientY;
     if (mode === 'play' && ball && Math.hypot(e.clientX - ball.x, e.clientY - ball.y) < ball.r * 2 + 16) { startDrag('ball', e); return; }
     if (mode === 'play') { startDrag('feather', e); return; }
@@ -1006,8 +1212,7 @@
 
   function meow() {
     kit.meow = 0.6; kit.jv = 300;
-    KG.note(KG.rand(620, 760), 0.32, 'triangle', 0.2, 0, 1050);
-    KG.note(1000, 0.25, 'sine', 0.08, 0.18, 640);
+    sfx('p_meow', { pitch: KG.rand(0.95, 1.15), exact: true });
     say(KX + KG.rand(-60, 60), KY - 400 * K, KG.pick(['喵～', '喵喵！', '喵嗚～']), '#ff6f9a', 34);
     burst(KX, KY - 330 * K, 5, ['heart', 'note'], ['#ff6f9a', '#ffb0cc', '#b49cff'], 140, -30);
     taskProgress('meow');
@@ -1044,10 +1249,8 @@
     kit.yawn = Math.max(0, kit.yawn - dt);
     if (kit.chew > 0) kit.chew = Math.max(0, kit.chew - dt);
     // 呼嚕嚕
-    if (kit.pet > 0.5 && !sleeping) {
-      purrT -= dt;
-      if (purrT <= 0) { purrT = 0.45; KG.note(48, 0.38, 'sawtooth', 0.035); KG.note(96, 0.3, 'sine', 0.03); }
-    }
+    loopsTick(dt);
+    updateMix(dt);
     // 視線
     let tx = 0, ty = 0, excited = false;
     const hx = KX, hy = KY - 228 * K;
@@ -1068,7 +1271,7 @@
     // 揮爪：逗貓棒或球靠近
     const tgt = drag && drag.it === 'feather' ? drag : ball;
     if (tgt && !sleeping && Math.hypot(tgt.x - (KX + 60 * K), tgt.y - (KY - 120 * K)) < 170 * K) {
-      if (kit.swipeT <= 0) { kit.swipeT = 0.5; KG.note(700, 0.06, 'triangle', 0.08, 0, 1100); }
+      if (kit.swipeT <= 0) { kit.swipeT = 0.5; sfx('p_swipe', { pan: panX(tgt.x) }); if (Math.random() < 0.3) sfx('p_chirp', { vol: 0.8 }); }
     }
     if (kit.swipeT > 0) { kit.swipeT -= dt; kit.swipe = Math.sin(clamp(1 - kit.swipeT / 0.5, 0, 1) * Math.PI); } else kit.swipe = 0;
     // 毛線球物理
@@ -1078,17 +1281,17 @@
       if (ball.y > fy - ball.r) {
         ball.y = fy - ball.r;
         if (Math.abs(ball.vy) > 220) {
-          KG.note(220 + Math.random() * 60, 0.08, 'sine', 0.12);
+          sfx('p_bounce', { pan: panX(ball.x), vol: Math.min(1, Math.abs(ball.vy) / 1200 + 0.2) });
           if (Math.abs(ball.x - KX) < 220 * K) {
-            kit.jv = 420; N.fun = Math.min(100, N.fun + 5); playAcc += 2; while (playAcc >= 1) { playAcc -= 1; taskProgress('play'); }
+            kit.jv = 420; N.fun = Math.min(100, N.fun + 5); sfx('p_chirp', { pan: panX(KX) }, 600); playAcc += 2; while (playAcc >= 1) { playAcc -= 1; taskProgress('play'); }
             burst(ball.x, ball.y, 5, ['heart', 'star'], ['#ff8fb1', '#ffd23a'], 140);
           }
         }
         ball.vy *= -0.55; ball.vx *= 0.92;
         if (Math.abs(ball.vy) < 40) ball.vy = 0;
       }
-      if (ball.x < ball.r) { ball.x = ball.r; ball.vx *= -0.7; }
-      if (ball.x > W - ball.r) { ball.x = W - ball.r; ball.vx *= -0.7; }
+      if (ball.x < ball.r) { if (Math.abs(ball.vx) > 200) sfx('p_bounce', { pan: -0.6, vol: Math.min(0.8, Math.abs(ball.vx) / 1600), pitch: 1.3 }); ball.x = ball.r; ball.vx *= -0.7; }
+      if (ball.x > W - ball.r) { if (Math.abs(ball.vx) > 200) sfx('p_bounce', { pan: 0.6, vol: Math.min(0.8, Math.abs(ball.vx) / 1600), pitch: 1.3 }); ball.x = W - ball.r; ball.vx *= -0.7; }
       if (ball.y < 120) { ball.y = 120; ball.vy = Math.abs(ball.vy) * 0.5; }
       if (ball.vy === 0) ball.vx *= Math.pow(0.2, dt);
     }
@@ -1207,10 +1410,11 @@
   }
 
   function show(id) {
-    ['title', 'missionScr', 'wardrobe', 'resultScr'].forEach(s => { $(s).hidden = s !== id; });
+    ['title', 'missionScr', 'wardrobe', 'resultScr', 'pauseScr'].forEach(s => { $(s).hidden = s !== id; });
     const room = state === 'room';
     $('hud').hidden = state === 'title';
     $('missionBtn').hidden = !room;
+    $('btnPause').hidden = !room;
     $('bar').hidden = !room;
     if (!room) { $('tray').hidden = true; $('hint').hidden = true; }
   }
@@ -1220,22 +1424,48 @@
     setMode('none');
     updMission();
     updHud();
-    BGM.start();
+    music(sleeping ? SONG_SLEEP : SONG_ROOM);
   }
+  /* ======================= 暫停 ======================= */
+  function setPaused(on) {
+    if (on) {
+      if (state !== 'room') return;
+      state = 'pause'; drag = null; petting = null;
+      stopLoops(); refreshToggles(); persist();
+      show('pauseScr');
+      if (M) M.pause();
+      sfx('back');
+    } else {
+      if (state !== 'pause') return;
+      state = 'room'; show(null); setMode(mode);
+      if (M) M.resume();
+      sfx('select');
+    }
+  }
+  $('btnPause').addEventListener('click', () => setPaused(true));
+  $('pResume').addEventListener('click', () => setPaused(false));
+  $('pTitle').addEventListener('click', () => {
+    state = 'title'; show('title'); stopLoops(); persist();
+    if (M) M.resume();
+    music(SONG_TITLE); sfx('back');
+  });
+  window.addEventListener('keydown', e => {
+    if (e.code === 'Escape' || e.code === 'KeyP') { if (state === 'room') setPaused(true); else if (state === 'pause') setPaused(false); }
+  });
 
   (function () {
     const cols = [['#ff9a5c', '#c8601a'], ['#ff7fa8', '#c2426f'], ['#ffb347', '#c87a12'], ['#5cc8ff', '#2a7fc0'], ['#9b7bff', '#5e43c2']];
     $('logo').innerHTML = '照顧小貓咪'.split('').map((ch, i) => `<span style="--c:${cols[i][0]};--d:${cols[i][1]};animation-delay:${i * 0.1}s,${0.7 + i * 0.22}s">${ch}</span>`).join('');
   })();
   $('btnStart').addEventListener('click', () => {
-    KG.sound('click');
+    sfx('select');
     enterRoom();
     meow();
     if (!save.named) { save.named = true; persist(); setTimeout(() => KG.say('你好，我是咪咪'), 600); }
   });
   cv.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') pointer.inside = false; });
   document.addEventListener('contextmenu', e => e.preventDefault());
-  document.addEventListener('visibilitychange', () => { if (document.hidden) { persist(); BGM.stop(); } else if (state === 'room') BGM.start(); });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) { persist(); if (state === 'room') setPaused(true); } });
   addEventListener('pagehide', persist);
 
   let last = performance.now();
@@ -1248,6 +1478,8 @@
   buildHud();
   updMission();
   show('title');
+  refreshToggles();
+  music(SONG_TITLE);
   requestAnimationFrame(loop);
   window.__pet = () => ({ state, mode, sleeping, needs: Object.assign({}, N), stars: save.stars, tasks: save.tasks, K, KX, KY, mouth: mouthPos() });
 })();

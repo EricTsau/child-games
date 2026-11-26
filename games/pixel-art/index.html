@@ -290,6 +290,137 @@
 </div>
 
 <script src="../../assets/common.js"></script>
+<script src="../../assets/kg-music.js"></script>
+<style>
+  /* ===== 聲音選單（暫停／設定）：z-index 要小於 9300，🏠／🔊 才按得到 ===== */
+  .au-btn { width: 48px; height: 48px; border-radius: 50%; border: 3px solid #fff; padding: 0; cursor: pointer; display: grid; place-items: center;
+    background: linear-gradient(180deg, #fff 0%, #ffe9f1 100%); box-shadow: 0 4px 0 rgba(0,0,0,.12), 0 6px 12px rgba(0,0,0,.15); transition: transform .12s; touch-action: manipulation; }
+  .au-btn:active { transform: scale(.9); }
+  .au-btn[hidden], .au-ov[hidden] { display: none; }
+  .au-btn svg { width: 26px; height: 26px; }
+  .au-gear { position: fixed; top: 60px; right: 10px; z-index: 9000; }
+  .au-ov { position: fixed; inset: 0; z-index: 9200; display: grid; place-items: center; padding: 12px; background: rgba(60,40,80,.45); backdrop-filter: blur(3px); animation: kg-fade .2s ease; }
+  .au-card { width: min(360px, 100%); max-height: calc(100% - 8px); overflow-y: auto; background: linear-gradient(180deg, #fff 0%, #fff4f8 100%); border: 5px solid #fff; border-radius: 30px;
+    padding: 16px 16px 18px; box-shadow: 0 14px 34px rgba(60,40,80,.35); text-align: center; animation: kg-pop .3s cubic-bezier(.2,1.6,.4,1); font-family: var(--kg-font); }
+  .au-card h2 { margin: 0 0 12px; font-size: 28px; color: var(--au-d, #c2406e); }
+  .au-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .au-b { grid-column: span 2; min-height: 56px; border-radius: 999px; border: 4px solid #fff; cursor: pointer; font-family: var(--kg-font); font-size: 20px; font-weight: 900; color: #fff;
+    display: flex; align-items: center; justify-content: center; gap: 6px; padding: 4px 10px; white-space: nowrap; box-shadow: 0 5px 0 rgba(0,0,0,.18), 0 8px 14px rgba(0,0,0,.14);
+    background: linear-gradient(180deg, #9cf08f 0%, #4cc75a 55%, #33a845 100%); text-shadow: 0 2px 0 rgba(0,0,0,.18); }
+  .au-b:active { transform: translateY(3px) scale(.97); }
+  .au-b svg { width: 26px; height: 26px; flex: none; }
+  .au-b.half { grid-column: span 1; font-size: 18px; background: linear-gradient(180deg, #9ee0ff 0%, #44a8f0 60%, #2f8ad6 100%); }
+  .au-b.half.off { background: linear-gradient(180deg, #e6e0ea 0%, #b9aec4 100%); }
+  .au-b.alt { background: linear-gradient(180deg, #ffb3cc 0%, #ff6f9e 60%, #e8507f 100%); }
+</style>
+<script>
+/* ===== 聲音小幫手：音效開關（存在 KG.store）、節流＋隨機音高、jingle、語音時音樂調小、暫停／設定選單 ===== */
+const AU = (function () {
+  'use strict';
+  const KEY = 'pixel-art:sfx';
+  let on = KG.store.get(KEY, true) !== false;
+  const last = Object.create(null);
+  let musVol = 0.24, ducked = false, duckT = 0;
+  const ICON = {
+    music: '<svg viewBox="0 0 32 32"><path d="M12 6 L26 3 V21" stroke="#fff" stroke-width="3.4" fill="none" stroke-linejoin="round"/><ellipse cx="9" cy="24" rx="5" ry="4" fill="#fff"/><ellipse cx="22" cy="21" rx="5" ry="4" fill="#fff"/><path d="M12 6 V24" stroke="#fff" stroke-width="3.4"/></svg>',
+    sfx: '<svg viewBox="0 0 32 32"><path d="M5 12 H11 L18 6 V26 L11 20 H5 Z" fill="#fff" stroke="#fff" stroke-width="2" stroke-linejoin="round"/><path d="M22 11 Q26 16 22 21 M25 7 Q32 16 25 25" stroke="#fff" stroke-width="2.8" fill="none" stroke-linecap="round"/></svg>',
+    off: '<path d="M4 4 L28 28" stroke="#7a5a8a" stroke-width="4" stroke-linecap="round"/>',
+    play: '<svg viewBox="0 0 32 32"><path d="M10 6 L26 16 L10 26 Z" fill="#fff" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg>',
+    pause: '<svg viewBox="0 0 32 32"><rect x="8" y="6" width="6" height="20" rx="2" fill="#4a3b52"/><rect x="18" y="6" width="6" height="20" rx="2" fill="#4a3b52"/></svg>',
+    gear: '<svg viewBox="0 0 32 32"><path d="M12 15 L26 12 V22" stroke="#4a3b52" stroke-width="2.6" fill="none" stroke-linejoin="round"/><ellipse cx="9.5" cy="23" rx="4.2" ry="3.4" fill="#4a3b52"/><ellipse cx="22.5" cy="22" rx="4.2" ry="3.4" fill="#4a3b52"/><path d="M12 15 V23" stroke="#4a3b52" stroke-width="2.6"/><path d="M5 9 H8 L12 5 V15 L8 11 H5 Z" fill="#4a3b52"/></svg>',
+    home: '<svg viewBox="0 0 32 32"><path d="M5 15 L16 5 L27 15 M8 13 V27 H24 V13" stroke="#fff" stroke-width="3.4" fill="none" stroke-linejoin="round" stroke-linecap="round"/></svg>'
+  };
+  function play(name, o) {
+    if (!on) return;
+    o = o || {};
+    const t = performance.now(), k = o.key || name;
+    if (last[k] && t - last[k] < (o.gap || 40)) return;
+    last[k] = t;
+    try { KG.sfx.play(name, { vol: o.vol, pan: o.pan || 0, pitch: (o.pitch || 1) * (o.exact ? 1 : 0.955 + Math.random() * 0.09) }); } catch (e) { /* 忽略 */ }
+  }
+  const panX = x => Math.max(-1, Math.min(1, (x / Math.max(1, innerWidth)) * 2 - 1)) * 0.6;
+  function jingle(def) { if (!on) return 0; return KG.music.jingle(def); }
+  function setVol(v) { musVol = v; if (!ducked) KG.music.setVolume(v); }
+  // 念出來的時候把音樂調小，念完再恢復
+  function say(text, rate) {
+    KG.say(text, rate);
+    if (KG.isMuted() || !window.speechSynthesis) return;
+    if (!ducked) { ducked = true; KG.music.setVolume(musVol * 0.35); }
+    clearInterval(duckT);
+    let n = 0;
+    duckT = setInterval(() => {
+      n++;
+      let sp = false; try { sp = speechSynthesis.speaking || speechSynthesis.pending; } catch (e) { /* 忽略 */ }
+      if ((!sp && n > 3) || n > 80) { clearInterval(duckT); ducked = false; KG.music.setVolume(musVol); }
+    }, 150);
+  }
+  // 選單
+  let ov = null;
+  function toggleBtn(kind) {
+    const b = document.createElement('button');
+    b.className = 'au-b half';
+    const paint = () => {
+      const isOn = kind === 'music' ? KG.music.isEnabled() : on;
+      b.classList.toggle('off', !isOn);
+      b.innerHTML = ICON[kind].replace('</svg>', isOn ? '</svg>' : ICON.off + '</svg>') + '<span>' + (kind === 'music' ? '音樂 ' : '音效 ') + (isOn ? '開' : '關') + '</span>';
+      b.setAttribute('aria-pressed', String(isOn));
+    };
+    paint();
+    b.addEventListener('click', () => {
+      if (kind === 'music') KG.music.setEnabled(!KG.music.isEnabled());
+      else { on = !on; KG.store.set(KEY, on); }
+      paint(); play('ui', { exact: true });
+    });
+    return b;
+  }
+  /** 打開選單：o = {title, paused, resumeText, extra:[{text, cls, onClick}], onClose} */
+  function menu(o) {
+    o = o || {};
+    if (ov) return;
+    if (o.paused) KG.music.pause();
+    play('select', { exact: true });
+    ov = document.createElement('div');
+    ov.className = 'au-ov';
+    const card = document.createElement('div'); card.className = 'au-card';
+    card.innerHTML = '<h2>' + (o.title || (o.paused ? '暫停' : '設定')) + '</h2>';
+    const grid = document.createElement('div'); grid.className = 'au-grid';
+    const close = (fn) => {
+      if (!ov) return;
+      ov.remove(); ov = null;
+      if (o.paused) KG.music.resume();
+      if (o.onClose) o.onClose();
+      if (fn) fn();
+    };
+    const mk = (text, cls, icon, fn) => {
+      const b = document.createElement('button'); b.className = 'au-b ' + (cls || '');
+      b.innerHTML = (icon || '') + '<span>' + text + '</span>';
+      b.addEventListener('click', () => { play(fn ? 'ui' : 'back', { exact: true }); close(fn); });
+      return b;
+    };
+    grid.appendChild(mk(o.resumeText || (o.paused ? '繼續' : '好了'), '', ICON.play));
+    grid.appendChild(toggleBtn('music'));
+    grid.appendChild(toggleBtn('sfx'));
+    (o.extra || []).forEach(x => grid.appendChild(mk(x.text, x.cls || 'alt', x.icon ? ICON[x.icon] : '', x.onClick)));
+    card.appendChild(grid); ov.appendChild(card);
+    ov.addEventListener('click', e => { if (e.target === ov) { play('back', { exact: true }); close(); } });
+    document.body.appendChild(ov);
+  }
+  function isOpen() { return !!ov; }
+  function closeMenu() { if (ov) { ov.remove(); ov = null; } }
+  /** 圓形按鈕：kind = 'pause' | 'gear' */
+  function button(kind, cls, onClick) {
+    const b = document.createElement('button');
+    b.className = 'au-btn ' + (cls || '');
+    b.setAttribute('aria-label', kind === 'pause' ? '暫停' : '聲音設定');
+    b.innerHTML = ICON[kind];
+    b.addEventListener('click', e => { e.stopPropagation(); onClick ? onClick() : menu(); });
+    b.addEventListener('pointerdown', e => e.stopPropagation());
+    return b;
+  }
+  function setSfx(v) { on = !!v; KG.store.set(KEY, on); }
+  return { play, panX, jingle, say, setVol, menu, isOpen, closeMenu, button, isOn: () => on, setSfx, ICON };
+})();
+</script>
 <script>
 (() => {
 'use strict';
@@ -344,6 +475,7 @@ const IC = {
   image: sv(`<rect x="5" y="9" width="38" height="30" rx="5" fill="#c8ecff" stroke="${INK}" stroke-width="3"/><circle cx="16" cy="19" r="4" fill="#ffd65c"/><path d="M8 36 L20 24 L28 31 L33 27 L41 35 V36 Z" fill="#4cbf7a"/>`),
   share: sv(`<circle cx="12" cy="24" r="6" fill="#ff8ea0" stroke="${INK}" stroke-width="3"/><circle cx="36" cy="11" r="6" fill="#7cc8ff" stroke="${INK}" stroke-width="3"/><circle cx="36" cy="37" r="6" fill="#a6e36b" stroke="${INK}" stroke-width="3"/><path d="M17.5 21 L30.5 14 M17.5 27 L30.5 34" stroke="${INK}" stroke-width="3"/>`),
   music: sv(`<path d="M18 34 V12 L38 8 V30" fill="none" stroke="${INK}" stroke-width="4" stroke-linejoin="round"/><ellipse cx="13" cy="35" rx="7" ry="5.5" fill="#8e6cef" stroke="${INK}" stroke-width="3"/><ellipse cx="33" cy="31" rx="7" ry="5.5" fill="#8e6cef" stroke="${INK}" stroke-width="3"/>`),
+  sfx: sv(`<path d="M8 19 H16 L26 10 V38 L16 29 H8 Z" fill="#8e6cef" stroke="${INK}" stroke-width="3" stroke-linejoin="round"/><path d="M32 17 Q37 24 32 31 M36 12 Q44 24 36 36" fill="none" stroke="${INK}" stroke-width="3.5" stroke-linecap="round"/>`),
   palette: sv(`<path d="M24 6 C12 6 5 15 5 24 C5 34 13 42 22 42 C26 42 27 39 25 36 C23 33 25 30 29 30 H35 C40 30 43 27 43 22 C43 13 35 6 24 6 Z" fill="#fff1e0" stroke="${INK}" stroke-width="3"/><circle cx="15" cy="19" r="3.5" fill="#e83f4f"/><circle cx="24" cy="13" r="3.5" fill="#ffd93d"/><circle cx="34" cy="17" r="3.5" fill="#3b86f7"/><circle cx="13" cy="29" r="3.5" fill="#4cbf7a"/>`),
   star: on => `<svg viewBox="0 0 100 100"><path d="M50 6 L63 34 L94 37 L70 58 L77 89 L50 73 L23 89 L30 58 L6 37 L37 34 Z" fill="${on ? '#ffd23f' : '#e3dcea'}" stroke="${on ? '#c46f00' : '#b4aac2'}" stroke-width="6" stroke-linejoin="round"/><path d="M36 38 Q44 26 54 30" stroke="#fff" stroke-width="7" fill="none" stroke-linecap="round" opacity=".8"/></svg>`
 };
@@ -479,7 +611,7 @@ function addColor(hex) {
 const S = {
   mode: 'free', tool: 'pencil', prevTool: 'pencil', color: 7, mirror: 0, grid: true, onion: false, shapeFill: false, hand: false,
   view: { s: 20, ox: 0, oy: 0, user: false }, sel: null, undo: [], redo: [], playing: false, playT: 0, transparent: false,
-  music: KG.store.get(K + 'music', true), guide: null, screen: 'title', animOpen: false, dirty: true, hover: null, celebrated: false
+  guide: null, screen: 'title', animOpen: false, dirty: true, hover: null, celebrated: false
 };
 const N = () => doc.size;
 const FR = () => doc.frames[doc.cur];
@@ -564,13 +696,13 @@ function beginChange() { S.undo.push(snap()); if (S.undo.length > MAXUNDO) S.und
 function cancelChange() { const s = S.undo.pop(); if (s) { doc.frames = s.frames; doc.cur = s.cur; } S.dirty = true; updUndo(); }
 function undo() {
   commitSel();
-  if (!S.undo.length) { KG.sound('tick'); return false; }
-  S.redo.push(snap()); restore(S.undo.pop()); KG.note(520, 0.1, 'triangle', 0.12, 0, 330); return true;
+  if (!S.undo.length) { AU.play('tap'); return false; }
+  S.redo.push(snap()); restore(S.undo.pop()); AU.play('undoS'); updLayers(); return true;
 }
 function redo() {
   commitSel();
-  if (!S.redo.length) { KG.sound('tick'); return false; }
-  S.undo.push(snap()); restore(S.redo.pop()); KG.note(330, 0.1, 'triangle', 0.12, 0, 520); return true;
+  if (!S.redo.length) { AU.play('tap'); return false; }
+  S.undo.push(snap()); restore(S.redo.pop()); AU.play('redoS'); updLayers(); return true;
 }
 function updUndo() { $('#bUndo').disabled = !S.undo.length; $('#bRedo').disabled = !S.redo.length; }
 let thumbDirty = new Set(), saveTimer = 0;
@@ -580,37 +712,92 @@ function afterChange(all) {
   updUndo();
   clearTimeout(saveTimer); saveTimer = setTimeout(saveDraft, 600);
   if (S.mode === 'guide') updProgress();
+  updLayers();
 }
 
-/* ===================== 音效 ===================== */
+/* ===================== 聲音（kg-music.js） ===================== */
+/*SONGS*/
+const SONGS = {
+  // 標題：8-bit 存檔小屋搖籃曲（Eb 大調 76，沒有鼓）
+  title: {
+    bpm: 76, steps: 16, vol: 0.52, scale: 'Eb F G Ab Bb C D',
+    chords: ['Eb', 'Cm7', 'Abmaj7', 'Bb', 'Eb', 'Gm7', 'Ab', 'Bb'],
+    tracks: [
+      { inst: 'sub', chord: 'R.......5.......', vol: 0.6 },
+      { inst: 'pad', chord: 'hold', vol: 0.25 },
+      { inst: 'kalimba', arp: 'up', rate: 4, oct: 4, vol: 0.32 },
+      { inst: 'chip', seq: [
+        'G5 - Bb5 - Eb5 - - .', 'G5 - F5 Eb5 C5 - - .', 'Eb5 - G5 - C5 - Ab4 .', 'Bb4 - D5 - F5 - - .',
+        'G5 - Bb5 - Eb5 - G5 .', 'F5 - D5 - Bb4 - - .', 'C5 - Eb5 - Ab5 - G5 .', 'F5 - - - D5 - . .'], vol: 0.7 },
+      { inst: 'kalimba', seq: [
+        '. . . G4 . . . Bb4', '. . . G4 . . . Eb4', '. . . C5 . . . Eb4', '. . . F4 . . . D4',
+        '. . . G4 . . . Bb4', '. . . D4 . . . F4', '. . . Eb4 . . . C4', '. . . Bb4 . . . F4'], vol: 0.35 }
+    ]
+  },
+  // 畫畫：chip-hop lofi（D 大調 90，慢慢搖）
+  play: {
+    bpm: 90, steps: 16, swing: 0.14, vol: 0.4, scale: 'D E F# G A B C#',
+    chords: ['Dmaj7', 'Bm7', 'Gmaj7', 'A7', 'F#m7', 'Bm7', 'Em7', 'A7'],
+    layers: { build: false, anim: false },
+    tracks: [
+      { inst: 'kick', pat: ['x......x..x.....', 'x......x........'], vol: 0.5 },
+      { inst: 'snare', pat: '....x.......x...', vol: 0.32 },
+      { inst: 'hat', pat: 'x.x.x.x.x.x.x.x.', vol: 0.35 },
+      { inst: 'sub', chord: 'R.....R...5.....', vol: 0.65 },
+      { inst: 'pad', chord: 'hold', vol: 0.28 },
+      { inst: 'chip', arp: 'updown', rate: 2, oct: 4, vol: 0.22 },
+      { inst: 'chip', seq: [
+        'F#5 - A5 - . E5 F#5 .', 'D5 - - - B4 - . .', 'B4 - D5 - F#5 - E5 D5', 'C#5 - E5 - G5 - . .',
+        'A5 - F#5 - E5 - C#5 .', 'D5 - F#5 - B4 - . .', 'G5 - F#5 - E5 - B4 .', 'C#5 - - - A4 - . .'], vol: 0.55 },
+      { inst: 'bell', seq: ['. . . . A4 . . .', '. . . . F#4 . . .', '. . . . B4 . . .', '. . . . C#5 . . .', '. . . . A4 . . .', '. . . . D5 . . .', '. . . . G4 . . .', '. . . . E4 . G4 .'], layer: 'build', vol: 0.4 },
+      { inst: 'ohat', pat: '..x...x...x...x.', layer: 'build', vol: 0.3 },
+      { inst: 'chip', arp: 'up', rate: 1, oct: 5, span: 1, layer: 'anim', vol: 0.12 }
+    ]
+  }
+};
+/*/SONGS*/
+const M = KG.music;
+function playSong(sg) { if (sg.vol) AU.setVol(sg.vol); M.play(sg); }
+const D = (n, f) => KG.sfx.define(n, f);
+// 放一格：短短的方波（音高依那一列，D 大調五聲音階；越上面越高）
+D('pix', (p, s) => { s.tone(293.66 * p, 0.07, { type: 'square', vol: 0.045 }); s.tone(587.33 * p, 0.05, { type: 'triangle', vol: 0.05 }); });
+D('erase', (p, s) => { s.noise(0.05, { vol: 0.1, freq: 1400 * p, q: 1.5 }); s.tone(330 * p, 0.05, { type: 'triangle', vol: 0.05, slide: 200 * p }); });
+D('fillS', (p, s) => { s.noise(0.25, { vol: 0.12, freq: 700, sweep: 2800, q: 0.9 }); s.tone(293.66 * p, 0.25, { vol: 0.14, slide: 587 * p }); s.tone(880 * p, 0.12, { type: 'triangle', vol: 0.05, delay: 0.08 }); });
+D('shapeTick', (p, s) => { s.tone(587 * p, 0.035, { type: 'square', vol: 0.025 }); });
+D('place', (p, s) => { s.tone(440 * p, 0.12, { type: 'triangle', vol: 0.14, slide: 880 * p }); s.noise(0.03, { vol: 0.06, freq: 2600, q: 2 }); });
+D('undoS', (p, s) => { s.tone(660 * p, 0.12, { type: 'triangle', vol: 0.12, slide: 400 * p }); });
+D('redoS', (p, s) => { s.tone(400 * p, 0.12, { type: 'triangle', vol: 0.12, slide: 660 * p }); });
+D('wipe', (p, s) => { s.noise(0.5, { vol: 0.15, freq: 2400 * p, sweep: 350, q: 0.7, attack: 0.04 }); s.noise(0.28, { vol: 0.06, freq: 900, sweep: 2600, q: 1, delay: 0.16 }); });
+D('lift', (p, s) => { s.tone(500 * p, 0.08, { type: 'triangle', vol: 0.12, slide: 800 * p }); });
+D('mirror', (p, s) => { s.tone(587 * p, 0.08, { type: 'triangle', vol: 0.12 }); s.tone(587 * p * 1.498, 0.12, { type: 'triangle', vol: 0.1, delay: 0.07 }); });
+D('frameS', (p, s) => { s.tone(880 * p, 0.04, { type: 'square', vol: 0.04 }); s.noise(0.03, { vol: 0.06, freq: 3000, q: 2 }); });
+D('playAnim', (p, s) => { [0, 4, 7, 12].forEach((n, i) => s.tone(587 * p * Math.pow(2, n / 12), 0.07, { type: 'square', vol: 0.04, delay: i * 0.05 })); });
+D('shutter', (p, s) => { s.noise(0.03, { vol: 0.3, freq: 2600 * p, q: 1.2 }); s.tone(1700 * p, 0.025, { type: 'square', vol: 0.04 }); s.noise(0.05, { vol: 0.22, freq: 1400 * p, q: 1.5, delay: 0.07 }); s.noise(0.25, { vol: 0.05, freq: 3000, sweep: 1200, q: 2, delay: 0.14 }); });
+D('save', (p, s) => { s.tone(659 * p, 0.08, { type: 'triangle', vol: 0.15 }); s.tone(988 * p, 0.2, { type: 'triangle', vol: 0.13, delay: 0.08 }); });
+const PXP = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24];
+const semi = n => Math.pow(2, n / 12);
+const rowPitch = y => semi(PXP[clamp(Math.floor((1 - (y + 0.5) / Math.max(1, N())) * PXP.length), 0, PXP.length - 1)]);
+const colPan = x => ((x + 0.5) / Math.max(1, N()) * 2 - 1) * 0.5;
 let lastPop = 0;
-function pop(c) {
+function pop(c, x, y) {
   const now = performance.now();
   if (now - lastPop < 45) return;
   lastPop = now;
-  if (!c) { KG.note(260, 0.06, 'triangle', 0.1, 0, 160); return; }
-  const f = 380 + ((c * 47) % 420);
-  KG.note(f, 0.07, 'sine', 0.14, 0, f * 1.7);
+  if (!c) { AU.play('erase', { pitch: 0.9 + rowPitch(y) * 0.1, pan: colPan(x) }); return; }
+  AU.play('pix', { pitch: rowPitch(y), exact: true, pan: colPan(x) });
 }
-const Music = (() => {
-  let timer = 0, step = 0, on = false;
-  const mf = m => 440 * Math.pow(2, (m - 69) / 12);
-  const mel = [72, 0, 76, 0, 79, 76, 74, 0, 72, 0, 69, 0, 71, 72, 74, 0, 76, 0, 79, 0, 81, 79, 76, 0, 74, 0, 72, 71, 72, 0, 0, 0];
-  const bass = [48, 45, 41, 43, 48, 45, 43, 48];
-  function tick() {
-    if (!on) return;
-    const dur = 60 / 96 / 2;
-    if (!KG.isMuted() && !document.hidden) {
-      const m = mel[step % mel.length];
-      if (m) KG.note(mf(m), dur * 1.6, 'sine', 0.035);
-      if (step % 4 === 0) KG.note(mf(bass[(step / 4 | 0) % bass.length]), dur * 3.5, 'triangle', 0.04);
-    }
-    step++;
-    timer = setTimeout(tick, dur * 1000);
-  }
-  return { start() { if (on) return; on = true; step = 0; timer = setTimeout(tick, 200); }, stop() { on = false; clearTimeout(timer); }, get on() { return on; } };
-})();
-function syncMusic() { if (S.music && !document.hidden) Music.start(); else Music.stop(); }
+function jWin() {
+  AU.jingle({ bpm: 168, inst: 'chip', vol: 0.32, notes: [['D5', 1], ['F#5', 1], ['A5', 1], ['D6', 2], ['A5', 1], ['B5', 1], ['C#6', 1], ['D6', 4]], bass: [['D3', 6, 0], ['A2', 6, 6]], bassVol: 0.3 });
+  AU.jingle({ bpm: 168, inst: 'bell', vol: 0.2, notes: [['A4', 4], ['F#5', 4], ['A5', 4]] });
+}
+function jSave() { AU.jingle({ bpm: 200, inst: 'chip', vol: 0.28, notes: [['A5', 1], ['D6', 1], ['F#5+A5', 3]] }); }
+let layerT = 0;
+function updLayers() {
+  if (M.current() !== SONGS.play) return;
+  let n = 0; const F = FR(); for (let i = 0; i < F.length; i++) if (F[i]) n++;
+  M.setLayer('build', n >= 30);
+  M.setLayer('anim', !!S.playing);
+}
 
 /* ===================== 粒子特效（物件池） ===================== */
 const fxCv = $('#fx'), fxc = fxCv.getContext('2d');
@@ -827,7 +1014,7 @@ function toolBtn(id) {
   setTool(id);
 }
 function setMirror(m) {
-  S.mirror = m; KG.note(600 + m * 120, 0.1, 'triangle', 0.15); updTools(); S.dirty = true;
+  S.mirror = m; AU.play('mirror', { pitch: 1 + m * 0.122, exact: true }); updTools(); S.dirty = true;
   if (m) KG.toast(['', '左右鏡像', '上下鏡像', '四向鏡像'][m]);
 }
 function setTool(id, quiet) {
@@ -836,7 +1023,7 @@ function setTool(id, quiet) {
   if (id === 'picker' && S.tool !== 'picker') S.prevTool = S.tool;
   S.tool = id;
   if (S.hand) setHand(false, true);
-  if (!quiet) KG.sound('click');
+  if (!quiet) AU.play('click');
   updTools(); buildViewbar(); S.dirty = true;
   return true;
 }
@@ -879,7 +1066,7 @@ function setColor(c, quiet) {
   S.color = c;
   if (S.tool === 'eraser' || S.tool === 'picker' || S.tool === 'select' || S.tool === 'move') setTool(S.tool === 'picker' ? S.prevTool : 'pencil', true);
   if (S.tool === 'eraser' || S.tool === 'select' || S.tool === 'move') setTool('pencil', true);
-  if (!quiet) { const f = 380 + ((c * 47) % 420); KG.note(f, 0.09, 'sine', 0.16, 0, f * 1.4); }
+  if (!quiet) AU.play('pix', { pitch: semi(PXP[c % PXP.length]), exact: true, vol: 1.4 });
   updPalette();
 }
 function updPalette() {
@@ -903,17 +1090,17 @@ function buildViewbar() {
     b.addEventListener('click', fn); v.appendChild(b); return b;
   };
   add('vHand', IC.hand, '拖曳畫面', S.hand, () => setHand(!S.hand), true);
-  add('vGrid', IC.grid, '格線', S.grid, () => { S.grid = !S.grid; KG.sound('click'); S.dirty = true; buildViewbar(); });
-  if (S.mode === 'free') add('vOnion', IC.onion, '洋蔥皮', S.onion, () => { S.onion = !S.onion; KG.sound('click'); S.dirty = true; buildViewbar(); if (S.onion && doc.frames.length < 2) KG.toast('加第二格動畫就看得到前一格喔'); });
-  add('vFit', IC.fit, '置中', false, () => { fit(); KG.sound('click'); });
+  add('vGrid', IC.grid, '格線', S.grid, () => { S.grid = !S.grid; AU.play('click'); S.dirty = true; buildViewbar(); });
+  if (S.mode === 'free') add('vOnion', IC.onion, '洋蔥皮', S.onion, () => { S.onion = !S.onion; AU.play('click'); S.dirty = true; buildViewbar(); if (S.onion && doc.frames.length < 2) KG.toast('加第二格動畫就看得到前一格喔'); });
+  add('vFit', IC.fit, '置中', false, () => { fit(); AU.play('click'); });
   if (S.tool === 'rect' || S.tool === 'ellipse') {
     const seg = document.createElement('div'); seg.className = 'seg';
     seg.innerHTML = `<button data-f="0" class="${S.shapeFill ? '' : 'on'}">空心</button><button data-f="1" class="${S.shapeFill ? 'on' : ''}">實心</button>`;
-    seg.querySelectorAll('button').forEach(b => b.addEventListener('click', () => { S.shapeFill = b.dataset.f === '1'; KG.sound('click'); buildViewbar(); }));
+    seg.querySelectorAll('button').forEach(b => b.addEventListener('click', () => { S.shapeFill = b.dataset.f === '1'; AU.play('click'); buildViewbar(); }));
     v.appendChild(seg);
   }
   if (S.sel) {
-    add('vSelDone', IC.check.replace('#fff', INK), '放好了', false, () => { commitSel(); S.sel = null; KG.sound('pop'); buildViewbar(); S.dirty = true; }, true);
+    add('vSelDone', IC.check.replace('#fff', INK), '放好了', false, () => { commitSel(); S.sel = null; AU.play('place'); buildViewbar(); S.dirty = true; }, true);
     add('vSelDel', IC.clear, '刪除', false, () => deleteSel());
   }
   if (S.mode === 'guide') {
@@ -922,7 +1109,7 @@ function buildViewbar() {
   }
 }
 function setHand(on, quiet) {
-  S.hand = on; if (!quiet) KG.sound('click');
+  S.hand = on; if (!quiet) AU.play('click');
   updTools();
   const b = $('#vHand'); if (b) b.classList.toggle('on', on);
 }
@@ -968,28 +1155,28 @@ function updThumbs() {
 }
 function setFrame(i) {
   commitSel(); stopPlay();
-  doc.cur = clamp(i, 0, doc.frames.length - 1); KG.sound('tick'); buildFrames(); S.dirty = true;
+  doc.cur = clamp(i, 0, doc.frames.length - 1); AU.play('frameS', { pitch: 1 + doc.cur * 0.06, exact: true }); buildFrames(); S.dirty = true;
 }
 function addFrame(dup) {
   if (doc.frames.length >= MAXF) { KG.toast('最多 12 格喔'); return false; }
   commitSel(); stopPlay(); beginChange();
   doc.frames.splice(doc.cur + 1, 0, dup ? FR().slice() : new Uint8Array(N() * N()));
-  doc.cur++; KG.sound('pop'); afterChange(true); return true;
+  doc.cur++; AU.play('pop', { pitch: 1 + doc.cur * 0.05 }); afterChange(true); return true;
 }
 function delFrame() {
   if (doc.frames.length <= 1) return false;
   commitSel(); stopPlay(); beginChange();
   doc.frames.splice(doc.cur, 1); doc.cur = Math.min(doc.cur, doc.frames.length - 1);
-  KG.sound('whoosh'); afterChange(true); return true;
+  AU.play('wipe', { vol: 0.7 }); afterChange(true); return true;
 }
 function moveFrame(dir) {
   const j = doc.cur + dir; if (j < 0 || j >= doc.frames.length) return false;
   commitSel(); stopPlay(); beginChange();
   const t = doc.frames[doc.cur]; doc.frames[doc.cur] = doc.frames[j]; doc.frames[j] = t; doc.cur = j;
-  KG.sound('click'); afterChange(true); return true;
+  AU.play('frameS'); afterChange(true); return true;
 }
-function togglePlay() { if (S.playing) stopPlay(); else { commitSel(); if (doc.frames.length < 2) { KG.toast('先多加幾格才會動喔'); return; } S.playing = true; S.playT = 0; KG.sound('jump'); updPlay(); } }
-function stopPlay() { if (!S.playing) return; S.playing = false; updPlay(); S.dirty = true; }
+function togglePlay() { if (S.playing) stopPlay(); else { commitSel(); if (doc.frames.length < 2) { KG.toast('先多加幾格才會動喔'); return; } S.playing = true; S.playT = 0; AU.play('playAnim'); updPlay(); updLayers(); } }
+function stopPlay() { if (!S.playing) return; S.playing = false; updPlay(); S.dirty = true; updLayers(); }
 function updPlay() { $('#fPlay').innerHTML = S.playing ? IC.stop : IC.play; $('#fPlay').classList.toggle('on', S.playing); $('#playBadge').classList.toggle('hide', !S.playing); }
 function toggleAnim(force) {
   S.animOpen = force != null ? force : !S.animOpen;
@@ -1080,10 +1267,10 @@ function toolDown(x, y) {
     if (!inb(x, y)) return;
     beginChange();
     const ch = fillAt(x, y, S.color);
-    if (!ch) { cancelChange(); KG.sound('tick'); return; }
+    if (!ch) { cancelChange(); AU.play('tap'); return; }
     const [cx, cy] = cellClient(x, y);
     spawn(cx, cy, doc.pal[S.color] || '#fff', 14, 220, Math.max(4, S.view.s * 0.3));
-    KG.note(300, 0.2, 'sine', 0.2, 0, 900); KG.note(900, 0.12, 'triangle', 0.08, 0.08, 1300);
+    AU.play('fillS', { pitch: rowPitch(y), exact: true, pan: colPan(x) });
     afterChange();
   } else if (t === 'line' || t === 'rect' || t === 'ellipse') {
     updShapePreview();
@@ -1106,7 +1293,7 @@ function toolMove(x, y) {
   else if (t === 'picker') pickAt(x, y);
   else if (t === 'move') {
     const n = N(); doc.frames[doc.cur] = shiftFrame(stroke.base, n, x - stroke.sx, y - stroke.sy); S.dirty = true;
-    if ((x + y) % 2 === 0) KG.note(700, 0.03, 'square', 0.04);
+    if ((x + y) % 2 === 0) AU.play('shapeTick', { pitch: 1.2, gap: 60 });
   } else if (t === 'select') selMove(x, y);
 }
 function endStroke() {
@@ -1120,10 +1307,10 @@ function endStroke() {
     for (let i = 0; i < F.length; i++) if (prev[i] >= 0 && F[i] !== prev[i]) { F[i] = prev[i]; ch++; }
     clearPreview();
     if (!ch) { cancelChange(); return; }
-    KG.note(480, 0.12, 'triangle', 0.15, 0, 960); afterChange();
+    AU.play('place', { pitch: rowPitch(st.y), exact: true, pan: colPan(st.x) }); afterChange();
   } else if (t === 'picker') { setTool(S.prevTool === 'picker' ? 'pencil' : S.prevTool, true); }
   else if (t === 'move') {
-    if (st.x === st.sx && st.y === st.sy) cancelChange(); else { KG.sound('pop'); afterChange(); }
+    if (st.x === st.sx && st.y === st.sy) cancelChange(); else { AU.play('place'); afterChange(); }
   } else if (t === 'select') selUp(st);
 }
 function abortStroke() {
@@ -1140,7 +1327,7 @@ function plot(x, y, c) {
     const i = b * n + a;
     if (F[i] !== c) { F[i] = c; ch++; fxPixel(a, b, c); if (g && c && g.pic.target[i] === c) maybeCellDing(); }
   }
-  if (ch) { pop(c); S.dirty = true; thumbDirty.add(doc.cur); if (S.mode === 'guide') updProgress(); }
+  if (ch) { pop(c, x, y); S.dirty = true; thumbDirty.add(doc.cur); if (S.mode === 'guide') updProgress(); }
   return ch;
 }
 let lastDing = 0;
@@ -1161,19 +1348,19 @@ function updShapePreview() {
   else pts = ellipsePts(st.sx, st.sy, st.x, st.y, S.shapeFill);
   for (const [x, y] of pts) for (const [a, b] of mirrorPts(x, y)) if (inb(a, b)) prev[b * n + a] = c;
   S.dirty = true;
-  const now = performance.now(); if (now - lastPop > 70) { lastPop = now; KG.note(500 + pts.length * 3 % 400, 0.04, 'sine', 0.06); }
+  const now = performance.now(); if (now - lastPop > 70) { lastPop = now; AU.play('shapeTick', { pitch: semi(PXP[pts.length % PXP.length]), exact: true }); }
 }
 function pickAt(x, y) {
   if (!inb(x, y)) return;
   const c = FR()[y * N() + x];
-  if (c && c !== S.color) { S.color = c; updPalette(); KG.note(880, 0.06, 'sine', 0.12); }
+  if (c && c !== S.color) { S.color = c; updPalette(); AU.play('pix', { pitch: semi(PXP[c % PXP.length]) * 2, exact: true }); }
 }
 function clearFrame() {
   commitSel(); S.sel = null;
   if (!FR().some(v => v)) { KG.toast('已經是空白的囉'); return false; }
   beginChange(); FR().fill(0);
   stage.classList.remove('shake'); void stage.offsetWidth; stage.classList.add('shake');
-  KG.sound('whoosh'); KG.toast('清乾淨了（可以按復原）');
+  AU.play('wipe'); KG.toast('清乾淨了（可以按復原）');
   afterChange(); buildViewbar(); return true;
 }
 
@@ -1186,7 +1373,7 @@ function selDown(x, y) {
       beginChange(); stroke.began = true;
       const n = N(), F = FR(); s.buf = new Uint8Array(s.w * s.h); s.fx = s.x; s.fy = s.y;
       for (let yy = 0; yy < s.h; yy++) for (let xx = 0; xx < s.w; xx++) { const i = (s.y + yy) * n + s.x + xx; s.buf[yy * s.w + xx] = F[i]; F[i] = 0; }
-      KG.note(500, 0.08, 'triangle', 0.12, 0, 800);
+      AU.play('lift');
     }
     stroke.mode = 'drag'; stroke.fx0 = s.fx; stroke.fy0 = s.fy;
   } else {
@@ -1205,7 +1392,7 @@ function selMove(x, y) {
 }
 function selUp(st) {
   if (st.mode === 'new' && st.cells <= 1) { S.sel = null; }
-  else if (st.mode === 'new') KG.note(700, 0.06, 'sine', 0.1);
+  else if (st.mode === 'new') AU.play('select', { vol: 0.7 });
   buildViewbar(); S.dirty = true;
 }
 function commitSel() {
@@ -1225,7 +1412,7 @@ function deleteSel() {
   const s = S.sel; if (!s) return;
   if (s.buf) { s.buf = null; S.sel = null; afterChange(); }
   else { beginChange(); const n = N(), F = FR(); for (let yy = 0; yy < s.h; yy++) for (let xx = 0; xx < s.w; xx++) F[(s.y + yy) * n + s.x + xx] = 0; S.sel = null; afterChange(); }
-  KG.sound('whoosh'); buildViewbar(); S.dirty = true;
+  AU.play('wipe', { vol: 0.7 }); buildViewbar(); S.dirty = true;
 }
 
 /* ===================== 跟著畫 ===================== */
@@ -1246,7 +1433,7 @@ function celebrate() {
   const done = KG.store.get(K + 'gdone', {}); done[pic.id] = 1; KG.store.set(K + 'gdone', done);
   KG.best('pixel-art-done', Object.keys(done).length);
   stage.classList.remove('cele'); void stage.offsetWidth; stage.classList.add('cele');
-  KG.sound('win'); KG.confetti(); KG.vibrate(60);
+  jWin(); KG.confetti(); KG.vibrate(60);
   const n = N();
   for (let k = 0; k < 40; k++) { const i = (Math.random() * n * n) | 0, x = i % n, y = (i / n) | 0; if (pic.target[i]) { const [cx, cy] = cellClient(x, y); spawn(cx, cy, doc.pal[pic.target[i]], 3, 260, 8); } }
   setTimeout(() => {
@@ -1404,8 +1591,8 @@ function saveWork(replaceOldest) {
   }
   KG.store.set(K + 'works', list);
   const back = works();
-  if (!back.length || back[0].code !== code) { KG.toast('儲存空間不夠了，請刪掉幾件作品'); KG.sound('wrong'); return false; }
-  KG.sound('coin'); KG.toast('已存到「我的作品」！');
+  if (!back.length || back[0].code !== code) { KG.toast('儲存空間不夠了，請刪掉幾件作品'); AU.play('error'); return false; }
+  AU.play('save'); jSave(); KG.toast('已存到「我的作品」！');
   const r = $('#bSave').getBoundingClientRect(); spawn(r.left + r.width / 2, r.top + r.height / 2, '#ffd65c', 16, 220, 7);
   saveDraft();
   return true;
@@ -1432,7 +1619,9 @@ function showScreen(id) {
   if (id === 'picks') buildPicks();
   if (id === 'gal') buildGallery();
   if (id === 'title') buildTitle();
-  KG.sound('click');
+  AU.play(id === 'title' ? 'back' : 'ui');
+  gear.hidden = false;
+  playSong(SONGS.title);
 }
 function enterEditor() {
   for (const s of ['title', 'picks', 'gal']) $('#' + s).classList.add('hide');
@@ -1447,7 +1636,8 @@ function enterEditor() {
   S.view.user = false;
   layout(); fit(true);
   if (S.mode === 'guide') updProgress(true);
-  syncMusic();
+  gear.hidden = true;
+  playSong(SONGS.play); updLayers();
   S.dirty = true;
 }
 function buildTitle() {
@@ -1473,7 +1663,7 @@ function buildPicks() {
     b.insertAdjacentHTML('beforeend', `<span class="nm">${p.name}</span>`);
     if (done[p.id]) b.insertAdjacentHTML('beforeend', `<span class="ok">${IC.check}</span>`);
     else if (gp[p.id]) b.insertAdjacentHTML('beforeend', `<span class="pc">畫到一半</span>`);
-    b.addEventListener('click', () => { KG.sound('pop'); startGuide(i); });
+    b.addEventListener('click', () => { AU.play('select'); startGuide(i); });
     g.appendChild(b);
   });
 }
@@ -1490,11 +1680,11 @@ function buildGallery() {
     b.insertAdjacentHTML('beforeend', `<span class="nm">${w.name || '作品'}</span><span class="sub">${dt.getMonth() + 1}/${dt.getDate()}．${d.size}×${d.size}${d.frames.length > 1 ? `．${d.frames.length} 格動畫` : ''}</span>`);
     const del = document.createElement('button'); del.className = 'del'; del.innerHTML = IC.x; del.setAttribute('aria-label', '刪除');
     del.addEventListener('click', e => {
-      e.stopPropagation(); KG.sound('click');
-      sheet({ title: '刪除作品？', html: '<p>刪掉就找不回來囉！</p>', buttons: [{ text: '刪除', cls: '', onClick: () => { KG.store.set(K + 'works', works().filter(x => x.id !== w.id)); KG.sound('whoosh'); buildGallery(); } }, { text: '保留', cls: 'green' }] });
+      e.stopPropagation(); AU.play('click');
+      sheet({ title: '刪除作品？', html: '<p>刪掉就找不回來囉！</p>', buttons: [{ text: '刪除', cls: '', onClick: () => { KG.store.set(K + 'works', works().filter(x => x.id !== w.id)); AU.play('wipe'); buildGallery(); } }, { text: '保留', cls: 'green' }] });
     });
     b.appendChild(del);
-    b.addEventListener('click', () => { KG.sound('pop'); loadDoc(d, w.id); });
+    b.addEventListener('click', () => { AU.play('select'); loadDoc(d, w.id); });
     g.appendChild(b);
   });
 }
@@ -1509,7 +1699,7 @@ function sheet(o) {
     const a = document.createElement('div'); a.className = 'acts';
     for (const b of o.buttons) {
       const btn = document.createElement('button'); btn.className = 'kg-btn ' + (b.cls || ''); btn.innerHTML = b.text;
-      btn.addEventListener('click', () => { KG.sound('click'); if (!b.keep) close(); if (b.onClick) b.onClick(); });
+      btn.addEventListener('click', () => { AU.play('ui'); if (!b.keep) close(); if (b.onClick) b.onClick(); });
       a.appendChild(btn);
     }
     card.appendChild(a);
@@ -1531,10 +1721,22 @@ function openMenu() {
     tile('mExport', IC.image, '匯出圖片', () => openExport()),
     tile('mShare', IC.share, '分享代碼', () => openShare()),
     tile('mGal', IC.frame.replace('#fff"/><rect', INK + '"/><rect'), '我的作品', () => showScreen('gal')),
-    tile('mMusic', IC.music, S.music ? '音樂：開' : '音樂：關', () => { S.music = !S.music; KG.store.set(K + 'music', S.music); syncMusic(); KG.toast(S.music ? '背景音樂開' : '背景音樂關'); }, S.music)
+    tile('mMusic', IC.music, M.isEnabled() ? '音樂：開' : '音樂：關', null, M.isEnabled()),
+    tile('mSfx', IC.sfx, AU.isOn() ? '音效：開' : '音效：關', null, AU.isOn())
   ];
-  const ov = sheet({ title: '選單', html: `<div class="tiles">${items.map(t => `<button class="tile${t.on ? ' on' : ''}" id="${t.id}">${t.icon}<span>${t.text}</span></button>`).join('')}</div>`, buttons: [{ text: '繼續畫', cls: 'green' }] });
-  items.forEach(t => ov.querySelector('#' + t.id).addEventListener('click', () => { KG.sound('click'); ov.close(); t.fn(); }));
+  M.pause();
+  const ov = sheet({ title: '選單', html: `<div class="tiles">${items.map(t => `<button class="tile${t.on ? ' on' : ''}" id="${t.id}">${t.icon}<span>${t.text}</span></button>`).join('')}</div>`, buttons: [{ text: '繼續畫', cls: 'green' }], onClose: () => M.resume() });
+  items.forEach(t => ov.querySelector('#' + t.id).addEventListener('click', () => {
+    if (!t.fn) {   // 音樂／音效開關：留在選單裡
+      const el = ov.querySelector('#' + t.id), isM = t.id === 'mMusic';
+      if (isM) M.setEnabled(!M.isEnabled()); else AU.setSfx(!AU.isOn());
+      const on = isM ? M.isEnabled() : AU.isOn();
+      el.classList.toggle('on', on); el.querySelector('span').textContent = (isM ? '音樂：' : '音效：') + (on ? '開' : '關');
+      AU.play('ui', { exact: true });
+      return;
+    }
+    AU.play('ui'); ov.close(); t.fn();
+  }));
 }
 function sizePicker(fromEditor) {
   const d = KG.store.get(K + 'draft', null);
@@ -1551,7 +1753,7 @@ function sizePicker(fromEditor) {
     // 一顆小愛心示意大小
     const heart = PIC[0].target; for (let y = 0; y < 16; y++) for (let xx = 0; xx < 16; xx++) { const v = heart[y * 16 + xx]; if (v) { x.fillStyle = PAL32[v - 1]; x.fillRect(xx + ((s - 16) >> 1), y + ((s - 16) >> 1), 1, 1); } }
     b.addEventListener('click', () => {
-      ov.close(); KG.sound('pop');
+      ov.close(); AU.play('select');
       if (fromEditor && S.mode === 'free' && (doc.frames.length > 1 || FR().some(v => v))) saveDraft();
       newCanvas(s);
     });
@@ -1581,8 +1783,8 @@ function openExport() {
     buttons: [{ text: '關閉', cls: 'yellow' }]
   });
   ov.querySelector('#exTr').addEventListener('change', e => { S.transparent = e.target.checked; ov.close(); openExport(); });
-  ov.querySelector('#exGif').addEventListener('click', () => { download(blob, `pixel-${stamp()}.gif`); KG.sound('coin'); KG.toast('GIF 下載囉！'); });
-  const png = sc => exportPNG(sc, S.transparent).toBlob(b => { if (b) { download(b, `pixel-${stamp()}-x${sc}.png`); KG.sound('coin'); KG.toast('PNG 下載囉！'); } }, 'image/png');
+  ov.querySelector('#exGif').addEventListener('click', () => { download(blob, `pixel-${stamp()}.gif`); AU.play('shutter'); jSave(); KG.toast('GIF 下載囉！'); });
+  const png = sc => exportPNG(sc, S.transparent).toBlob(b => { if (b) { download(b, `pixel-${stamp()}-x${sc}.png`); AU.play('shutter'); jSave(); KG.toast('PNG 下載囉！'); } }, 'image/png');
   ov.querySelector('#exP8').addEventListener('click', () => png(8));
   ov.querySelector('#exP16').addEventListener('click', () => png(16));
 }
@@ -1601,13 +1803,13 @@ function openShare() {
   });
   ov.querySelector('#shCopy').addEventListener('click', () => {
     const t = ov.querySelector('#shOut'); t.select();
-    const ok = () => { KG.sound('coin'); KG.toast('複製好了！'); };
+    const ok = () => { AU.play('save'); KG.toast('複製好了！'); };
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(code).then(ok, () => { try { document.execCommand('copy'); ok(); } catch (_) {} });
     else { try { document.execCommand('copy'); ok(); } catch (_) {} }
   });
   ov.querySelector('#shLoad').addEventListener('click', () => {
-    try { const d = parseShare(ov.querySelector('#shIn').value); saveDraft(); ov.close(); loadDoc(d, null); KG.sound('win'); KG.toast('打開朋友的畫了！'); }
-    catch (_) { KG.sound('wrong'); KG.toast('代碼好像不對喔'); }
+    try { const d = parseShare(ov.querySelector('#shIn').value); saveDraft(); ov.close(); loadDoc(d, null); jSave(); KG.toast('打開朋友的畫了！'); }
+    catch (_) { AU.play('error'); KG.toast('代碼好像不對喔'); }
   });
 }
 
@@ -1620,10 +1822,10 @@ $('#bSave').innerHTML = IC.save + '存檔';
 $('#fAdd').innerHTML = IC.plus; $('#fDup').innerHTML = IC.dup; $('#fDel').innerHTML = IC.clear;
 $('#fLeft').innerHTML = IC.left; $('#fRight').innerHTML = IC.right;
 $('#pkBack').innerHTML = IC.back; $('#glBack').innerHTML = IC.back;
-$('#bMenu').addEventListener('click', () => { KG.sound('click'); openMenu(); });
+$('#bMenu').addEventListener('click', () => { AU.play('select'); openMenu(); });
 $('#bUndo').addEventListener('click', undo);
 $('#bRedo').addEventListener('click', redo);
-$('#bAnim').addEventListener('click', () => { KG.sound('click'); toggleAnim(); });
+$('#bAnim').addEventListener('click', () => { AU.play('ui'); toggleAnim(); });
 $('#bSave').addEventListener('click', () => saveWork());
 $('#fAdd').addEventListener('click', () => addFrame(false));
 $('#fDup').addEventListener('click', () => addFrame(true));
@@ -1632,7 +1834,10 @@ $('#fLeft').addEventListener('click', () => moveFrame(-1));
 $('#fRight').addEventListener('click', () => moveFrame(1));
 $('#fPlay').addEventListener('click', togglePlay);
 $('#fps').addEventListener('input', e => { doc.fps = +e.target.value; $('#fpsV').textContent = doc.fps; S.playT = 0; clearTimeout(saveTimer); saveTimer = setTimeout(saveDraft, 600); });
-$('#tFree').addEventListener('click', () => { KG.sound('click'); sizePicker(false); });
+$('#tFree').addEventListener('click', () => { AU.play('ui'); sizePicker(false); });
+// 標題／選圖／作品畫面的聲音設定鈕（畫畫時在「選單」裡）
+const gear = AU.button('gear', 'au-gear');
+document.body.appendChild(gear);
 $('#tGuide').addEventListener('click', () => showScreen('picks'));
 $('#tGal').addEventListener('click', () => showScreen('gal'));
 $('#pkBack').addEventListener('click', () => showScreen('title'));
@@ -1667,8 +1872,7 @@ window.addEventListener('resize', layout);
 window.addEventListener('orientationchange', () => setTimeout(layout, 120));
 if (window.visualViewport) visualViewport.addEventListener('resize', layout);
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) { stopPlay(); saveDraft(); Music.stop(); ptrs.clear(); if (stroke) endStroke(); gesture = null; }
-  else syncMusic();
+  if (document.hidden) { stopPlay(); saveDraft(); ptrs.clear(); if (stroke) endStroke(); gesture = null; }
 });
 window.addEventListener('pagehide', saveDraft);
 
@@ -1770,6 +1974,7 @@ window.__px = {
 
 buildTitle();
 allocBuffers();
+playSong(SONGS.title);
 requestAnimationFrame(loop);
 })();
 </script>
